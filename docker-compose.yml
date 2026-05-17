@@ -1,0 +1,16 @@
+services:
+  outpost-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      RUST_LOG: info
+      BIND_ADDR: 0.0.0.0:8080
+    volumes:
+      - outpost-data:/var/lib/outpost
+    restart: unless-stopped
+
+volumes:
+  outpost-data:

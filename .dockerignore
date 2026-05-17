@@ -1,0 +1,17 @@
+target/
+.git/
+.github/
+*.md
+.env
+.env.local
+.env.*.local
+*.db
+*.db-wal
+*.db-shm
+.idea/
+.vscode/
+docker-compose.yml
+.dockerignore
+.editorconfig
+.gitattributes
+.gitignore

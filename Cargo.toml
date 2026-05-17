@@ -1,0 +1,47 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/outpost-server",
+    "crates/outpost-core",
+    "crates/outpost-migrations",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+authors = ["Frontier Capital"]
+repository = "https://github.com/daphate/outpost-mdm-rs"
+homepage = "https://github.com/daphate/outpost-mdm-rs"
+description = "Outpost MDM — field-grade device management server (Rust)"
+
+[workspace.dependencies]
+# async runtime
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net"] }
+# HTTP framework
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors", "request-id"] }
+# serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# error handling
+anyhow = "1"
+thiserror = "2"
+# observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# time
+chrono = { version = "0.4", features = ["serde"] }
+
+[profile.release]
+opt-level = "z"          # optimize for size — 512 MB box
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+[profile.dev]
+# Faster incremental builds during development
+opt-level = 0
+debug = 1
