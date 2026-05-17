@@ -44,6 +44,7 @@ async fn main() -> Result<()> {
         cfg.app_files_dir,
         cfg.max_body_bytes,
         cfg.request_timeout_secs,
+        cfg.secure_cookies,
     );
     let _scheduler_handle = scheduler::spawn(pool);
 

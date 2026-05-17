@@ -15,6 +15,7 @@ pub mod push;
 pub mod settings;
 pub mod stats;
 pub mod users;
+pub mod web;
 
 use crate::state::AppState;
 use axum::Router;
@@ -33,5 +34,6 @@ pub fn api_v1(state: AppState) -> Router {
         .merge(push::router())
         .merge(files::router())
         .merge(enrollment::router())
+        .merge(web::router())
         .with_state(state)
 }

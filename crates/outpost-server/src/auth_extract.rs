@@ -27,16 +27,11 @@ impl FromRequestParts<AppState> for AuthUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let header = parts
-            .headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .ok_or(ApiError::Unauthorized)?;
-        let token = header
-            .strip_prefix("Bearer ")
-            .ok_or(ApiError::Unauthorized)?;
+        // Accept either `Authorization: Bearer …` (API clients) or the
+        // `outpost_session` cookie (browser-driven HTMX UI).
+        let token = extract_token(parts).ok_or(ApiError::Unauthorized)?;
         let claims =
-            auth::verify_token(token, &state.jwt_secret).map_err(|_| ApiError::InvalidToken)?;
+            auth::verify_token(&token, &state.jwt_secret).map_err(|_| ApiError::InvalidToken)?;
 
         if claims.kind != auth::KIND_USER {
             return Err(ApiError::InvalidToken);
@@ -58,6 +53,29 @@ impl FromRequestParts<AppState> for AuthUser {
             None => Err(ApiError::InvalidToken),
         }
     }
+}
+
+/// Extract the JWT from either `Authorization: Bearer ...` (preferred,
+/// API clients) or the `outpost_session` cookie (browser).
+pub fn extract_token(parts: &Parts) -> Option<String> {
+    if let Some(bearer) = parts
+        .headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+    {
+        return Some(bearer.to_string());
+    }
+    parts
+        .headers
+        .get("cookie")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|raw| {
+            raw.split(';')
+                .map(str::trim)
+                .find_map(|kv| kv.strip_prefix("outpost_session="))
+                .map(|s| s.to_string())
+        })
 }
 
 /// Authenticated device identity, attached to a device-facing request.

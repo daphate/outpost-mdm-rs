@@ -16,6 +16,7 @@ pub struct AppState {
     pub app_files_dir: Arc<PathBuf>,
     pub max_body_bytes: usize,
     pub request_timeout_secs: u64,
+    pub secure_cookies: bool,
 }
 
 impl AppState {
@@ -26,6 +27,7 @@ impl AppState {
         app_files_dir: PathBuf,
         max_body_bytes: usize,
         request_timeout_secs: u64,
+        secure_cookies: bool,
     ) -> Self {
         Self {
             db,
@@ -34,6 +36,7 @@ impl AppState {
             app_files_dir: Arc::new(app_files_dir),
             max_body_bytes,
             request_timeout_secs,
+            secure_cookies,
         }
     }
 }
@@ -55,6 +58,7 @@ pub async fn test_state() -> AppState {
         make_test_dir(),
         cfg.max_body_bytes,
         cfg.request_timeout_secs,
+        cfg.secure_cookies,
     )
 }
 

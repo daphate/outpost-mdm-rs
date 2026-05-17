@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard{% endblock %}
+
+{% block body %}
+{% include "_nav.html" %}
+
+<main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
+  <h2 class="text-2xl font-bold">Fleet overview</h2>
+
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+    <div class="bg-white p-5 rounded-lg shadow-sm">
+      <div class="text-xs uppercase tracking-wide text-slate-500">Devices</div>
+      <div class="text-3xl font-bold mt-1">{{ stats.devices_total }}</div>
+    </div>
+    <div class="bg-white p-5 rounded-lg shadow-sm">
+      <div class="text-xs uppercase tracking-wide text-slate-500">Online</div>
+      <div class="text-3xl font-bold mt-1 text-emerald-600">{{ stats.devices_online }}</div>
+    </div>
+    <div class="bg-white p-5 rounded-lg shadow-sm">
+      <div class="text-xs uppercase tracking-wide text-slate-500">Enrolled</div>
+      <div class="text-3xl font-bold mt-1">{{ stats.devices_enrolled }}</div>
+    </div>
+    <div class="bg-white p-5 rounded-lg shadow-sm">
+      <div class="text-xs uppercase tracking-wide text-slate-500">Applications</div>
+      <div class="text-3xl font-bold mt-1">{{ stats.applications_total }}</div>
+    </div>
+    <div class="bg-white p-5 rounded-lg shadow-sm">
+      <div class="text-xs uppercase tracking-wide text-slate-500">Configurations</div>
+      <div class="text-3xl font-bold mt-1">{{ stats.configurations_total }}</div>
+    </div>
+    <div class="bg-white p-5 rounded-lg shadow-sm">
+      <div class="text-xs uppercase tracking-wide text-slate-500">Push pending</div>
+      <div class="text-3xl font-bold mt-1 text-amber-600">{{ stats.push_pending }}</div>
+    </div>
+    <div class="bg-white p-5 rounded-lg shadow-sm">
+      <div class="text-xs uppercase tracking-wide text-slate-500">Push 24h</div>
+      <div class="text-3xl font-bold mt-1">{{ stats.push_sent_24h }}</div>
+    </div>
+  </div>
+</main>
+{% endblock %}

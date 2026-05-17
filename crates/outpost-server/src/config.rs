@@ -11,6 +11,10 @@ pub const DEFAULT_MAX_BODY_BYTES: usize = 200 * 1024 * 1024; // 200 MiB
 /// Default per-request timeout. Long enough for the largest uploads on
 /// the 1 vCPU droplet; can be overridden via `REQUEST_TIMEOUT_SECS`.
 pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 120;
+/// Default `Secure` cookie flag for the browser session cookie.
+/// True in production (set on HTTPS-only deployments behind nginx-TLS);
+/// override to `false` for local plain-HTTP development.
+pub const DEFAULT_SECURE_COOKIES: bool = true;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -22,6 +26,7 @@ pub struct Config {
     pub app_files_dir: PathBuf,
     pub max_body_bytes: usize,
     pub request_timeout_secs: u64,
+    pub secure_cookies: bool,
 }
 
 impl Config {
@@ -49,6 +54,10 @@ impl Config {
             .map(|s| s.parse::<u64>().context("parse REQUEST_TIMEOUT_SECS"))
             .transpose()?
             .unwrap_or(DEFAULT_REQUEST_TIMEOUT_SECS);
+        let secure_cookies = env::var("SECURE_COOKIES")
+            .ok()
+            .map(|s| matches!(s.as_str(), "1" | "true" | "TRUE" | "yes"))
+            .unwrap_or(DEFAULT_SECURE_COOKIES);
 
         Ok(Self {
             bind_addr: env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string()),
@@ -62,6 +71,7 @@ impl Config {
                 .unwrap_or_else(|_| PathBuf::from("/var/lib/outpost/files")),
             max_body_bytes,
             request_timeout_secs,
+            secure_cookies,
         })
     }
 
@@ -75,6 +85,9 @@ impl Config {
             app_files_dir: std::env::temp_dir().join("outpost-test"),
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
             request_timeout_secs: DEFAULT_REQUEST_TIMEOUT_SECS,
+            // Tests run over plain HTTP — disable Secure so the browser-
+            // simulating helpers can carry the cookie back.
+            secure_cookies: false,
         }
     }
 }

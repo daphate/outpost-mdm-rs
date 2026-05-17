@@ -4,7 +4,36 @@ Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https:
 
 ## [Unreleased]
 
-_Nothing yet — open a PR!_
+### Phase 15 — HTMX/Askama admin UI (sign-in + dashboard + devices)
+
+**Added**
+- Browser-facing routes alongside the JSON API:
+  - `GET /` → 303 to `/dashboard` (cookie auth resolves)
+  - `GET /login` — rendered sign-in form (Tailwind via CDN, HTMX 2.0.4)
+  - `POST /login` — verifies credentials, issues HS512 JWT, sets `outpost_session` cookie (HttpOnly + SameSite=Lax + Secure-when-prod), 303 → `/dashboard`
+  - `GET /logout` — clears cookie, 303 → `/login`
+  - `GET /dashboard` — fleet stats overview (7 metric cards: devices total / online / enrolled, applications, configurations, push pending, push 24h)
+  - `GET /devices` — devices table with online/offline indicator, battery %, app version, last-seen timestamp
+- `WebUser` axum extractor — cookie-based; rejection is `Redirect::to("/login")` instead of JSON 401
+- `auth_extract::extract_token` — shared Bearer-or-cookie token reader
+- `AuthUser` (API extractor) now accepts the same cookie session as a fallback — admin can drive `/api/v1/*` from a browser dev console with the cookie that the HTMX UI already set
+- `Config::secure_cookies` (env `SECURE_COOKIES`, default `true`; tests default `false`)
+- Askama 0.13 added as a workspace dep
+- 5 Askama templates under `crates/outpost-server/templates/`: `base.html`, `_nav.html`, `login.html`, `dashboard.html`, `devices.html`
+- 8 new integration tests in `tests/web.rs`:
+  - `/login` GET renders HTML with form
+  - `/dashboard` without cookie → 303 to `/login`
+  - `/` → redirect
+  - Full browser flow: POST /login → 303 + Set-Cookie → GET /dashboard with cookie → 200 with stats
+  - Wrong password → 200 with error banner + no cookie set
+  - `/logout` → Set-Cookie with `Max-Age=0`
+  - `/devices` after login shows the newly-created device in the table
+  - The session cookie issued by the UI also works for `/api/v1/auth/me` (cookie fallback in the API extractor)
+
+**Stats**
+- Test count: **104 passing, 0 failing** (was 96 at v0.1.0 + 8 web tests)
+
+## [0.1.0] — 2026-05-17
 
 ## [0.1.0] — 2026-05-17
 

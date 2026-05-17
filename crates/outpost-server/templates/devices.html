@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}Devices{% endblock %}
+
+{% block body %}
+{% include "_nav.html" %}
+
+<main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
+  <div class="flex items-center justify-between">
+    <h2 class="text-2xl font-bold">Devices</h2>
+    <span class="text-sm text-slate-500">{{ total }} total</span>
+  </div>
+
+  <div class="bg-white rounded-lg shadow-sm overflow-hidden">
+    <table class="min-w-full divide-y divide-slate-200">
+      <thead class="bg-slate-50">
+        <tr class="text-xs uppercase tracking-wide text-slate-500 text-left">
+          <th class="px-4 py-3">Serial</th>
+          <th class="px-4 py-3">Name</th>
+          <th class="px-4 py-3">Status</th>
+          <th class="px-4 py-3">Battery</th>
+          <th class="px-4 py-3">App version</th>
+          <th class="px-4 py-3">Last seen</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-100">
+        {% for d in devices %}
+        <tr class="hover:bg-slate-50">
+          <td class="px-4 py-3 font-mono text-sm">{{ d.serial }}</td>
+          <td class="px-4 py-3">{{ d.display_name }}</td>
+          <td class="px-4 py-3">
+            {% if d.is_online %}
+              <span class="inline-flex items-center text-emerald-700 text-sm">
+                <span class="w-2 h-2 mr-1.5 rounded-full bg-emerald-500"></span>online
+              </span>
+            {% else %}
+              <span class="inline-flex items-center text-slate-400 text-sm">
+                <span class="w-2 h-2 mr-1.5 rounded-full bg-slate-300"></span>offline
+              </span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3 text-sm">{{ d.battery }}</td>
+          <td class="px-4 py-3 text-sm">{{ d.app_version }}</td>
+          <td class="px-4 py-3 text-sm text-slate-500">{{ d.last_seen }}</td>
+        </tr>
+        {% endfor %}
+        {% if devices.is_empty() %}
+        <tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">No devices enrolled yet.</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</main>
+{% endblock %}
