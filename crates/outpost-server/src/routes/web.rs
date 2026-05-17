@@ -35,6 +35,7 @@ pub fn router() -> Router<AppState> {
             "/devices/{id}/enroll",
             get(device_enroll_view).post(device_enroll_post),
         )
+        .route("/devices/{id}/enroll/file", get(device_enroll_download))
         .route(
             "/devices/{id}/push",
             get(device_push_view).post(device_push_post),
@@ -1810,6 +1811,69 @@ async fn device_enroll_post(
     Ok(render_device_enroll(&user, &state, id, &serial, Some(secret), None).await)
 }
 
+/// `GET /devices/{id}/enroll/file` — download enrollment payload as
+/// `enrollment.json`. Same JSON object as the QR-encoded payload; intended for
+/// offline flash-drive bootstrap (oператор кладёт файл на флешку → переносит
+/// на /sdcard/Outpost/enrollment.json → app at start zachisляется без QR).
+///
+/// 404 if there's no active secret — admin must regenerate first via POST.
+async fn device_enroll_download(
+    user: WebUser,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Response, ApiError> {
+    let row: Option<(String, Option<String>)> = sqlx::query_as(
+        "SELECT serial, enrollment_secret FROM devices WHERE id = ? AND customer_id = ?",
+    )
+    .bind(id)
+    .bind(user.customer_id)
+    .fetch_optional(&state.db)
+    .await?;
+    let (serial, secret) = row.ok_or(ApiError::NotFound)?;
+    let Some(secret) = secret else {
+        return Err(ApiError::NotFound);
+    };
+    let server_url: String = sqlx::query_scalar(
+        "SELECT json_extract(value_json, '$') FROM settings WHERE key = 'server.enrollment_base_url'",
+    )
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten()
+    .flatten()
+    .unwrap_or_else(|| "https://mdm.secondf8n.tech".to_string());
+    let payload = enrollment_payload_json(&server_url, user.customer_id, id, &secret);
+    let body = serde_json::to_string_pretty(&payload).unwrap_or_default();
+    // Make the filename device-distinct so an admin downloading multiple
+    // payloads doesn't get five copies of `enrollment.json` overwriting one another.
+    let fname = format!("outpost-enrollment-{}.json", sanitize_filename(&serial));
+    let mut resp = (
+        axum::http::StatusCode::OK,
+        [
+            (axum::http::header::CONTENT_TYPE, "application/json"),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                &format!("attachment; filename=\"{fname}\""),
+            ),
+        ],
+        body,
+    )
+        .into_response();
+    resp.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    Ok(resp)
+}
+
+/// Strip path-traversal-sensitive characters from a serial before using it
+/// in the Content-Disposition filename. Keeps alphanum + dash + underscore.
+fn sanitize_filename(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect()
+}
+
 async fn render_device_enroll(
     user: &WebUser,
     state: &AppState,
@@ -1829,14 +1893,13 @@ async fn render_device_enroll(
     .unwrap_or_else(|| "https://mdm.secondf8n.tech".to_string());
 
     let (payload_json, qr_svg) = if let Some(ref s) = secret {
-        let payload = serde_json::json!({
-            "server_url": server_url,
-            "customer_id": user.customer_id,
-            "device_id": device_id,
-            "enrollment_secret": s,
-        });
+        let payload = enrollment_payload_json(&server_url, user.customer_id, device_id, s);
         let payload_text = serde_json::to_string_pretty(&payload).unwrap_or_default();
-        let svg = qrcode_svg(&payload.to_string());
+        // v0.10: QR encodes `outpost-mdm://v1/<base64url(json)>` so the Outpost-Android
+        // client can branch by URI-scheme (legacy RBAC scheme is `outpost-enroll://v1/...`,
+        // we never want them confused). Plain JSON остаётся в payload_text для
+        // manual-paste fallback на случай если камера капризничает.
+        let svg = qrcode_svg(&encode_enrollment_uri(&payload));
         (payload_text, svg)
     } else {
         (String::new(), String::new())
@@ -1864,6 +1927,40 @@ fn qrcode_svg(payload: &str) -> String {
             .build(),
         Err(e) => format!("<p class='text-red-600'>QR generation failed: {e}</p>"),
     }
+}
+
+/// Build the canonical enrollment payload JSON object. Schema is shared by:
+///   - QR-code (wrapped in `outpost-mdm://v1/<base64url>` — see [`encode_enrollment_uri`])
+///   - Manual-paste fallback (plain JSON, pretty-printed in the UI)
+///   - `enrollment.json` download (offline flash-drive bootstrap)
+///
+/// Outpost-Android client parses this via `MdmEnrollmentTicket.parse` and
+/// POSTs `device_id` + `enrollment_secret` to `/api/v1/enroll` to receive
+/// the long-lived `device_token`.
+fn enrollment_payload_json(
+    server_url: &str,
+    customer_id: i64,
+    device_id: i64,
+    secret: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "server_url": server_url,
+        "customer_id": customer_id,
+        "device_id": device_id,
+        "enrollment_secret": secret,
+    })
+}
+
+/// Encode the enrollment payload as `outpost-mdm://v1/<base64url(JSON)>`.
+///
+/// The URI-scheme prefix is what lets the client distinguish an MDM ticket
+/// from the legacy RBAC `outpost-enroll://v1/...` scheme — they share the
+/// QR-scanner UI but route to different enrollment HTTP endpoints.
+fn encode_enrollment_uri(payload: &serde_json::Value) -> String {
+    use base64::Engine;
+    let json = payload.to_string(); // compact, single-line
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json.as_bytes());
+    format!("outpost-mdm://v1/{b64}")
 }
 
 #[derive(Template)]
