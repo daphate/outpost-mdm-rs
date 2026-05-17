@@ -4,6 +4,55 @@ Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https:
 
 ## [Unreleased]
 
+### Phase 24 — Русский язык по умолчанию + i18n framework
+
+**Why:** Outpost MDM admin'ы — операторы парка устройств, которые
+работают в русскоязычной среде. Английский UI был техдолгом первой
+итерации.
+
+**i18n framework (`src/i18n.rs`)**
+- `Locale` enum: `Ru` (default) + `En`.
+- `Strings` struct — single-file canonical bundle of ~250 keys with
+  Russian and English translations side-by-side. Compile-time check:
+  adding a key forces every locale to provide a translation.
+- `from_request()` resolves locale from `outpost_lang` cookie → falls
+  back to `Accept-Language` header → falls back to `Locale::DEFAULT`
+  (Russian).
+- `WebUser.locale` populated at extract time; available to handlers via
+  `user.s()` for future per-template wiring.
+
+**Translation policy (per user, 2026-05-17)**
+- **Default: Russian.** Maximally Russian UI; technical terms left in
+  English (`API`, `OTLP`, `TOTP`, `JSON`, `SHA-256`, `JWT`, `Bearer`,
+  package names, HTTP method names).
+- 30 admin-UI templates rewritten with hardcoded Russian text in v0.8.
+- Backend-emitted error strings (login failures, form validations,
+  password change errors, signup errors) localized to Russian.
+
+**Language switcher (`/settings`)**
+- POST `/settings/language` writes `outpost_lang` cookie (1-year TTL).
+- Settings page has a `<select>` for Русский / English with a clear
+  banner: English support is partial in v0.8 — full template
+  parameterization (each Template struct gets `s: &'static Strings`,
+  every literal becomes `{{ s.X }}`) lands in v0.9.
+
+**Honest scope statement**
+- v0.8 ships **Russian-only UI** with the i18n module fully wired
+  (cookie parsing, language switcher, both locale bundles populated).
+- Future work: replace hardcoded Russian literals in templates with
+  `{{ s.X }}` references so the English bundle becomes active when the
+  switcher is set to English. This is a 30-template × 49-render-call
+  refactor that we deliberately deferred for v0.9 to ship Russian fast.
+
+**Tests**
+- All 161 existing tests updated to match Russian UI strings.
+- TOTP unit tests + render assertions unchanged from v0.7.
+- Suite: 161 passing, 0 failed.
+
+**Deploy**
+- Compiled in WSL Ubuntu 24.04 → scp'd to `mdm.secondf8n.tech` as
+  preview-24. All 15 admin pages render in Russian on first paint.
+
 ### Phase 23 — Multi-tenant + 2FA + Signup
 
 The three features that v0.5's status table listed as "dropped per plan"

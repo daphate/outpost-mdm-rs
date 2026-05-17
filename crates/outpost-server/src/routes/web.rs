@@ -4,6 +4,7 @@ use crate::auth as crypto;
 use crate::auth_extract::extract_token;
 use crate::client_ip::ClientIp;
 use crate::error::ApiError;
+use crate::i18n;
 use crate::session::{self, KIND_USER};
 use crate::state::AppState;
 use askama::Template;
@@ -95,6 +96,7 @@ pub fn router() -> Router<AppState> {
         .route("/files/{id}/delete", post(files_delete))
         // Server-wide settings
         .route("/settings", get(settings_page).post(settings_save))
+        .route("/settings/language", post(settings_language))
         // Self-profile (email, etc)
         .route("/profile", get(profile_view).post(profile_save))
         // Telemetry — fleet overview, per-device drill-down, per-device log stream
@@ -149,6 +151,16 @@ pub struct WebUser {
     /// once at extract time so handlers can short-circuit cross-tenant
     /// checks without a second DB round-trip.
     pub is_super_admin: bool,
+    /// UI locale resolved from the `outpost_lang` cookie / Accept-Language
+    /// header. Russian by default (per the Outpost deployment audience).
+    pub locale: crate::i18n::Locale,
+}
+
+impl WebUser {
+    /// Translated strings for this user's current locale.
+    pub fn s(&self) -> &'static crate::i18n::Strings {
+        self.locale.strings()
+    }
 }
 
 impl WebUser {
@@ -222,6 +234,7 @@ impl FromRequestParts<AppState> for WebUser {
             }
         }
 
+        let locale = crate::i18n::from_request(parts);
         Ok(WebUser {
             id: s.subject_id,
             customer_id: active_customer_id,
@@ -229,6 +242,7 @@ impl FromRequestParts<AppState> for WebUser {
             role_id: s.role_id,
             login: s.login,
             is_super_admin,
+            locale,
         })
     }
 }
@@ -276,7 +290,7 @@ async fn login_submit(
     if !state.login_limiter.try_take(ip) {
         tracing::warn!(%ip, login = %form.login, "web login rate limit exceeded");
         return render(LoginTemplate {
-            error: Some("Too many login attempts. Try again in a moment.".into()),
+            error: Some("Слишком много попыток входа. Попробуйте через минуту.".into()),
         });
     }
     #[derive(sqlx::FromRow)]
@@ -300,7 +314,7 @@ async fn login_submit(
         Err(e) => {
             tracing::error!(error = %e, "login DB error");
             return render(LoginTemplate {
-                error: Some("Internal error. Please try again.".into()),
+                error: Some("Внутренняя ошибка. Попробуйте снова.".into()),
             });
         }
     };
@@ -314,22 +328,22 @@ async fn login_submit(
     }) = row
     else {
         return render(LoginTemplate {
-            error: Some("Invalid login or password.".into()),
+            error: Some("Неверный логин или пароль.".into()),
         });
     };
     if is_active == 0 {
         return render(LoginTemplate {
-            error: Some("This account is disabled.".into()),
+            error: Some("Учётная запись отключена.".into()),
         });
     }
     let Some(phc) = password_hash else {
         return render(LoginTemplate {
-            error: Some("Password not yet initialised — contact administrator.".into()),
+            error: Some("Пароль не задан — обратитесь к администратору.".into()),
         });
     };
     if !crypto::verify_password(&form.password, &phc).unwrap_or(false) {
         return render(LoginTemplate {
-            error: Some("Invalid login or password.".into()),
+            error: Some("Неверный логин или пароль.".into()),
         });
     }
 
@@ -351,7 +365,7 @@ async fn login_submit(
             Ok(t) => t,
             Err(_) => {
                 return render(LoginTemplate {
-                    error: Some("Could not issue session.".into()),
+                    error: Some("Не удалось создать сессию.".into()),
                 });
             }
         };
@@ -374,7 +388,7 @@ async fn login_submit(
         Ok(t) => t,
         Err(_) => {
             return render(LoginTemplate {
-                error: Some("Could not issue session.".into()),
+                error: Some("Не удалось создать сессию.".into()),
             });
         }
     };
@@ -605,7 +619,7 @@ async fn devices_create(
 ) -> Result<Response, Response> {
     let serial = req.serial.trim();
     if serial.is_empty() {
-        return render_devices(&user, &state, None, Some("Serial is required".into()))
+        return render_devices(&user, &state, None, Some("Серийный номер обязателен".into()))
             .await
             .map_err(|e| e.into_response());
     }
@@ -734,7 +748,7 @@ async fn groups_create(
 ) -> Result<Response, Response> {
     let name = req.name.trim();
     if name.is_empty() {
-        return render_groups(&user, &state, None, Some("Name is required".into()))
+        return render_groups(&user, &state, None, Some("Название обязательно".into()))
             .await
             .map_err(|e| e.into_response());
     }
@@ -1139,7 +1153,7 @@ async fn configurations_create(
 ) -> Result<Response, Response> {
     let name = req.name.trim();
     if name.is_empty() {
-        return render_configs(&user, &state, None, Some("Name is required".into()))
+        return render_configs(&user, &state, None, Some("Название обязательно".into()))
             .await
             .map_err(|e| e.into_response());
     }
@@ -1505,7 +1519,7 @@ async fn users_create(
 ) -> Result<Response, Response> {
     let login = req.login.trim();
     if login.is_empty() {
-        return render_users(&user, &state, None, Some("Login is required".into()))
+        return render_users(&user, &state, None, Some("Логин обязателен".into()))
             .await
             .map_err(|e| e.into_response());
     }
@@ -1514,7 +1528,7 @@ async fn users_create(
             &user,
             &state,
             None,
-            Some("Password must be at least 8 characters".into()),
+            Some("Пароль должен быть не короче 8 символов".into()),
         )
         .await
         .map_err(|e| e.into_response());
@@ -2027,10 +2041,10 @@ async fn me_password_post(
     };
 
     if req.new_password.len() < 8 {
-        return Ok(render_err("New password must be at least 8 characters".into()).await);
+        return Ok(render_err("Новый пароль должен быть не короче 8 символов".into()).await);
     }
     if req.new_password != req.confirm_password {
-        return Ok(render_err("New password and confirmation do not match".into()).await);
+        return Ok(render_err("Новый пароль и подтверждение не совпадают".into()).await);
     }
     // Verify current
     let stored_hash: Option<String> =
@@ -2040,10 +2054,10 @@ async fn me_password_post(
             .await?
             .flatten();
     let Some(hash) = stored_hash else {
-        return Ok(render_err("Cannot verify current password (no hash on record)".into()).await);
+        return Ok(render_err("Не удалось проверить текущий пароль (нет хэша в БД)".into()).await);
     };
     if !crypto::verify_password(&req.current_password, &hash).unwrap_or(false) {
-        return Ok(render_err("Current password is incorrect".into()).await);
+        return Ok(render_err("Текущий пароль введён неверно".into()).await);
     }
     let new_phc = match crypto::hash_password(&req.new_password) {
         Ok(h) => h,
@@ -2361,7 +2375,7 @@ async fn group_edit_post(
 ) -> Result<Response, Response> {
     let name = req.name.trim();
     if name.is_empty() {
-        return render_group_edit(&user, &state, id, None, Some("Name is required".into()))
+        return render_group_edit(&user, &state, id, None, Some("Название обязательно".into()))
             .await
             .map_err(|e| e.into_response());
     }
@@ -2567,7 +2581,7 @@ async fn application_edit_post(
 ) -> Result<Response, Response> {
     let kind = req.kind.trim();
     if kind.is_empty() {
-        return render_app_edit(&user, &state, id, None, Some("Kind is required".into()))
+        return render_app_edit(&user, &state, id, None, Some("Тип обязателен".into()))
             .await
             .map_err(|e| e.into_response());
     }
@@ -3005,7 +3019,7 @@ async fn configuration_edit_post(
 ) -> Result<Response, Response> {
     let name = req.name.trim();
     if name.is_empty() {
-        return render_config_edit(&user, &state, id, None, Some("Name is required".into()))
+        return render_config_edit(&user, &state, id, None, Some("Название обязательно".into()))
             .await
             .map_err(|e| e.into_response());
     }
@@ -3454,6 +3468,7 @@ struct SettingsTemplate {
     raw_entries: Vec<SettingEntry>,
     flash: Option<String>,
     error: Option<String>,
+    current_locale: &'static str,
 }
 
 struct SettingEntry {
@@ -3530,6 +3545,7 @@ async fn render_settings(
         raw_entries,
         flash,
         error,
+        current_locale: user.locale.code(),
     });
     clear_flash_cookie(&mut resp);
     Ok(resp)
@@ -4387,7 +4403,7 @@ async fn customers_create(
     user.require_super_admin()?;
     let name = req.name.trim();
     if name.is_empty() {
-        return render_customers(&user, &state, None, Some("Name is required".into()))
+        return render_customers(&user, &state, None, Some("Название обязательно".into()))
             .await
             .map_err(|e| e.into_response());
     }
@@ -4531,7 +4547,7 @@ async fn customer_edit_post(
     user.require_super_admin()?;
     let name = req.name.trim();
     if name.is_empty() {
-        return render_customer_edit(&user, &state, id, None, Some("Name is required".into()))
+        return render_customer_edit(&user, &state, id, None, Some("Название обязательно".into()))
             .await
             .map_err(|e| e.into_response());
     }
@@ -4963,7 +4979,7 @@ async fn login_2fa_submit(
         Err(_) => {
             return render(Login2faTemplate {
                 pending_token: pending.0.id_hash.clone(),
-                error: Some("Could not issue session.".into()),
+                error: Some("Не удалось создать сессию.".into()),
             });
         }
     };
@@ -5187,4 +5203,33 @@ async fn signup_is_enabled(state: &AppState) -> bool {
     .ok()
     .flatten();
     matches!(row.as_deref().map(str::trim), Some("true") | Some("\"true\""))
+}
+
+// ----- Phase 24 — i18n language switcher ----------------------------------
+
+#[derive(Debug, Deserialize)]
+struct LanguageForm {
+    locale: String,
+}
+
+/// POST /settings/language — set the `outpost_lang` cookie so subsequent
+/// requests resolve the chosen UI locale.
+async fn settings_language(
+    user: WebUser,
+    State(state): State<AppState>,
+    Form(req): Form<LanguageForm>,
+) -> Response {
+    let _ = user;
+    let chosen = i18n::parse_locale(&req.locale).unwrap_or(i18n::Locale::DEFAULT);
+    let mut resp = Redirect::to("/settings").into_response();
+    let cookie = format!(
+        "outpost_lang={}; Path=/; SameSite=Lax{}; Max-Age=31536000",
+        chosen.code(),
+        if state.secure_cookies { "; Secure" } else { "" },
+    );
+    if let Ok(v) = HeaderValue::from_str(&cookie) {
+        resp.headers_mut().append(header::SET_COOKIE, v);
+    }
+    set_flash_cookie(&mut resp, &format!("Язык: {}", chosen.label()));
+    resp
 }

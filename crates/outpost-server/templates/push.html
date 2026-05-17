@@ -1,16 +1,16 @@
 {% extends "base.html" %}
 
-{% block title %}Push messages{% endblock %}
+{% block title %}Push-команды{% endblock %}
 
 {% block body %}
 {% include "_nav.html" %}
 
 <main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
   <div class="flex items-center justify-between">
-    <h2 class="text-2xl font-bold">Push messages</h2>
+    <h2 class="text-2xl font-bold">Push-команды</h2>
     <div class="text-sm text-slate-500 space-x-4">
-      <span>Pending: <strong class="text-amber-600">{{ pending }}</strong></span>
-      <span>Sent (24h): <strong>{{ sent_24h }}</strong></span>
+      <span>В очереди: <strong class="text-amber-600">{{ pending }}</strong></span>
+      <span>Отправлено за 24 ч: <strong>{{ sent_24h }}</strong></span>
     </div>
   </div>
 
@@ -19,18 +19,18 @@
   {% endif %}
 
   <details class="bg-white rounded-lg shadow-sm p-4" {% if create_error.is_some() %}open{% endif %}>
-    <summary class="cursor-pointer font-medium text-slate-700">+ Schedule push command</summary>
+    <summary class="cursor-pointer font-medium text-slate-700">+ Запланировать push-команду</summary>
     <form method="POST" action="/push/new" class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
       <label class="block">
-        <span class="text-xs uppercase tracking-wide text-slate-500">Target</span>
+        <span class="text-xs uppercase tracking-wide text-slate-500">Цель</span>
         <select name="target" required class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
-          <option value="">— select —</option>
-          {% for d in target_devices %}<option value="device:{{ d.id }}">device · {{ d.serial }}</option>{% endfor %}
-          {% for g in target_groups %}<option value="group:{{ g.id }}">group · {{ g.name }}</option>{% endfor %}
+          <option value="">— выберите —</option>
+          {% for d in target_devices %}<option value="device:{{ d.id }}">устройство · {{ d.serial }}</option>{% endfor %}
+          {% for g in target_groups %}<option value="group:{{ g.id }}">группа · {{ g.name }}</option>{% endfor %}
         </select>
       </label>
       <label class="block">
-        <span class="text-xs uppercase tracking-wide text-slate-500">Command</span>
+        <span class="text-xs uppercase tracking-wide text-slate-500">Команда</span>
         <select name="command" required class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm font-mono">
           <option value="reboot">reboot</option>
           <option value="install-apk">install-apk</option>
@@ -42,16 +42,16 @@
         </select>
       </label>
       <label class="block">
-        <span class="text-xs uppercase tracking-wide text-slate-500">Run at (UTC, optional)</span>
+        <span class="text-xs uppercase tracking-wide text-slate-500">Запуск (UTC, опционально)</span>
         <input name="due_at" type="datetime-local" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
       </label>
       <label class="block md:col-span-3">
-        <span class="text-xs uppercase tracking-wide text-slate-500">Payload JSON</span>
+        <span class="text-xs uppercase tracking-wide text-slate-500">JSON-полезная нагрузка</span>
         <textarea name="payload_json" rows="2" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm font-mono">{}</textarea>
       </label>
       <div class="md:col-span-3 flex items-center justify-between">
-        <p class="text-xs text-slate-500">Empty <code>due_at</code> = run on the next scheduler tick (≤60 s).</p>
-        <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded">Schedule</button>
+        <p class="text-xs text-slate-500">Пустое поле <code>due_at</code> — на следующем такте планировщика (≤60 с).</p>
+        <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded">Запланировать</button>
       </div>
       {% if let Some(e) = create_error %}
         <p class="md:col-span-3 text-red-600 text-sm">{{ e }}</p>
@@ -63,11 +63,11 @@
     <table class="min-w-full divide-y divide-slate-200">
       <thead class="bg-slate-50">
         <tr class="text-xs uppercase tracking-wide text-slate-500 text-left">
-          <th class="px-4 py-3">When</th>
-          <th class="px-4 py-3">Device</th>
-          <th class="px-4 py-3">Command</th>
-          <th class="px-4 py-3">Status</th>
-          <th class="px-4 py-3">Delivered</th>
+          <th class="px-4 py-3">Когда</th>
+          <th class="px-4 py-3">Устройство</th>
+          <th class="px-4 py-3">Команда</th>
+          <th class="px-4 py-3">Статус</th>
+          <th class="px-4 py-3">Доставлено</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-slate-100">
@@ -78,13 +78,13 @@
           <td class="px-4 py-3 font-mono text-xs">{{ m.command }}</td>
           <td class="px-4 py-3">
             {% if m.status == "pending" %}
-              <span class="inline-block px-2 py-0.5 text-xs rounded bg-amber-100 text-amber-700">pending</span>
+              <span class="inline-block px-2 py-0.5 text-xs rounded bg-amber-100 text-amber-700">ожидает</span>
             {% else if m.status == "sent" %}
-              <span class="inline-block px-2 py-0.5 text-xs rounded bg-sky-100 text-sky-700">sent</span>
+              <span class="inline-block px-2 py-0.5 text-xs rounded bg-sky-100 text-sky-700">отправлен</span>
             {% else if m.status == "delivered" %}
-              <span class="inline-block px-2 py-0.5 text-xs rounded bg-emerald-100 text-emerald-700">delivered</span>
+              <span class="inline-block px-2 py-0.5 text-xs rounded bg-emerald-100 text-emerald-700">доставлен</span>
             {% else if m.status == "failed" %}
-              <span class="inline-block px-2 py-0.5 text-xs rounded bg-red-100 text-red-700">failed</span>
+              <span class="inline-block px-2 py-0.5 text-xs rounded bg-red-100 text-red-700">ошибка</span>
             {% else %}
               <span class="inline-block px-2 py-0.5 text-xs rounded bg-slate-100 text-slate-700">{{ m.status }}</span>
             {% endif %}
@@ -93,7 +93,7 @@
         </tr>
         {% endfor %}
         {% if messages.is_empty() %}
-        <tr><td colspan="5" class="px-4 py-8 text-center text-slate-400">No push messages.</td></tr>
+        <tr><td colspan="5" class="px-4 py-8 text-center text-slate-400">Push-команд ещё нет.</td></tr>
         {% endif %}
       </tbody>
     </table>

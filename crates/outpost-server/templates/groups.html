@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 
-{% block title %}Groups{% endblock %}
+{% block title %}Группы{% endblock %}
 
 {% block body %}
 {% include "_nav.html" %}
 
 <main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
   <div class="flex items-center justify-between">
-    <h2 class="text-2xl font-bold">Groups</h2>
-    <span class="text-sm text-slate-500">{{ total }} total</span>
+    <h2 class="text-2xl font-bold">Группы устройств</h2>
+    <span class="text-sm text-slate-500">всего: {{ total }}</span>
   </div>
 
   {% if let Some(msg) = flash %}
@@ -16,18 +16,18 @@
   {% endif %}
 
   <details class="bg-white rounded-lg shadow-sm p-4" {% if create_error.is_some() %}open{% endif %}>
-    <summary class="cursor-pointer font-medium text-slate-700">+ New group</summary>
+    <summary class="cursor-pointer font-medium text-slate-700">+ Новая группа</summary>
     <form method="POST" action="/groups/new" class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
       <label class="block">
-        <span class="text-xs uppercase tracking-wide text-slate-500">Name</span>
+        <span class="text-xs uppercase tracking-wide text-slate-500">Название</span>
         <input name="name" required class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
       </label>
       <label class="block md:col-span-2">
-        <span class="text-xs uppercase tracking-wide text-slate-500">Description</span>
+        <span class="text-xs uppercase tracking-wide text-slate-500">Описание</span>
         <input name="description" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
       </label>
       <div class="md:col-span-3">
-        <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded">Create group</button>
+        <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded">Создать группу</button>
       </div>
       {% if let Some(e) = create_error %}
         <p class="md:col-span-3 text-red-600 text-sm">{{ e }}</p>
@@ -39,11 +39,11 @@
     <table class="min-w-full divide-y divide-slate-200">
       <thead class="bg-slate-50">
         <tr class="text-xs uppercase tracking-wide text-slate-500 text-left">
-          <th class="px-4 py-3">Name</th>
-          <th class="px-4 py-3">Description</th>
-          <th class="px-4 py-3">Members</th>
-          <th class="px-4 py-3">Created</th>
-          <th class="px-4 py-3 text-right">Actions</th>
+          <th class="px-4 py-3">Название</th>
+          <th class="px-4 py-3">Описание</th>
+          <th class="px-4 py-3">Устройств</th>
+          <th class="px-4 py-3">Создана</th>
+          <th class="px-4 py-3 text-right">Действия</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-slate-100">
@@ -54,12 +54,12 @@
           <td class="px-4 py-3 text-sm">{{ g.member_count }}</td>
           <td class="px-4 py-3 text-sm text-slate-500">{{ g.created_at }}</td>
           <td class="px-4 py-3 text-right text-sm">
-            <a href="/groups/{{ g.id }}/edit" class="text-slate-600 hover:text-slate-900">Edit</a>
+            <a href="/groups/{{ g.id }}/edit" class="text-slate-600 hover:text-slate-900">Изменить</a>
           </td>
         </tr>
         {% endfor %}
         {% if groups.is_empty() %}
-        <tr><td colspan="5" class="px-4 py-8 text-center text-slate-400">No groups yet.</td></tr>
+        <tr><td colspan="5" class="px-4 py-8 text-center text-slate-400">Групп ещё нет.</td></tr>
         {% endif %}
       </tbody>
     </table>

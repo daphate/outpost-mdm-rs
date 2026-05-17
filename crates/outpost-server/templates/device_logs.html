@@ -1,20 +1,20 @@
 {% extends "base.html" %}
 
-{% block title %}Logs — {{ serial }}{% endblock %}
+{% block title %}Логи — {{ serial }}{% endblock %}
 
 {% block body %}
 {% include "_nav.html" %}
 
 <main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
   <div>
-    <a href="/devices/{{ device_id }}/telemetry" class="text-sm text-slate-500 hover:text-slate-900">← telemetry</a>
-    <h2 class="text-2xl font-bold mt-2">Log stream</h2>
-    <p class="text-sm text-slate-500">Serial <code class="font-mono">{{ serial }}</code> · ID {{ device_id }} · {{ total }} events match current filter</p>
+    <a href="/devices/{{ device_id }}/telemetry" class="text-sm text-slate-500 hover:text-slate-900">← телеметрия</a>
+    <h2 class="text-2xl font-bold mt-2">Поток логов</h2>
+    <p class="text-sm text-slate-500">Серийный № <code class="font-mono">{{ serial }}</code> · ID {{ device_id }} · {{ total }} событий под текущий фильтр</p>
   </div>
 
   <form method="GET" action="/devices/{{ device_id }}/logs" class="bg-white rounded-lg shadow-sm p-4 grid grid-cols-1 md:grid-cols-5 gap-3">
     <label class="block">
-      <span class="text-xs uppercase tracking-wide text-slate-500">Min severity</span>
+      <span class="text-xs uppercase tracking-wide text-slate-500">Минимальный уровень</span>
       <select name="min_severity" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
         <option value="1"  {% if min_severity == 1 %}selected{% endif %}>TRACE</option>
         <option value="5"  {% if min_severity == 5 %}selected{% endif %}>DEBUG</option>
@@ -25,25 +25,25 @@
       </select>
     </label>
     <label class="block">
-      <span class="text-xs uppercase tracking-wide text-slate-500">Substring match (body)</span>
+      <span class="text-xs uppercase tracking-wide text-slate-500">Подстрока в сообщении</span>
       <input name="q" value="{{ q }}" placeholder="" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm font-mono">
     </label>
     <label class="block">
-      <span class="text-xs uppercase tracking-wide text-slate-500">Since</span>
+      <span class="text-xs uppercase tracking-wide text-slate-500">За период</span>
       <select name="since" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
-        <option value="1h"  {% if since == "1h" %}selected{% endif %}>1 hour</option>
-        <option value="6h"  {% if since == "6h" %}selected{% endif %}>6 hours</option>
-        <option value="24h" {% if since == "24h" %}selected{% endif %}>24 hours</option>
-        <option value="7d"  {% if since == "7d" %}selected{% endif %}>7 days</option>
-        <option value="30d" {% if since == "30d" %}selected{% endif %}>30 days</option>
+        <option value="1h"  {% if since == "1h" %}selected{% endif %}>1 час</option>
+        <option value="6h"  {% if since == "6h" %}selected{% endif %}>6 часов</option>
+        <option value="24h" {% if since == "24h" %}selected{% endif %}>24 часа</option>
+        <option value="7d"  {% if since == "7d" %}selected{% endif %}>7 дней</option>
+        <option value="30d" {% if since == "30d" %}selected{% endif %}>30 дней</option>
       </select>
     </label>
     <label class="block">
-      <span class="text-xs uppercase tracking-wide text-slate-500">Limit</span>
+      <span class="text-xs uppercase tracking-wide text-slate-500">Лимит</span>
       <input name="limit" type="number" min="10" max="1000" value="{{ limit }}" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
     </label>
     <div class="flex items-end">
-      <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded w-full">Apply filter</button>
+      <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded w-full">Применить фильтр</button>
     </div>
   </form>
 
@@ -51,10 +51,10 @@
     <table class="min-w-full divide-y divide-slate-200">
       <thead class="bg-slate-50">
         <tr class="text-xs uppercase tracking-wide text-slate-500 text-left">
-          <th class="px-4 py-2 w-44">When</th>
-          <th class="px-4 py-2 w-24">Severity</th>
-          <th class="px-4 py-2">Body</th>
-          <th class="px-4 py-2">Attrs</th>
+          <th class="px-4 py-2 w-44">Когда</th>
+          <th class="px-4 py-2 w-24">Уровень</th>
+          <th class="px-4 py-2">Сообщение</th>
+          <th class="px-4 py-2">Атрибуты</th>
           <th class="px-4 py-2 w-32">Trace</th>
         </tr>
       </thead>
@@ -77,7 +77,7 @@
         </tr>
         {% endfor %}
         {% if logs.is_empty() %}
-        <tr><td colspan="5" class="px-4 py-6 text-center text-slate-400 text-sm">No logs match the current filter.</td></tr>
+        <tr><td colspan="5" class="px-4 py-6 text-center text-slate-400 text-sm">Под текущий фильтр логи отсутствуют.</td></tr>
         {% endif %}
       </tbody>
     </table>

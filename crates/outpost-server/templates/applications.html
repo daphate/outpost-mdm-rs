@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 
-{% block title %}Applications{% endblock %}
+{% block title %}Приложения{% endblock %}
 
 {% block body %}
 {% include "_nav.html" %}
 
 <main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
   <div class="flex items-center justify-between">
-    <h2 class="text-2xl font-bold">Applications</h2>
-    <span class="text-sm text-slate-500">{{ total }} total</span>
+    <h2 class="text-2xl font-bold">Приложения</h2>
+    <span class="text-sm text-slate-500">всего: {{ total }}</span>
   </div>
 
   {% if let Some(msg) = flash %}
@@ -16,18 +16,18 @@
   {% endif %}
 
   <details class="bg-white rounded-lg shadow-sm p-4" {% if create_error.is_some() %}open{% endif %}>
-    <summary class="cursor-pointer font-medium text-slate-700">+ Upload APK / asset</summary>
+    <summary class="cursor-pointer font-medium text-slate-700">+ Загрузить APK / актив</summary>
     <form method="POST" action="/applications/upload" enctype="multipart/form-data" class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
       <label class="block">
-        <span class="text-xs uppercase tracking-wide text-slate-500">Package name (Android)</span>
+        <span class="text-xs uppercase tracking-wide text-slate-500">Android package</span>
         <input name="package_name" required placeholder="ru.tacticalar.outpost" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm font-mono">
       </label>
       <label class="block">
-        <span class="text-xs uppercase tracking-wide text-slate-500">Display name</span>
+        <span class="text-xs uppercase tracking-wide text-slate-500">Отображаемое имя</span>
         <input name="display_name" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
       </label>
       <label class="block">
-        <span class="text-xs uppercase tracking-wide text-slate-500">Kind</span>
+        <span class="text-xs uppercase tracking-wide text-slate-500">Тип</span>
         <select name="kind" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
           <option value="apk" selected>apk</option>
           <option value="llm-model">llm-model</option>
@@ -40,20 +40,20 @@
         </select>
       </label>
       <label class="block">
-        <span class="text-xs uppercase tracking-wide text-slate-500">Version code (integer)</span>
+        <span class="text-xs uppercase tracking-wide text-slate-500">Код версии (целое)</span>
         <input name="version_code" type="number" required min="1" value="1" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
       </label>
       <label class="block">
-        <span class="text-xs uppercase tracking-wide text-slate-500">Version name</span>
+        <span class="text-xs uppercase tracking-wide text-slate-500">Имя версии</span>
         <input name="version_name" required placeholder="0.1.0" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
       </label>
       <label class="block">
-        <span class="text-xs uppercase tracking-wide text-slate-500">File</span>
+        <span class="text-xs uppercase tracking-wide text-slate-500">Файл</span>
         <input name="file" type="file" required class="mt-1 w-full text-sm">
       </label>
       <div class="md:col-span-2 flex items-center justify-between">
-        <p class="text-xs text-slate-500">Max file size: 200 MiB. SHA-256 is computed server-side.</p>
-        <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded">Upload</button>
+        <p class="text-xs text-slate-500">Максимальный размер: 200 МиБ. SHA-256 вычисляется на сервере.</p>
+        <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded">Загрузить</button>
       </div>
       {% if let Some(e) = create_error %}
         <p class="md:col-span-2 text-red-600 text-sm">{{ e }}</p>
@@ -66,11 +66,11 @@
       <thead class="bg-slate-50">
         <tr class="text-xs uppercase tracking-wide text-slate-500 text-left">
           <th class="px-4 py-3">Package</th>
-          <th class="px-4 py-3">Name</th>
-          <th class="px-4 py-3">Kind</th>
-          <th class="px-4 py-3">Versions</th>
-          <th class="px-4 py-3">Latest</th>
-          <th class="px-4 py-3 text-right">Actions</th>
+          <th class="px-4 py-3">Имя</th>
+          <th class="px-4 py-3">Тип</th>
+          <th class="px-4 py-3">Версий</th>
+          <th class="px-4 py-3">Последняя</th>
+          <th class="px-4 py-3 text-right">Действия</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-slate-100">
@@ -84,13 +84,13 @@
           <td class="px-4 py-3 text-sm">{{ a.version_count }}</td>
           <td class="px-4 py-3 text-sm">{{ a.latest_version }}</td>
           <td class="px-4 py-3 text-right text-sm space-x-3">
-            <a href="/applications/{{ a.id }}/versions" class="text-blue-600 hover:text-blue-800">Versions</a>
-            <a href="/applications/{{ a.id }}/edit" class="text-slate-600 hover:text-slate-900">Edit</a>
+            <a href="/applications/{{ a.id }}/versions" class="text-blue-600 hover:text-blue-800">Версии</a>
+            <a href="/applications/{{ a.id }}/edit" class="text-slate-600 hover:text-slate-900">Изменить</a>
           </td>
         </tr>
         {% endfor %}
         {% if apps.is_empty() %}
-        <tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">No applications uploaded yet.</td></tr>
+        <tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">Приложения ещё не загружены.</td></tr>
         {% endif %}
       </tbody>
     </table>

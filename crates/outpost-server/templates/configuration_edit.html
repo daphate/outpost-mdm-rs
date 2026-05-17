@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 
-{% block title %}Edit configuration {{ name }}{% endblock %}
+{% block title %}Изменить конфигурацию {{ name }}{% endblock %}
 
 {% block body %}
 {% include "_nav.html" %}
 
 <main class="max-w-4xl mx-auto px-4 py-6 space-y-6">
   <div>
-    <a href="/configurations" class="text-sm text-slate-500 hover:text-slate-900">← back to configurations</a>
-    <h2 class="text-2xl font-bold mt-2">Edit configuration</h2>
+    <a href="/configurations" class="text-sm text-slate-500 hover:text-slate-900">← к списку конфигураций</a>
+    <h2 class="text-2xl font-bold mt-2">Изменить конфигурацию</h2>
     <p class="text-sm text-slate-500">ID: {{ config_id }}</p>
   </div>
 
@@ -18,31 +18,31 @@
 
   <form method="POST" action="/configurations/{{ config_id }}/edit" class="bg-white rounded-lg shadow-sm p-4 grid grid-cols-1 md:grid-cols-2 gap-3">
     <label class="block">
-      <span class="text-xs uppercase tracking-wide text-slate-500">Name</span>
+      <span class="text-xs uppercase tracking-wide text-slate-500">Название</span>
       <input name="name" value="{{ name }}" required class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
     </label>
     <label class="block">
-      <span class="text-xs uppercase tracking-wide text-slate-500">Description</span>
+      <span class="text-xs uppercase tracking-wide text-slate-500">Описание</span>
       <input name="description" value="{{ description }}" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
     </label>
     <label class="block">
-      <span class="text-xs uppercase tracking-wide text-slate-500">Kiosk package</span>
+      <span class="text-xs uppercase tracking-wide text-slate-500">Kiosk-приложение</span>
       <input name="kiosk_package" value="{{ kiosk_package }}" placeholder="ru.tacticalar.outpost" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm font-mono">
     </label>
     <label class="block">
-      <span class="text-xs uppercase tracking-wide text-slate-500">Active</span>
+      <span class="text-xs uppercase tracking-wide text-slate-500">Активность</span>
       <select name="is_active" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
-        <option value="1" {% if is_active %}selected{% endif %}>active</option>
-        <option value="0" {% if !is_active %}selected{% endif %}>disabled</option>
+        <option value="1" {% if is_active %}selected{% endif %}>активна</option>
+        <option value="0" {% if !is_active %}selected{% endif %}>отключена</option>
       </select>
     </label>
     <label class="block md:col-span-2">
-      <span class="text-xs uppercase tracking-wide text-slate-500">Settings JSON</span>
+      <span class="text-xs uppercase tracking-wide text-slate-500">JSON-настройки</span>
       <textarea name="settings_json" rows="5" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm font-mono">{{ settings_json }}</textarea>
     </label>
     <div class="md:col-span-2 flex items-center justify-between pt-2">
-      <a href="/configurations" class="text-sm text-slate-500 hover:text-slate-900">Cancel</a>
-      <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded">Save</button>
+      <a href="/configurations" class="text-sm text-slate-500 hover:text-slate-900">Отмена</a>
+      <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded">Сохранить</button>
     </div>
     {% if let Some(e) = error %}
       <p class="md:col-span-2 text-red-600 text-sm">{{ e }}</p>
@@ -50,14 +50,14 @@
   </form>
 
   <section class="bg-white rounded-lg shadow-sm p-4 space-y-3">
-    <h3 class="font-medium">Applications assigned to this configuration</h3>
+    <h3 class="font-medium">Приложения, назначенные на эту конфигурацию</h3>
     <table class="min-w-full divide-y divide-slate-200">
       <thead class="bg-slate-50">
         <tr class="text-xs uppercase tracking-wide text-slate-500 text-left">
           <th class="px-4 py-2">Package</th>
-          <th class="px-4 py-2">Version pinned</th>
-          <th class="px-4 py-2">Mode</th>
-          <th class="px-4 py-2 text-right">Actions</th>
+          <th class="px-4 py-2">Зафиксированная версия</th>
+          <th class="px-4 py-2">Режим</th>
+          <th class="px-4 py-2 text-right">Действия</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-slate-100">
@@ -67,14 +67,14 @@
           <td class="px-4 py-2 text-sm">{{ ca.pinned_version }}</td>
           <td class="px-4 py-2 text-sm">{{ ca.mode }}</td>
           <td class="px-4 py-2 text-right">
-            <form method="POST" action="/configurations/{{ config_id }}/apps/{{ ca.app_id }}/delete" class="inline" onsubmit="return confirm('Remove {{ ca.package_name }} from this configuration?')">
-              <button class="text-red-600 hover:text-red-800 text-sm">Remove</button>
+            <form method="POST" action="/configurations/{{ config_id }}/apps/{{ ca.app_id }}/delete" class="inline" onsubmit="return confirm('Убрать {{ ca.package_name }} из этой конфигурации?')">
+              <button class="text-red-600 hover:text-red-800 text-sm">Убрать</button>
             </form>
           </td>
         </tr>
         {% endfor %}
         {% if assigned_apps.is_empty() %}
-        <tr><td colspan="4" class="px-4 py-4 text-center text-slate-400 text-sm">No applications assigned yet.</td></tr>
+        <tr><td colspan="4" class="px-4 py-4 text-center text-slate-400 text-sm">Приложений ещё не назначено.</td></tr>
         {% endif %}
       </tbody>
     </table>
@@ -82,14 +82,14 @@
     {% if !available_apps.is_empty() %}
     <form method="POST" action="/configurations/{{ config_id }}/apps" class="border-t border-slate-200 pt-3 grid grid-cols-1 md:grid-cols-4 gap-2">
       <label class="block md:col-span-2">
-        <span class="text-xs uppercase tracking-wide text-slate-500">Add application</span>
+        <span class="text-xs uppercase tracking-wide text-slate-500">Добавить приложение</span>
         <select name="application_id" required class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
-          <option value="">— pick —</option>
+          <option value="">— выберите —</option>
           {% for a in available_apps %}<option value="{{ a.id }}">{{ a.package_name }}</option>{% endfor %}
         </select>
       </label>
       <label class="block">
-        <span class="text-xs uppercase tracking-wide text-slate-500">Mode</span>
+        <span class="text-xs uppercase tracking-wide text-slate-500">Режим</span>
         <select name="mode" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
           <option value="install" selected>install</option>
           <option value="show">show</option>
@@ -97,18 +97,18 @@
         </select>
       </label>
       <div class="flex items-end">
-        <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded w-full">Add</button>
+        <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded w-full">Добавить</button>
       </div>
     </form>
     {% endif %}
   </section>
 
-  <form method="POST" action="/configurations/{{ config_id }}/delete" onsubmit="return confirm('Delete configuration {{ name }}? Devices using it will lose this configuration.')" class="bg-white rounded-lg shadow-sm p-4 flex items-center justify-between">
+  <form method="POST" action="/configurations/{{ config_id }}/delete" onsubmit="return confirm('Удалить конфигурацию {{ name }}? Устройства, использующие её, потеряют конфигурацию.')" class="bg-white rounded-lg shadow-sm p-4 flex items-center justify-between">
     <div>
-      <p class="font-medium text-red-800">Danger zone</p>
-      <p class="text-sm text-slate-500">Application assignments and device pointers will be cleared.</p>
+      <p class="font-medium text-red-800">Опасная зона</p>
+      <p class="text-sm text-slate-500">Назначения приложений и ссылки устройств будут очищены.</p>
     </div>
-    <button class="bg-red-600 hover:bg-red-700 text-white text-sm font-medium px-4 py-2 rounded">Delete configuration</button>
+    <button class="bg-red-600 hover:bg-red-700 text-white text-sm font-medium px-4 py-2 rounded">Удалить конфигурацию</button>
   </form>
 </main>
 {% endblock %}

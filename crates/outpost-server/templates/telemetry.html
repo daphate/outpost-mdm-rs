@@ -1,39 +1,39 @@
 {% extends "base.html" %}
 
-{% block title %}Telemetry{% endblock %}
+{% block title %}Телеметрия{% endblock %}
 
 {% block body %}
 {% include "_nav.html" %}
 
 <main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
   <div class="flex items-center justify-between">
-    <h2 class="text-2xl font-bold">Telemetry overview</h2>
-    <div class="text-xs text-slate-500">Window: last 24 h · Auto-refresh: every 30 s</div>
+    <h2 class="text-2xl font-bold">Обзор телеметрии</h2>
+    <div class="text-xs text-slate-500">Период: последние 24 ч · Автообновление: каждые 30 с</div>
   </div>
 
   <div class="grid grid-cols-2 lg:grid-cols-6 gap-3">
     <div class="bg-white rounded-lg shadow-sm p-4">
-      <div class="text-xs uppercase tracking-wide text-slate-500">Active devices</div>
+      <div class="text-xs uppercase tracking-wide text-slate-500">Активные устройства</div>
       <div class="text-2xl font-bold mt-1">{{ active_devices }}</div>
     </div>
     <div class="bg-white rounded-lg shadow-sm p-4">
-      <div class="text-xs uppercase tracking-wide text-slate-500">Log records</div>
+      <div class="text-xs uppercase tracking-wide text-slate-500">Записи логов</div>
       <div class="text-2xl font-bold mt-1">{{ logs_24h }}</div>
     </div>
     <div class="bg-white rounded-lg shadow-sm p-4">
-      <div class="text-xs uppercase tracking-wide text-slate-500">Errors</div>
+      <div class="text-xs uppercase tracking-wide text-slate-500">Ошибки</div>
       <div class="text-2xl font-bold mt-1 text-red-600">{{ errors_24h }}</div>
     </div>
     <div class="bg-white rounded-lg shadow-sm p-4">
-      <div class="text-xs uppercase tracking-wide text-slate-500">Metric points</div>
+      <div class="text-xs uppercase tracking-wide text-slate-500">Точки метрик</div>
       <div class="text-2xl font-bold mt-1">{{ metrics_24h }}</div>
     </div>
     <div class="bg-white rounded-lg shadow-sm p-4">
-      <div class="text-xs uppercase tracking-wide text-slate-500">Spans</div>
+      <div class="text-xs uppercase tracking-wide text-slate-500">Span'ы</div>
       <div class="text-2xl font-bold mt-1">{{ traces_24h }}</div>
     </div>
     <div class="bg-white rounded-lg shadow-sm p-4">
-      <div class="text-xs uppercase tracking-wide text-slate-500">Last ingest</div>
+      <div class="text-xs uppercase tracking-wide text-slate-500">Последний приём</div>
       <div class="text-sm font-mono mt-2">{{ last_ingest }}</div>
     </div>
   </div>
@@ -41,17 +41,17 @@
   <section class="grid grid-cols-1 lg:grid-cols-2 gap-4">
     <div class="bg-white rounded-lg shadow-sm overflow-hidden">
       <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
-        <h3 class="font-medium">Most active devices (24 h)</h3>
-        <span class="text-xs text-slate-500">by log volume</span>
+        <h3 class="font-medium">Самые активные устройства (24 ч)</h3>
+        <span class="text-xs text-slate-500">по объёму логов</span>
       </div>
       <table class="min-w-full divide-y divide-slate-200">
         <thead class="bg-slate-50">
           <tr class="text-xs uppercase tracking-wide text-slate-500 text-left">
-            <th class="px-4 py-2">Device</th>
-            <th class="px-4 py-2">Logs</th>
-            <th class="px-4 py-2">Errors</th>
-            <th class="px-4 py-2">Last seen</th>
-            <th class="px-4 py-2 text-right">Open</th>
+            <th class="px-4 py-2">Устройство</th>
+            <th class="px-4 py-2">Логи</th>
+            <th class="px-4 py-2">Ошибки</th>
+            <th class="px-4 py-2">Активность</th>
+            <th class="px-4 py-2 text-right">Открыть</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-slate-100">
@@ -62,13 +62,13 @@
             <td class="px-4 py-2 text-sm {% if d.errors > 0 %}text-red-700{% endif %}">{{ d.errors }}</td>
             <td class="px-4 py-2 text-sm text-slate-500">{{ d.last_seen }}</td>
             <td class="px-4 py-2 text-right text-sm">
-              <a href="/devices/{{ d.id }}/telemetry" class="text-blue-600 hover:text-blue-800">telemetry</a>
-              <a href="/devices/{{ d.id }}/logs" class="ml-2 text-slate-600 hover:text-slate-900">logs</a>
+              <a href="/devices/{{ d.id }}/telemetry" class="text-blue-600 hover:text-blue-800">телеметрия</a>
+              <a href="/devices/{{ d.id }}/logs" class="ml-2 text-slate-600 hover:text-slate-900">логи</a>
             </td>
           </tr>
           {% endfor %}
           {% if top_devices.is_empty() %}
-          <tr><td colspan="5" class="px-4 py-6 text-center text-slate-400 text-sm">No telemetry received yet.</td></tr>
+          <tr><td colspan="5" class="px-4 py-6 text-center text-slate-400 text-sm">Телеметрия ещё не поступала.</td></tr>
           {% endif %}
         </tbody>
       </table>
@@ -76,16 +76,16 @@
 
     <div class="bg-white rounded-lg shadow-sm overflow-hidden">
       <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
-        <h3 class="font-medium">Recent errors</h3>
-        <span class="text-xs text-slate-500">severity &ge; ERROR</span>
+        <h3 class="font-medium">Последние ошибки</h3>
+        <span class="text-xs text-slate-500">severity ≥ ERROR</span>
       </div>
       <table class="min-w-full divide-y divide-slate-200">
         <thead class="bg-slate-50">
           <tr class="text-xs uppercase tracking-wide text-slate-500 text-left">
-            <th class="px-4 py-2">When</th>
-            <th class="px-4 py-2">Device</th>
-            <th class="px-4 py-2">Severity</th>
-            <th class="px-4 py-2">Body</th>
+            <th class="px-4 py-2">Когда</th>
+            <th class="px-4 py-2">Устройство</th>
+            <th class="px-4 py-2">Уровень</th>
+            <th class="px-4 py-2">Сообщение</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-slate-100">
@@ -100,7 +100,7 @@
           </tr>
           {% endfor %}
           {% if recent_errors.is_empty() %}
-          <tr><td colspan="4" class="px-4 py-6 text-center text-slate-400 text-sm">No errors in the last 24 h. </td></tr>
+          <tr><td colspan="4" class="px-4 py-6 text-center text-slate-400 text-sm">За последние 24 ч ошибок нет.</td></tr>
           {% endif %}
         </tbody>
       </table>
@@ -109,16 +109,16 @@
 
   <section class="bg-white rounded-lg shadow-sm overflow-hidden">
     <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
-      <h3 class="font-medium">Top metric names</h3>
-      <span class="text-xs text-slate-500">distinct samples in 24 h</span>
+      <h3 class="font-medium">Топ имён метрик</h3>
+      <span class="text-xs text-slate-500">точки за 24 ч</span>
     </div>
     <table class="min-w-full divide-y divide-slate-200">
       <thead class="bg-slate-50">
         <tr class="text-xs uppercase tracking-wide text-slate-500 text-left">
-          <th class="px-4 py-2">Metric</th>
-          <th class="px-4 py-2">Points</th>
-          <th class="px-4 py-2">Devices</th>
-          <th class="px-4 py-2">Latest sample</th>
+          <th class="px-4 py-2">Метрика</th>
+          <th class="px-4 py-2">Точки</th>
+          <th class="px-4 py-2">Устройства</th>
+          <th class="px-4 py-2">Последний сэмпл</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-slate-100">
@@ -131,15 +131,15 @@
         </tr>
         {% endfor %}
         {% if top_metrics.is_empty() %}
-        <tr><td colspan="4" class="px-4 py-6 text-center text-slate-400 text-sm">No metrics yet.</td></tr>
+        <tr><td colspan="4" class="px-4 py-6 text-center text-slate-400 text-sm">Метрик ещё нет.</td></tr>
         {% endif %}
       </tbody>
     </table>
   </section>
 
   <section class="bg-slate-50 border border-slate-200 rounded-lg p-4 text-sm text-slate-600 space-y-2">
-    <p><strong>Grafana dashboards</strong> (auto-refreshing) are at <a href="/grafana/" class="text-blue-600 hover:underline">/grafana/</a>. The Prometheus scrape happens against this server's <code class="text-xs">/metrics</code> endpoint (loopback only).</p>
-    <p>Devices push OTLP via <code class="text-xs">POST /v1/{traces,metrics,logs}</code> authenticated with the device-token issued at <code class="text-xs">/api/v1/enroll</code>.</p>
+    <p><strong>Grafana-дашборды</strong> (автообновляемые) — на <a href="/grafana/" class="text-blue-600 hover:underline">/grafana/</a>. Prometheus скрапит <code class="text-xs">/metrics</code> этого сервера (только loopback).</p>
+    <p>Устройства шлют OTLP через <code class="text-xs">POST /v1/{traces,metrics,logs}</code> с device-токеном из <code class="text-xs">/api/v1/enroll</code>.</p>
   </section>
 </main>
 

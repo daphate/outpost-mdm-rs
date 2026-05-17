@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 
-{% block title %}Edit group {{ name }}{% endblock %}
+{% block title %}Изменить группу {{ name }}{% endblock %}
 
 {% block body %}
 {% include "_nav.html" %}
 
 <main class="max-w-3xl mx-auto px-4 py-6 space-y-6">
   <div>
-    <a href="/groups" class="text-sm text-slate-500 hover:text-slate-900">← back to groups</a>
-    <h2 class="text-2xl font-bold mt-2">Edit group</h2>
+    <a href="/groups" class="text-sm text-slate-500 hover:text-slate-900">← к списку групп</a>
+    <h2 class="text-2xl font-bold mt-2">Изменить группу</h2>
     <p class="text-sm text-slate-500">ID: {{ group_id }}</p>
   </div>
 
@@ -18,28 +18,28 @@
 
   <form method="POST" action="/groups/{{ group_id }}/edit" class="bg-white rounded-lg shadow-sm p-4 space-y-3">
     <label class="block">
-      <span class="text-xs uppercase tracking-wide text-slate-500">Name</span>
+      <span class="text-xs uppercase tracking-wide text-slate-500">Название</span>
       <input name="name" value="{{ name }}" required class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
     </label>
     <label class="block">
-      <span class="text-xs uppercase tracking-wide text-slate-500">Description</span>
+      <span class="text-xs uppercase tracking-wide text-slate-500">Описание</span>
       <input name="description" value="{{ description }}" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
     </label>
     <div class="flex items-center justify-between pt-2">
-      <a href="/groups" class="text-sm text-slate-500 hover:text-slate-900">Cancel</a>
-      <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded">Save</button>
+      <a href="/groups" class="text-sm text-slate-500 hover:text-slate-900">Отмена</a>
+      <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded">Сохранить</button>
     </div>
     {% if let Some(e) = error %}
       <p class="text-red-600 text-sm">{{ e }}</p>
     {% endif %}
   </form>
 
-  <form method="POST" action="/groups/{{ group_id }}/delete" onsubmit="return confirm('Delete group {{ name }}? Devices in this group will lose the assignment but remain.')" class="bg-white rounded-lg shadow-sm p-4 flex items-center justify-between">
+  <form method="POST" action="/groups/{{ group_id }}/delete" onsubmit="return confirm('Удалить группу {{ name }}? Устройства этой группы потеряют назначение, сами устройства сохранятся.')" class="bg-white rounded-lg shadow-sm p-4 flex items-center justify-between">
     <div>
-      <p class="font-medium text-red-800">Danger zone</p>
-      <p class="text-sm text-slate-500">{{ member_count }} device(s) currently in this group.</p>
+      <p class="font-medium text-red-800">Опасная зона</p>
+      <p class="text-sm text-slate-500">{{ member_count }} устройств(а) сейчас в этой группе.</p>
     </div>
-    <button class="bg-red-600 hover:bg-red-700 text-white text-sm font-medium px-4 py-2 rounded">Delete group</button>
+    <button class="bg-red-600 hover:bg-red-700 text-white text-sm font-medium px-4 py-2 rounded">Удалить группу</button>
   </form>
 </main>
 {% endblock %}

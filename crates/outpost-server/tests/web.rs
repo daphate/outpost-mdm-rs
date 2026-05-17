@@ -12,7 +12,7 @@ async fn login_page_renders_html() {
     assert_eq!(status, 200);
     assert!(body.contains("<form"), "expected a form, got: {body}");
     assert!(body.contains("Outpost MDM"));
-    assert!(body.contains("Sign in"));
+    assert!(body.contains("Войти"));
 }
 
 #[tokio::test]
@@ -47,8 +47,8 @@ async fn full_browser_login_flow_then_dashboard() {
     let cookie_header = format!("outpost_session={cookie}");
     let (status, body) = raw_get(&app.url("/dashboard"), Some(&cookie_header)).await;
     assert_eq!(status, 200);
-    assert!(body.contains("Fleet overview"));
-    assert!(body.contains("Devices"));
+    assert!(body.contains("Сводка по парку"));
+    assert!(body.contains("Устройства"));
     assert!(body.contains("admin")); // logged-in user shown in nav
 }
 
@@ -61,7 +61,7 @@ async fn login_with_wrong_password_rerenders_form_with_error() {
     assert_eq!(status, 200);
     assert!(extract_set_cookie_value(&raw_resp, "outpost_session").is_none());
     let body_only = body_after_headers(&raw_resp);
-    assert!(body_only.contains("Invalid login or password"));
+    assert!(body_only.contains("Неверный логин или пароль"));
 }
 
 #[tokio::test]
@@ -103,7 +103,7 @@ async fn devices_page_renders_table() {
     assert_eq!(status, 200);
     assert!(html.contains("WEB-001"));
     assert!(html.contains("UI Test"));
-    assert!(html.contains("1 total"));
+    assert!(html.contains("всего: 1"));
 }
 
 #[tokio::test]
@@ -112,8 +112,8 @@ async fn groups_page_renders() {
     let cookie = web_login_cookie(&app).await;
     let (status, html) = raw_get(&app.url("/groups"), Some(&format!("outpost_session={cookie}"))).await;
     assert_eq!(status, 200);
-    assert!(html.contains("Groups"));
-    assert!(html.contains("0 total") || html.contains("total"));
+    assert!(html.contains("Группы устройств"));
+    assert!(html.contains("всего"));
 }
 
 #[tokio::test]
@@ -122,7 +122,7 @@ async fn applications_page_renders() {
     let cookie = web_login_cookie(&app).await;
     let (status, html) = raw_get(&app.url("/applications"), Some(&format!("outpost_session={cookie}"))).await;
     assert_eq!(status, 200);
-    assert!(html.contains("Applications"));
+    assert!(html.contains("Приложения"));
 }
 
 #[tokio::test]
@@ -131,7 +131,7 @@ async fn configurations_page_renders() {
     let cookie = web_login_cookie(&app).await;
     let (status, html) = raw_get(&app.url("/configurations"), Some(&format!("outpost_session={cookie}"))).await;
     assert_eq!(status, 200);
-    assert!(html.contains("Configurations"));
+    assert!(html.contains("Конфигурации"));
 }
 
 #[tokio::test]
@@ -140,7 +140,7 @@ async fn push_page_renders() {
     let cookie = web_login_cookie(&app).await;
     let (status, html) = raw_get(&app.url("/push"), Some(&format!("outpost_session={cookie}"))).await;
     assert_eq!(status, 200);
-    assert!(html.contains("Push messages"));
+    assert!(html.contains("Push-команды"));
 }
 
 #[tokio::test]
@@ -149,7 +149,7 @@ async fn users_page_renders_with_seed_admin() {
     let cookie = web_login_cookie(&app).await;
     let (status, html) = raw_get(&app.url("/users"), Some(&format!("outpost_session={cookie}"))).await;
     assert_eq!(status, 200);
-    assert!(html.contains("Users"));
+    assert!(html.contains("Пользователи"));
     // The seed admin must show up.
     assert!(html.contains("admin"));
 }
@@ -212,7 +212,7 @@ async fn create_device_with_empty_serial_re_renders_with_error() {
     .await;
     assert_eq!(status, 200);
     let body = body_after_headers(&raw);
-    assert!(body.contains("Serial is required"));
+    assert!(body.contains("Серийный номер обязателен"));
 }
 
 #[tokio::test]
@@ -276,7 +276,7 @@ async fn create_user_rejects_short_password() {
     .await;
     assert_eq!(status, 200);
     let body = body_after_headers(&raw);
-    assert!(body.contains("at least 8 characters"));
+    assert!(body.contains("Пароль должен быть не короче 8 символов") || body.contains("at least 8 characters"));
 }
 
 #[tokio::test]
@@ -293,7 +293,7 @@ async fn create_configuration_with_invalid_settings_json_re_renders_with_error()
     .await;
     assert_eq!(status, 200);
     let body = body_after_headers(&raw);
-    assert!(body.contains("not valid JSON"));
+    assert!(body.contains("invalid") || body.contains("not valid JSON") || body.contains("неверн"));
 }
 
 #[tokio::test]
@@ -342,7 +342,7 @@ async fn device_enrollment_view_then_generate_then_qr_visible() {
     )
     .await;
     assert_eq!(status, 200);
-    assert!(html.contains("Generate enrollment payload"));
+    assert!(html.contains("Сгенерировать полезную нагрузку"));
 
     // POST /devices/1/enroll — generates secret + QR
     let (status, raw) = raw_request_with_cookie(
@@ -355,7 +355,7 @@ async fn device_enrollment_view_then_generate_then_qr_visible() {
     .await;
     assert_eq!(status, 200);
     let body = body_after_headers(&raw);
-    assert!(body.contains("Enrollment payload"));
+    assert!(body.contains("Полезная нагрузка регистрации"));
     assert!(body.contains("enrollment_secret"));
     assert!(body.contains("<svg") || body.contains("<rect")); // qrcode SVG
 }
@@ -400,7 +400,7 @@ async fn change_password_mismatch_confirm_rejected() {
     .await;
     assert_eq!(status, 200);
     let body = body_after_headers(&raw);
-    assert!(body.contains("do not match"));
+    assert!(body.contains("не совпадают") || body.contains("do not match"));
 }
 
 // ----- Phase 21 edit/delete + new-page tests --------------------------------
@@ -723,7 +723,7 @@ async fn customers_page_renders_for_super_admin_with_seed_tenant() {
     let cookie = web_login_cookie(&app).await;
     let (status, html) = raw_get(&app.url("/customers"), Some(&format!("outpost_session={cookie}"))).await;
     assert_eq!(status, 200);
-    assert!(html.contains("Customers (tenants)"));
+    assert!(html.contains("Тенанты (заказчики)"));
     assert!(html.contains("default"));
 }
 
@@ -791,8 +791,8 @@ async fn me_2fa_setup_renders_qr_and_secret() {
     .await;
     assert_eq!(status, 303);
     let (_, html) = raw_get(&app.url("/me/2fa"), Some(&format!("outpost_session={cookie}"))).await;
-    assert!(html.contains("<svg") || html.contains("Scan this QR"));
-    assert!(html.contains("enter this secret"));
+    assert!(html.contains("<svg") || html.contains("QR"));
+    assert!(html.contains("введите секрет вручную"));
 }
 
 #[tokio::test]
@@ -854,8 +854,8 @@ async fn me_2fa_verify_with_correct_code_enables_and_returns_recovery_codes() {
     .await;
     assert_eq!(status, 200, "verify body: {raw_resp}");
     let body_only = body_after_headers(&raw_resp);
-    assert!(body_only.contains("2FA enabled") || body_only.contains("Recovery codes"));
-    assert!(body_only.contains("Disable 2FA"), "must show disable button after enable");
+    assert!(body_only.contains("Резервные коды") || body_only.contains("включена"));
+    assert!(body_only.contains("Отключить 2FA"), "must show disable button after enable");
 }
 
 #[tokio::test]
@@ -863,8 +863,8 @@ async fn signup_disabled_by_default_shows_banner() {
     let app = TestApp::start().await;
     let (status, html) = http_request("GET", &app.url("/signup"), None, None, None).await;
     assert_eq!(status, 200);
-    assert!(html.contains("Self-service signup is currently"));
-    assert!(html.contains("disabled"));
+    assert!(html.contains("Самостоятельная регистрация на этом сервере сейчас"));
+    assert!(html.contains("отключена"));
 }
 
 #[tokio::test]

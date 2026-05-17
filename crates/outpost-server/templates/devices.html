@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 
-{% block title %}Devices{% endblock %}
+{% block title %}Устройства{% endblock %}
 
 {% block body %}
 {% include "_nav.html" %}
 
 <main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
   <div class="flex items-center justify-between">
-    <h2 class="text-2xl font-bold">Devices</h2>
-    <span class="text-sm text-slate-500">{{ total }} total</span>
+    <h2 class="text-2xl font-bold">Устройства</h2>
+    <span class="text-sm text-slate-500">всего: {{ total }}</span>
   </div>
 
   {% if let Some(msg) = flash %}
@@ -16,18 +16,18 @@
   {% endif %}
 
   <details class="bg-white rounded-lg shadow-sm p-4" {% if create_error.is_some() %}open{% endif %}>
-    <summary class="cursor-pointer font-medium text-slate-700">+ New device</summary>
+    <summary class="cursor-pointer font-medium text-slate-700">+ Новое устройство</summary>
     <form method="POST" action="/devices/new" class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
       <label class="block">
-        <span class="text-xs uppercase tracking-wide text-slate-500">Serial / IMEI</span>
+        <span class="text-xs uppercase tracking-wide text-slate-500">Серийный номер / IMEI</span>
         <input name="serial" required class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 font-mono text-sm">
       </label>
       <label class="block">
-        <span class="text-xs uppercase tracking-wide text-slate-500">Display name</span>
+        <span class="text-xs uppercase tracking-wide text-slate-500">Отображаемое имя</span>
         <input name="display_name" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
       </label>
       <div class="flex items-end">
-        <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded">Create device</button>
+        <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded">Создать устройство</button>
       </div>
       {% if let Some(e) = create_error %}
         <p class="md:col-span-3 text-red-600 text-sm">{{ e }}</p>
@@ -39,13 +39,13 @@
     <table class="min-w-full divide-y divide-slate-200">
       <thead class="bg-slate-50">
         <tr class="text-xs uppercase tracking-wide text-slate-500 text-left">
-          <th class="px-4 py-3">Serial</th>
-          <th class="px-4 py-3">Name</th>
-          <th class="px-4 py-3">Status</th>
-          <th class="px-4 py-3">Battery</th>
-          <th class="px-4 py-3">App version</th>
-          <th class="px-4 py-3">Last seen</th>
-          <th class="px-4 py-3 text-right">Actions</th>
+          <th class="px-4 py-3">Серийный №</th>
+          <th class="px-4 py-3">Имя</th>
+          <th class="px-4 py-3">Статус</th>
+          <th class="px-4 py-3">Заряд</th>
+          <th class="px-4 py-3">Версия приложения</th>
+          <th class="px-4 py-3">Активность</th>
+          <th class="px-4 py-3 text-right">Действия</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-slate-100">
@@ -57,16 +57,16 @@
             {% if d.is_enrolled %}
               {% if d.is_online %}
                 <span class="inline-flex items-center text-emerald-700 text-sm">
-                  <span class="w-2 h-2 mr-1.5 rounded-full bg-emerald-500"></span>online
+                  <span class="w-2 h-2 mr-1.5 rounded-full bg-emerald-500"></span>онлайн
                 </span>
               {% else %}
                 <span class="inline-flex items-center text-slate-400 text-sm">
-                  <span class="w-2 h-2 mr-1.5 rounded-full bg-slate-300"></span>offline
+                  <span class="w-2 h-2 mr-1.5 rounded-full bg-slate-300"></span>оффлайн
                 </span>
               {% endif %}
             {% else %}
               <span class="inline-flex items-center text-amber-700 text-sm">
-                <span class="w-2 h-2 mr-1.5 rounded-full bg-amber-400"></span>not enrolled
+                <span class="w-2 h-2 mr-1.5 rounded-full bg-amber-400"></span>не зарегистрировано
               </span>
             {% endif %}
           </td>
@@ -74,14 +74,14 @@
           <td class="px-4 py-3 text-sm">{{ d.app_version }}</td>
           <td class="px-4 py-3 text-sm text-slate-500">{{ d.last_seen }}</td>
           <td class="px-4 py-3 text-right text-sm space-x-3">
-            <a href="/devices/{{ d.id }}/edit" class="text-slate-600 hover:text-slate-900">Edit</a>
-            <a href="/devices/{{ d.id }}/enroll" class="text-blue-600 hover:text-blue-800">Enroll</a>
+            <a href="/devices/{{ d.id }}/edit" class="text-slate-600 hover:text-slate-900">Изменить</a>
+            <a href="/devices/{{ d.id }}/enroll" class="text-blue-600 hover:text-blue-800">Регистрация</a>
             <a href="/devices/{{ d.id }}/push" class="text-slate-600 hover:text-slate-900">Push</a>
           </td>
         </tr>
         {% endfor %}
         {% if devices.is_empty() %}
-        <tr><td colspan="7" class="px-4 py-8 text-center text-slate-400">No devices enrolled yet.</td></tr>
+        <tr><td colspan="7" class="px-4 py-8 text-center text-slate-400">Устройства ещё не зарегистрированы.</td></tr>
         {% endif %}
       </tbody>
     </table>

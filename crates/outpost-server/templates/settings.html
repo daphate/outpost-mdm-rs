@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 
-{% block title %}Settings{% endblock %}
+{% block title %}Настройки{% endblock %}
 
 {% block body %}
 {% include "_nav.html" %}
 
 <main class="max-w-3xl mx-auto px-4 py-6 space-y-6">
   <div>
-    <h2 class="text-2xl font-bold">System settings</h2>
-    <p class="text-sm text-slate-500">Server-wide configuration. Customer-scoped if the key has a customer prefix.</p>
+    <h2 class="text-2xl font-bold">Настройки сервера</h2>
+    <p class="text-sm text-slate-500">Серверные настройки. Customer-scoped, если ключ имеет customer-префикс.</p>
   </div>
 
   {% if let Some(msg) = flash %}
@@ -17,39 +17,53 @@
 
   <form method="POST" action="/settings" class="bg-white rounded-lg shadow-sm p-4 space-y-4">
     <label class="block">
-      <span class="text-xs uppercase tracking-wide text-slate-500">Enrollment base URL</span>
+      <span class="text-xs uppercase tracking-wide text-slate-500">Базовый URL для регистрации</span>
       <input name="enrollment_base_url" value="{{ enrollment_base_url }}" placeholder="https://mdm.secondf8n.tech" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm font-mono">
-      <span class="text-xs text-slate-500">Embedded in the QR enrollment payload; if blank, defaults to the current host header.</span>
+      <span class="text-xs text-slate-500">Встроен в QR-полезную нагрузку регистрации; если пусто — берётся текущий Host header.</span>
     </label>
     <label class="block">
-      <span class="text-xs uppercase tracking-wide text-slate-500">Default device sync interval (seconds)</span>
+      <span class="text-xs uppercase tracking-wide text-slate-500">Интервал синхронизации устройств по умолчанию (секунды)</span>
       <input name="default_sync_interval" type="number" min="10" max="3600" value="{{ default_sync_interval }}" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
     </label>
     <label class="block">
-      <span class="text-xs uppercase tracking-wide text-slate-500">Maximum upload size (MiB)</span>
+      <span class="text-xs uppercase tracking-wide text-slate-500">Максимальный размер загрузки (МиБ)</span>
       <input name="max_upload_mb" type="number" min="1" max="2048" value="{{ max_upload_mb }}" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
     </label>
     <label class="block">
-      <span class="text-xs uppercase tracking-wide text-slate-500">Branding — display name on /login</span>
+      <span class="text-xs uppercase tracking-wide text-slate-500">Брендинг — название на странице входа</span>
       <input name="branding_display_name" value="{{ branding_display_name }}" placeholder="Outpost MDM" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
     </label>
     <div class="flex items-center justify-between pt-2">
-      <p class="text-xs text-slate-500">Stored in the <code>settings</code> SQLite table; loaded on demand, no restart needed.</p>
-      <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded">Save settings</button>
+      <p class="text-xs text-slate-500">Хранятся в SQLite-таблице <code>settings</code>; читаются по требованию, рестарт не нужен.</p>
+      <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded">Сохранить</button>
     </div>
     {% if let Some(e) = error %}
       <p class="text-red-600 text-sm">{{ e }}</p>
     {% endif %}
   </form>
 
+  <form method="POST" action="/settings/language" class="bg-white rounded-lg shadow-sm p-4 space-y-3">
+    <div>
+      <h3 class="font-medium">Язык интерфейса</h3>
+      <p class="text-xs text-slate-500">Применяется к текущей сессии браузера через cookie. Сейчас доступен только русский интерфейс; английский на v0.9 в работе.</p>
+    </div>
+    <div class="flex items-center space-x-3">
+      <select name="locale" class="rounded border-slate-300 px-3 py-1.5 text-sm">
+        <option value="ru" {% if current_locale == "ru" %}selected{% endif %}>Русский</option>
+        <option value="en" {% if current_locale == "en" %}selected{% endif %}>English (частично)</option>
+      </select>
+      <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded">Применить</button>
+    </div>
+  </form>
+
   <details class="bg-white rounded-lg shadow-sm p-4">
-    <summary class="cursor-pointer font-medium text-slate-700">All raw key/value entries ({{ raw_entries.len() }})</summary>
+    <summary class="cursor-pointer font-medium text-slate-700">Все ключи/значения ({{ raw_entries.len() }})</summary>
     <table class="min-w-full divide-y divide-slate-200 mt-3">
       <thead class="bg-slate-50">
         <tr class="text-xs uppercase tracking-wide text-slate-500 text-left">
-          <th class="px-4 py-2">Key</th>
-          <th class="px-4 py-2">Value (JSON)</th>
-          <th class="px-4 py-2">Updated</th>
+          <th class="px-4 py-2">Ключ</th>
+          <th class="px-4 py-2">Значение (JSON)</th>
+          <th class="px-4 py-2">Обновлён</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-slate-100">
@@ -61,7 +75,7 @@
         </tr>
         {% endfor %}
         {% if raw_entries.is_empty() %}
-        <tr><td colspan="3" class="px-4 py-4 text-center text-slate-400 text-sm">No settings yet — they appear here as soon as a key is written.</td></tr>
+        <tr><td colspan="3" class="px-4 py-4 text-center text-slate-400 text-sm">Настроек ещё нет — они появятся здесь сразу после первой записи.</td></tr>
         {% endif %}
       </tbody>
     </table>

@@ -8,6 +8,7 @@ pub mod client_ip;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod i18n;
 pub mod page;
 pub mod permission;
 pub mod rate_limit;
