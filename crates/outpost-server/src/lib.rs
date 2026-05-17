@@ -1,5 +1,6 @@
 //! Outpost MDM HTTP server library.
 
+pub mod apk_watcher;
 pub mod app;
 pub mod auth;
 pub mod auth_extract;

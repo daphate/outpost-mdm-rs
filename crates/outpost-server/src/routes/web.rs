@@ -2758,6 +2758,14 @@ struct AppVersionRow {
     file_size: String,
     sha256_short: String,
     uploaded_at: String,
+    /// `Some(url)` для версий, найденных APK watcher'ом на upstream-mirror'е;
+    /// `None` для версий, загруженных через POST /applications/{id}/versions
+    /// (multipart upload). UI рисует разный affordance: для discovered —
+    /// «Открыть на mirror», для uploaded — «Скачать с MDM».
+    source_url: Option<String>,
+    /// `true` если файла нет на диске MDM (file_path = ''), `false` для
+    /// uploaded версий. Discovered-rows показывают пометку «metadata-only».
+    metadata_only: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -2768,6 +2776,8 @@ struct AppVersionRowRaw {
     file_size_bytes: i64,
     sha256: String,
     uploaded_at: String,
+    file_path: String,
+    source_url: Option<String>,
 }
 
 async fn application_versions_view(
@@ -2796,7 +2806,8 @@ async fn render_app_versions(
         return Err(ApiError::NotFound);
     };
     let rows: Vec<AppVersionRowRaw> = sqlx::query_as::<_, AppVersionRowRaw>(
-        "SELECT id, version_code, version_name, file_size_bytes, sha256, uploaded_at \
+        "SELECT id, version_code, version_name, file_size_bytes, sha256, uploaded_at, \
+                file_path, source_url \
          FROM application_versions WHERE application_id = ? ORDER BY version_code DESC LIMIT 200",
     )
     .bind(id)
@@ -2811,6 +2822,8 @@ async fn render_app_versions(
             file_size: format_size(r.file_size_bytes),
             sha256_short: r.sha256.chars().take(12).collect(),
             uploaded_at: fmt_ts(&r.uploaded_at),
+            metadata_only: r.file_path.is_empty(),
+            source_url: r.source_url,
         })
         .collect();
     let mut resp = render(AppVersionsTemplate {
