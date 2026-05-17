@@ -120,21 +120,48 @@ which renders a stable JSON envelope:
 
 ## Auth model
 
-- One **JWT secret** (`JWT_SECRET`, ≥ 32 bytes) signs both user and
-  device tokens with HS512.
-- The `kind` claim distinguishes principals:
-  - `"user"` — recovered by the `AuthUser` extractor, must match a
-    `users.is_active = 1` row.
-  - `"device"` — recovered by `AuthDevice`, must match a
-    `devices.is_enrolled = 1` row.
-- Rotating `JWT_SECRET` invalidates every outstanding session (devices
-  must re-enroll). This is the **single rotation point**; no token
-  revocation list.
-- Passwords use **argon2id** (RustCrypto) with the crate's default
-  parameters (tuned for interactive auth). PHC-encoded hashes live in
-  `users.password_hash`. First boot detects `password_hash IS NULL`
-  and generates a 20-character alphanumeric password, prints it once to
-  stderr, sets `must_change_password = 1`.
+After Phase 16 (May 2026), tokens are **opaque 256-bit random hex
+values, stored server-side as sha256 in the `sessions` table**. JWT was
+removed entirely — stateless tokens were a poor fit for a system where
+stolen-device revocation matters.
+
+```
+Login                             POST /api/v1/auth/login
+  user submits {login, password}
+  server verifies argon2id PHC
+  server: token = hex(rand_32_bytes())
+  server: INSERT sessions (id_hash = sha256(token), kind='user', subject_id, …)
+  ← {access_token: <token>, token_type: "Bearer", expires_in: 86400}
+
+Every API request          Bearer <token> OR Cookie outpost_session=<token>
+  AuthUser extractor:
+    SELECT * FROM sessions
+     WHERE id_hash = sha256(presented_token)
+       AND revoked_at IS NULL
+       AND expires_at > now
+    AND users.is_active = 1
+  → AuthUser { id, customer_id, role_id, login }
+
+Logout                            POST /api/v1/auth/logout
+  UPDATE sessions SET revoked_at = now() WHERE id_hash = sha256(token)
+  Takes effect on the NEXT request — no key rotation needed.
+
+Device enrollment                 POST /api/v1/enroll
+  same as user login, but kind='device', 90-day TTL
+```
+
+Key properties:
+- **A DB-file leak does not expose live tokens** — we only store
+  `sha256(token)`, not the token itself
+- **Instant revocation** — single row UPDATE, no global rekey
+- **No JWT-library CVE category** — no parser, no `alg=none`
+- `APP_SECRET` is reserved for HMAC-SHA256 on signed download URLs
+  (`/files/signed/<token>` for devices). It does not sign session
+  tokens (those are random bytes).
+- Passwords use **argon2id** (RustCrypto) with default parameters.
+  PHC-encoded hashes live in `users.password_hash`. First boot detects
+  `password_hash IS NULL`, generates a 20-character alphanumeric
+  password, prints once to stderr, sets `must_change_password = 1`.
 
 ## Push pipeline
 

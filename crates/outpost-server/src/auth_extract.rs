@@ -1,17 +1,18 @@
-//! `AuthUser` extractor — pulls the bearer token, verifies it, and yields
-//! the authenticated user identity for downstream handlers.
+//! HTTP extractors that turn a bearer token into a typed identity.
 //!
-//! Lives in a separate module from [`crate::auth`] because the extractor
-//! is HTTP-aware while [`crate::auth`] is plain crypto.
+//! Both extractors look up the presented token in the [`crate::session`]
+//! table (rejecting revoked / expired tokens) and additionally verify
+//! the underlying user is still active (`users.is_active = 1`) or that
+//! the device is still enrolled (`devices.is_enrolled = 1`).
 
-use crate::auth;
 use crate::error::ApiError;
+use crate::session::{self, KIND_DEVICE, KIND_USER};
 use crate::state::AppState;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 
-/// Authenticated user identity, attached to a request by the
-/// `AuthUser` extractor.
+/// Authenticated user identity, attached to a request by the `AuthUser`
+/// extractor.
 #[derive(Debug, Clone)]
 pub struct AuthUser {
     pub id: i64,
@@ -20,43 +21,8 @@ pub struct AuthUser {
     pub login: String,
 }
 
-impl FromRequestParts<AppState> for AuthUser {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        // Accept either `Authorization: Bearer …` (API clients) or the
-        // `outpost_session` cookie (browser-driven HTMX UI).
-        let token = extract_token(parts).ok_or(ApiError::Unauthorized)?;
-        let claims =
-            auth::verify_token(&token, &state.jwt_secret).map_err(|_| ApiError::InvalidToken)?;
-
-        if claims.kind != auth::KIND_USER {
-            return Err(ApiError::InvalidToken);
-        }
-        // Sanity check: confirm the user still exists and is active.
-        let active: Option<i64> = sqlx::query_scalar("SELECT is_active FROM users WHERE id = ?")
-            .bind(claims.sub)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(ApiError::from)?;
-        match active {
-            Some(1) => Ok(AuthUser {
-                id: claims.sub,
-                customer_id: claims.customer_id,
-                role_id: claims.role_id,
-                login: claims.login,
-            }),
-            Some(_) => Err(ApiError::Inactive),
-            None => Err(ApiError::InvalidToken),
-        }
-    }
-}
-
-/// Extract the JWT from either `Authorization: Bearer ...` (preferred,
-/// API clients) or the `outpost_session` cookie (browser).
+/// Extract the session token from either `Authorization: Bearer …`
+/// (API clients) or the `outpost_session` cookie (browser).
 pub fn extract_token(parts: &Parts) -> Option<String> {
     if let Some(bearer) = parts
         .headers
@@ -78,7 +44,40 @@ pub fn extract_token(parts: &Parts) -> Option<String> {
         })
 }
 
-/// Authenticated device identity, attached to a device-facing request.
+impl FromRequestParts<AppState> for AuthUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let token = extract_token(parts).ok_or(ApiError::Unauthorized)?;
+        let s = session::verify(&token, &state.db)
+            .await
+            .map_err(|_| ApiError::InvalidToken)?;
+        if s.kind != KIND_USER {
+            return Err(ApiError::InvalidToken);
+        }
+        // Confirm the underlying user is still active.
+        let active: Option<i64> = sqlx::query_scalar("SELECT is_active FROM users WHERE id = ?")
+            .bind(s.subject_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(ApiError::from)?;
+        match active {
+            Some(1) => Ok(AuthUser {
+                id: s.subject_id,
+                customer_id: s.customer_id,
+                role_id: s.role_id,
+                login: s.login,
+            }),
+            Some(_) => Err(ApiError::Inactive),
+            None => Err(ApiError::InvalidToken),
+        }
+    }
+}
+
+/// Authenticated device identity for device-facing endpoints.
 #[derive(Debug, Clone)]
 pub struct AuthDevice {
     pub id: i64,
@@ -93,22 +92,16 @@ impl FromRequestParts<AppState> for AuthDevice {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let header = parts
-            .headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .ok_or(ApiError::Unauthorized)?;
-        let token = header
-            .strip_prefix("Bearer ")
-            .ok_or(ApiError::Unauthorized)?;
-        let claims =
-            auth::verify_token(token, &state.jwt_secret).map_err(|_| ApiError::InvalidToken)?;
-        if claims.kind != auth::KIND_DEVICE {
+        let token = extract_token(parts).ok_or(ApiError::Unauthorized)?;
+        let s = session::verify(&token, &state.db)
+            .await
+            .map_err(|_| ApiError::InvalidToken)?;
+        if s.kind != KIND_DEVICE {
             return Err(ApiError::InvalidToken);
         }
         let row: Option<(i64, i64, String, i64)> =
             sqlx::query_as("SELECT id, customer_id, serial, is_enrolled FROM devices WHERE id = ?")
-                .bind(claims.sub)
+                .bind(s.subject_id)
                 .fetch_optional(&state.db)
                 .await
                 .map_err(ApiError::from)?;

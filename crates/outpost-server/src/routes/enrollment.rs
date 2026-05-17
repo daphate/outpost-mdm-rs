@@ -12,6 +12,7 @@ use crate::auth;
 use crate::auth_extract::{AuthDevice, AuthUser};
 use crate::error::ApiError;
 use crate::permission::require_permission;
+use crate::session;
 use crate::state::AppState;
 use axum::{
     Json, Router,
@@ -132,13 +133,14 @@ async fn enroll(
     .bind(req.device_id)
     .execute(&state.db)
     .await?;
-    let token = auth::issue_device_token(
+    let token = session::create_device_session(
+        &state.db,
         req.device_id,
         customer_id,
         &serial,
-        &state.jwt_secret,
         DEVICE_TOKEN_TTL_SECS,
     )
+    .await
     .map_err(|_| ApiError::Internal)?;
     Ok(Json(EnrollResponse {
         device_token: token,

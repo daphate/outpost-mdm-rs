@@ -63,14 +63,17 @@ Copy it from `docker compose logs` and store securely. The server marks `must_ch
 
 | Var | Default | Required | Description |
 |-----|---------|----------|-------------|
-| `JWT_SECRET`     | — | **yes** | ≥32 bytes, used for HS512 JWT + HMAC-signed download URLs. Generate with `openssl rand -base64 48`. |
-| `BIND_ADDR`      | `0.0.0.0:8080` | no | Listen socket. |
-| `DB_PATH`        | `/var/lib/outpost/outpost.db` | no | SQLite file path. |
-| `APP_FILES_DIR`  | `/var/lib/outpost/files` | no | Storage root for uploaded APKs / models. |
-| `RUST_LOG`       | `info` | no | `tracing_subscriber::EnvFilter` directive. |
-| `JWT_TTL_SECS`   | `86400` | no | Session token lifetime (24 h default). |
+| `APP_SECRET`         | — | **yes** | ≥32 bytes, used for HMAC-SHA256 signing of download URLs. Generate with `openssl rand -base64 48`. Legacy alias: `JWT_SECRET` (deprecated, removed in v0.3.0). |
+| `BIND_ADDR`          | `0.0.0.0:8080` | no | Listen socket. |
+| `DB_PATH`            | `/var/lib/outpost/outpost.db` | no | SQLite file path. |
+| `APP_FILES_DIR`      | `/var/lib/outpost/files` | no | Storage root for uploaded APKs / models. |
+| `RUST_LOG`           | `info` | no | `tracing_subscriber::EnvFilter` directive. |
+| `SESSION_TTL_SECS`   | `86400` | no | User session lifetime (24 h default). Devices use a fixed 90-day TTL. Legacy alias: `JWT_TTL_SECS`. |
+| `MAX_BODY_BYTES`     | `209715200` (200 MiB) | no | Request body cap; oversized → 413. |
+| `REQUEST_TIMEOUT_SECS` | `120` | no | Per-request wall-clock timeout; exceeding → 503. |
+| `SECURE_COOKIES`     | `true` | no | Set the `Secure` flag on the `outpost_session` cookie. Disable only for local HTTP development. |
 
-The server **refuses to start** if `JWT_SECRET` is missing or shorter than 32 bytes.
+The server **refuses to start** if `APP_SECRET` (or its legacy alias `JWT_SECRET`) is missing or shorter than 32 bytes.
 
 ## nginx reverse proxy snippet
 

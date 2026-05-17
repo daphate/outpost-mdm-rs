@@ -4,6 +4,56 @@ Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https:
 
 ## [Unreleased]
 
+### Phase 16 — Replace JWT with opaque DB-backed sessions
+
+**Why:** JWT is stateless — revocation requires rotating the signing key
+(invalidates _everything_). For a fleet where a stolen device must be
+locked out _now_, that's the wrong primitive. Opaque session tokens
+stored server-side give instant revocation, smaller wire (~64 bytes vs
+~400), no `alg=none`/algorithm-confusion attack surface, and ~0.1 ms
+per-request DB hit over WAL'd SQLite — well within budget.
+
+**Added**
+- New migration `0010_sessions.sql` — `sessions` table keyed by
+  **sha256 of the bearer token** (DB-file leak does not expose live
+  tokens), with `kind`/`subject_id`/`customer_id`/`role_id`/`login`/
+  `issued_at`/`expires_at`/`revoked_at`
+- New module `crate::session` — `create_user_session` /
+  `create_device_session` / `verify` / `revoke` /
+  `revoke_all_for_subject` / `cleanup`
+- New endpoint `POST /api/v1/auth/logout` — revokes the caller's
+  current session (the capability JWT couldn't offer)
+- Scheduler tick now opportunistically GCs sessions expired or revoked
+  more than 30 days ago
+- 7 new unit tests in `session::tests`: round-trip, revoked fails,
+  expired fails, unknown fails, DB never stores raw token,
+  revoke-all-for-subject, device session, cleanup
+
+**Changed**
+- `jsonwebtoken` crate dependency **removed** (~40 transitive crates gone)
+- `crate::auth` trimmed to just argon2id helpers + `generate_password`
+- `KIND_USER`/`KIND_DEVICE` moved to `crate::session`
+- `AuthUser` / `AuthDevice` / `WebUser` extractors look up sessions
+  instead of verifying JWT claims (signature mismatch / kind mismatch
+  → 401 / Redirect, same as before)
+- Env var **renamed:** `JWT_SECRET` → `APP_SECRET`. The legacy
+  `JWT_SECRET` name still works for one release as a fallback —
+  `Config::from_env` tries `APP_SECRET` first
+- `Config::jwt_secret` → `Config::app_secret`, `Config::jwt_ttl_secs`
+  → `Config::session_ttl_secs`; `AppState` likewise
+- `signed_url::{sign, verify}` continues to use `app_secret` for HMAC
+  (this was always the only thing the secret actually signed)
+
+**Migration note for operators**
+- Set `APP_SECRET` instead of `JWT_SECRET` (both still accepted in this
+  release; the deprecated alias goes away in v0.3.0)
+- No DB downtime: migration `0010_sessions.sql` is additive
+- All existing v0.1.0 JWT tokens stop working — clients re-login (this
+  is the right behaviour: the secret format and storage both changed)
+
+**Stats**
+- Test count: **110 passing, 0 failing** (was 104 at P15)
+
 ### Phase 15 — HTMX/Askama admin UI (sign-in + dashboard + devices)
 
 **Added**

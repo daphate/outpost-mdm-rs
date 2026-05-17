@@ -108,6 +108,12 @@ pub async fn tick_once(pool: &SqlitePool) -> sqlx::Result<usize> {
     if emitted > 0 {
         tracing::info!(emitted, "scheduler tick emitted push messages");
     }
+    // Opportunistic session GC: drop rows expired/revoked > 30 days ago.
+    if let Ok(n) = crate::session::cleanup(pool, 30).await
+        && n > 0
+    {
+        tracing::info!(cleaned = n, "scheduler tick pruned old sessions");
+    }
     Ok(emitted)
 }
 

@@ -235,7 +235,7 @@ async fn make_signed_url(
         return Err(ApiError::NotFound);
     }
     let ttl = q.expires_in.clamp(10, 86_400);
-    let token = signed_url::sign(id, ttl, &state.jwt_secret);
+    let token = signed_url::sign(id, ttl, &state.app_secret);
     Ok(Json(SignedUrlResponse {
         url: format!("/files/signed/{token}"),
         expires_in: ttl,
@@ -244,7 +244,7 @@ async fn make_signed_url(
 
 /// Public download endpoint — verifies the HMAC token, streams the file.
 async fn download_signed(State(state): State<AppState>, Path(token): Path<String>) -> Response {
-    let verified = match signed_url::verify(&token, &state.jwt_secret) {
+    let verified = match signed_url::verify(&token, &state.app_secret) {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!(error = %e, "signed-url verify rejected");

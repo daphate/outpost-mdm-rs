@@ -58,13 +58,19 @@ release notes if you wish.
 
 ## Cryptographic posture
 
-| Concern             | Choice                                                                                  |
-| ------------------- | --------------------------------------------------------------------------------------- |
-| Password hashing    | argon2id (RustCrypto, default parameters tuned for interactive auth)                    |
-| Session tokens      | JWT HS512, secret rotated by changing `JWT_SECRET` env (invalidates every session)      |
-| Device tokens       | Same secret as user tokens, 90-day TTL, `kind: "device"` discriminator                  |
-| Signed download URL | HMAC-SHA256 over `file_id|expires|nonce`, constant-time verify via `subtle`             |
-| TLS                 | Terminated by nginx + certbot per `docs/DEPLOY.md`; the binary itself speaks plain HTTP |
+| Concern             | Choice                                                                                          |
+| ------------------- | ----------------------------------------------------------------------------------------------- |
+| Password hashing    | argon2id (RustCrypto, default parameters tuned for interactive auth)                            |
+| Session tokens      | **Opaque 256-bit random hex, stored as sha256 in `sessions` table** (DB leak ≠ token leak)      |
+| Token revocation    | `UPDATE sessions SET revoked_at = now()` — takes effect on next request, no global rekey needed |
+| Device tokens       | Same `sessions` table, `kind = "device"`, 90-day TTL                                            |
+| Signed download URL | HMAC-SHA256 over `file_id\|expires\|nonce` with `APP_SECRET`, constant-time verify via `subtle` |
+| TLS                 | Terminated by nginx + certbot per `docs/DEPLOY.md`; the binary itself speaks plain HTTP         |
+
+JWT was replaced with DB-backed opaque sessions in v0.2.0 (Phase 16).
+Rationale: a stolen device needs to be locked out _instantly_, not at
+the next signing-key rotation. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+"Auth model" section for the lifecycle diagram.
 
 ## Hardening already enabled
 

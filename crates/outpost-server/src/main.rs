@@ -20,11 +20,11 @@ async fn main() -> Result<()> {
         log_level = %cfg.log_level,
         max_body_bytes = cfg.max_body_bytes,
         request_timeout_secs = cfg.request_timeout_secs,
+        session_ttl_secs = cfg.session_ttl_secs,
         version = env!("CARGO_PKG_VERSION"),
         "outpost-mdm-rs starting",
     );
 
-    // Ensure the files directory exists before serving.
     tokio::fs::create_dir_all(&cfg.app_files_dir)
         .await
         .with_context(|| format!("create app_files_dir {}", cfg.app_files_dir.display()))?;
@@ -39,8 +39,8 @@ async fn main() -> Result<()> {
 
     let state = AppState::new(
         pool.clone(),
-        cfg.jwt_secret,
-        cfg.jwt_ttl_secs,
+        cfg.app_secret,
+        cfg.session_ttl_secs,
         cfg.app_files_dir,
         cfg.max_body_bytes,
         cfg.request_timeout_secs,

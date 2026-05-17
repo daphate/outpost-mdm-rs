@@ -1,25 +1,9 @@
 //! HTML admin UI routes — Askama templates + cookie-based session.
-//!
-//! These endpoints are browser-facing companions to the JSON `/api/v1/*`
-//! surface:
-//!
-//! | Method | Path        | Description                                                     |
-//! | ------ | ----------- | --------------------------------------------------------------- |
-//! | GET    | `/`         | Redirect to `/dashboard` if signed in, else `/login`            |
-//! | GET    | `/login`    | Render the sign-in form                                         |
-//! | POST   | `/login`    | Verify creds, set `outpost_session` cookie, 303 → `/dashboard`  |
-//! | GET    | `/logout`   | Clear cookie, 303 → `/login`                                    |
-//! | GET    | `/dashboard`| Fleet stats overview                                            |
-//! | GET    | `/devices`  | Device table                                                    |
-//!
-//! Auth uses an HTTP-only, `SameSite=Lax` cookie named `outpost_session`
-//! that carries the same HS512 JWT as the API. The cookie's `Secure`
-//! flag is controlled by `Config::secure_cookies` (default `true`).
 
 use crate::auth as crypto;
-use crate::auth::KIND_USER;
 use crate::auth_extract::extract_token;
 use crate::error::ApiError;
+use crate::session::{self, KIND_USER};
 use crate::state::AppState;
 use askama::Template;
 use axum::extract::{Form, FromRequestParts, State};
@@ -42,8 +26,6 @@ pub fn router() -> Router<AppState> {
 
 // ----- Web-session extractor: cookie-or-redirect -------------------------
 
-/// Browser-side authenticated user. Same shape as the API extractor, but
-/// the rejection is a 303 redirect to `/login` rather than a JSON 401.
 #[derive(Debug, Clone)]
 pub struct WebUser {
     pub id: i64,
@@ -60,22 +42,23 @@ impl FromRequestParts<AppState> for WebUser {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let token = extract_token(parts).ok_or_else(|| Redirect::to("/login"))?;
-        let claims =
-            crypto::verify_token(&token, &state.jwt_secret).map_err(|_| Redirect::to("/login"))?;
-        if claims.kind != KIND_USER {
+        let s = session::verify(&token, &state.db)
+            .await
+            .map_err(|_| Redirect::to("/login"))?;
+        if s.kind != KIND_USER {
             return Err(Redirect::to("/login"));
         }
         let active: Option<i64> = sqlx::query_scalar("SELECT is_active FROM users WHERE id = ?")
-            .bind(claims.sub)
+            .bind(s.subject_id)
             .fetch_optional(&state.db)
             .await
             .map_err(|_| Redirect::to("/login"))?;
         match active {
             Some(1) => Ok(WebUser {
-                id: claims.sub,
-                customer_id: claims.customer_id,
-                role_id: claims.role_id,
-                login: claims.login,
+                id: s.subject_id,
+                customer_id: s.customer_id,
+                role_id: s.role_id,
+                login: s.login,
             }),
             _ => Err(Redirect::to("/login")),
         }
@@ -141,18 +124,20 @@ async fn login_submit(State(state): State<AppState>, Form(form): Form<LoginForm>
         });
     }
 
-    let token = match crypto::issue_token(
+    let token = match session::create_user_session(
+        &state.db,
         id,
         customer_id,
         role_id,
         &form.login,
-        &state.jwt_secret,
-        state.jwt_ttl_secs,
-    ) {
+        state.session_ttl_secs,
+    )
+    .await
+    {
         Ok(t) => t,
         Err(_) => {
             return render(LoginTemplate {
-                error: Some("Could not issue session token.".into()),
+                error: Some("Could not issue session.".into()),
             });
         }
     };
@@ -162,14 +147,38 @@ async fn login_submit(State(state): State<AppState>, Form(form): Form<LoginForm>
         .await;
 
     let mut resp = Redirect::to("/dashboard").into_response();
-    set_session_cookie(&mut resp, &token, state.secure_cookies, state.jwt_ttl_secs);
+    set_session_cookie(
+        &mut resp,
+        &token,
+        state.secure_cookies,
+        state.session_ttl_secs,
+    );
     resp
 }
 
-async fn logout() -> Response {
+async fn logout(parts_extractor: LogoutToken, State(state): State<AppState>) -> Response {
+    if let Some(token) = parts_extractor.token {
+        let _ = session::revoke(&token, &state.db).await;
+    }
     let mut resp = Redirect::to("/login").into_response();
     clear_session_cookie(&mut resp);
     resp
+}
+
+/// Inline extractor that copies the token out of the request so we can
+/// revoke it server-side during logout.
+struct LogoutToken {
+    token: Option<String>,
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for LogoutToken {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        Ok(Self {
+            token: extract_token(parts),
+        })
+    }
 }
 
 #[derive(Template)]
@@ -192,7 +201,12 @@ struct FleetStatsView {
 
 async fn dashboard(user: WebUser, State(state): State<AppState>) -> Result<Response, ApiError> {
     let stats = FleetStatsView {
-        devices_total: scalar(&state, user.customer_id, "SELECT COUNT(*) FROM devices WHERE customer_id = ?").await?,
+        devices_total: scalar(
+            &state,
+            user.customer_id,
+            "SELECT COUNT(*) FROM devices WHERE customer_id = ?",
+        )
+        .await?,
         devices_online: scalar(
             &state,
             user.customer_id,
@@ -271,12 +285,10 @@ async fn devices_page(user: WebUser, State(state): State<AppState>) -> Result<Re
     .bind(user.customer_id)
     .fetch_all(&state.db)
     .await?;
-
     let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE customer_id = ?")
         .bind(user.customer_id)
         .fetch_one(&state.db)
         .await?;
-
     let devices: Vec<DeviceRow> = rows
         .into_iter()
         .map(|r| DeviceRow {
@@ -294,7 +306,6 @@ async fn devices_page(user: WebUser, State(state): State<AppState>) -> Result<Re
                 .unwrap_or_else(|| "—".into()),
         })
         .collect();
-
     Ok(render(DevicesTemplate {
         user_login: user.login,
         total,

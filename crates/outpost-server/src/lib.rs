@@ -11,6 +11,7 @@ pub mod page;
 pub mod permission;
 pub mod routes;
 pub mod scheduler;
+pub mod session;
 pub mod shutdown;
 pub mod signed_url;
 pub mod state;

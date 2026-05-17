@@ -38,7 +38,6 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate", "chr
 # templating (HTMX admin UI)
 askama = "0.13"
 # auth
-jsonwebtoken = "9"
 argon2 = "0.5"
 uuid = { version = "1", features = ["v4", "serde"] }
 rand = "0.8"
