@@ -1,285 +1,274 @@
-# OTLP contract — Outpost-Android → Outpost MDM server
+# OTLP contract — Outpost-Android → Outpost MDM server (v2)
 
-**Status:** Stable for v0.6.x. Server-side receiver code:
-[`crates/outpost-server/src/routes/otel.rs`](../crates/outpost-server/src/routes/otel.rs).
-Tests in [`crates/outpost-server/tests/otel.rs`](../crates/outpost-server/tests/otel.rs).
+**Status:** v2.0, **supersedes** [`tactical-ar-hud/tools/OTEL-CONTRACT.md`](../../tactical-ar-hud/tools/OTEL-CONTRACT.md) v1.0 of 2026-05-17.
 
-This document is the canonical reference for the **sender** (Outpost-Android
-app, written in a parallel session). The server-side endpoints described
-below are already implemented and integration-tested. Anything not in this
-document is **not** in the receiver — please coordinate before assuming.
+**Receiver:** [`crates/outpost-server/src/routes/otel.rs`](../crates/outpost-server/src/routes/otel.rs) — in-process Axum handler that persists OTLP/HTTP-JSON into SQLite. **OpenObserve / Grafana Loki / external collectors are not used** — the in-tree receiver gives us first-class integration with the MDM device table, the admin UI, and the multi-tenant `customer_id` scoping. The decision is conscious: lower operational complexity, one storage system to back up, and the receiver is already tested.
+
+**Receiver host:** `mdm.secondf8n.tech` (production).
+**Tests:** [`crates/outpost-server/tests/otel.rs`](../crates/outpost-server/tests/otel.rs) — 8 integration tests, including auth/parse/persistence/empty-batch cases. **149/149 passing** as of v0.6.0.
 
 ---
 
-## Why telemetry matters
+## What changed from v1.0
 
-Demo units go to clients. We need to see — without intruding — whether the
-client opens the app, what they do in it, what errors they hit. The
-telemetry stream is the **only** loopback that tells us if a demo is alive
-or sitting in a drawer.
+The v1.0 contract (written by the sender session) targeted "any standard OTEL collector". The receiver session (this side) chose to implement a first-party receiver in the MDM server. That decision drives three breaking changes against v1.0:
 
-Goals (in order of priority):
-
-1. **Was the app ever launched?** App-start timestamp, install timestamp.
-2. **How often is it used?** Foreground time per day, session count.
-3. **What features do they touch?** Screen-opened events, model-load
-   events, model-inference events (without payload content, only counts +
-   timings).
-4. **What errors do they hit?** Uncaught exceptions, ANRs, network
-   failures, model-load failures.
-5. **What hardware do we have visibility into?** Battery, network type,
-   storage free, RAM available.
-
----
-
-## Transport
-
-* **Protocol:** OTLP/HTTP-JSON (NOT protobuf, NOT gRPC). Spec:
-  <https://opentelemetry.io/docs/specs/otlp/#otlphttp>
-* **Encoding:** `Content-Type: application/json`
-* **Authentication:** `Authorization: Bearer <device_token>` on every
-  request. The token is the long-lived JWT issued at `/api/v1/enroll`. It
-  is the **same** token the device uses for `/api/v1/sync` — do not invent
-  a second credential.
-* **Compression:** **not used in v0.6** — body limit is 200 MiB, so even
-  uncompressed batches fit. Gzip support can land later if traffic
-  warrants; do not enable it yet on the sender side.
-
-### Endpoints
-
-| Endpoint | Body | Empty-batch response |
+| Concern | v1.0 (Outpost-Android sender draft) | **v2 (this contract — authoritative)** |
 |---|---|---|
-| `POST https://mdm.secondf8n.tech/v1/logs`    | `ExportLogsServiceRequest` JSON     | `{"inserted":0}` |
-| `POST https://mdm.secondf8n.tech/v1/metrics` | `ExportMetricsServiceRequest` JSON  | `{"inserted":0}` |
-| `POST https://mdm.secondf8n.tech/v1/traces`  | `ExportTraceServiceRequest` JSON    | `{"inserted":0}` |
+| Authentication | "Phase 1: none. Phase 2: Bearer." | **Bearer required from day 1.** Phase 1 = use the `device_token` issued at `/api/v1/enroll`. |
+| Signals | `/v1/logs` only | `/v1/logs` **+** `/v1/metrics` **+** `/v1/traces`. Logs alone is still a valid Phase-1 implementation; the other two are optional but recommended. |
+| Device identity | `X-Outpost-Device-Id` UUID header + `device.id` resource attribute | **Identity comes from the Bearer token.** `device.id` resource attribute may be sent verbatim from the sender (e.g. for cross-correlation across pipelines), but the receiver does not consult it; it derives `customer_id` and `device_id` from the verified session. The `X-Outpost-Device-Id` header is ignored. |
+| Receiver UI | "OpenObserve / Grafana / etc." (operator chooses) | **MDM admin UI** at `/telemetry`, `/devices/{id}/telemetry`, `/devices/{id}/logs`. Grafana ALSO available at `/grafana/` scraping `/metrics` for fleet-wide aggregates. |
+| Storage | "operator's choice" | SQLite tables `device_logs`, `device_metrics`, `device_traces`. |
 
-### Response shape
+Everything else from v1.0 (OTLP/HTTP-JSON wire format, severity numbers, event-catalog naming, privacy contract) carries over unchanged — see §3 below for the full superseded text.
+
+---
+
+## 1. Endpoints
+
+| Method | URL | Body | Notes |
+|---|---|---|---|
+| `POST` | `https://mdm.secondf8n.tech/v1/logs`    | OTLP/HTTP `ExportLogsServiceRequest` JSON    | Required signal. |
+| `POST` | `https://mdm.secondf8n.tech/v1/metrics` | OTLP/HTTP `ExportMetricsServiceRequest` JSON | Optional. |
+| `POST` | `https://mdm.secondf8n.tech/v1/traces`  | OTLP/HTTP `ExportTraceServiceRequest` JSON   | Optional. |
+
+* **Content-Type:** `application/json` only. Protobuf is deferred.
+* **Authentication:** `Authorization: Bearer <device_token>`. The token is the same long-lived JWT issued at `/api/v1/enroll`. It is **also** the token used for `/api/v1/sync`; do not invent a second credential.
+* **Compression:** off in v2 (server body limit 200 MiB is generous). Don't enable gzip on the sender yet.
+* **`X-Outpost-Device-Id` header:** ignored by the receiver. Senders may keep emitting it for forward-compatibility with external collectors but should not rely on it.
+
+### 1.1. Response shape
 
 ```json
-{ "inserted": <i64> }     // number of records actually persisted
+{ "inserted": <i64> }     // number of records actually persisted in this batch
 ```
 
-* `200 OK` — batch accepted. `inserted` is the row count.
-* `400 Bad Request` — malformed JSON. Body says what's wrong.
-* `401 Unauthorized` — missing, expired, revoked, or wrong-kind token.
-  **Do not retry with the same token** — re-enroll.
-* `413 Payload Too Large` — single batch > 200 MiB. Chunk it.
-* `5xx` — server bug; retry with exponential backoff.
+| Status | Meaning | Retry? |
+|---|---|---|
+| `200 OK`              | Batch accepted; `inserted` is the row count. | Done. |
+| `400 Bad Request`     | Malformed JSON or invalid OTLP envelope.     | **No.** Fix the payload. |
+| `401 Unauthorized`    | Missing / expired / revoked / wrong-kind token. | **No.** Re-enroll, then retry. |
+| `413 Payload Too Large` | Single batch > 200 MiB.                    | Chunk the batch. |
+| `5xx`                 | Server bug or temporary failure.             | Yes, exponential backoff. |
 
 ---
 
-## Batching & retry policy (recommended)
+## 2. Batching & retry policy (recommended sender behaviour)
 
-* **Batch size:** up to **500 records per batch** OR **1 MiB on the wire**,
-  whichever is smaller. The server has no hard cap below 200 MiB but
-  smaller batches make ingest latency observable.
-* **Flush triggers:** every **30 s**, OR when batch hits 500 records, OR
-  when severity ≥ ERROR (flush immediately).
-* **Network gating:** **send only on Wi-Fi by default**, fall back to
-  cellular only if explicitly opted in via app setting. Telemetry must
-  not eat data plans.
-* **Persistence:** queue locally to a SQLite buffer; drop oldest when the
-  buffer exceeds 20 MiB or 50 000 records.
-* **Retry:** exponential backoff 5 s → 30 s → 5 min, max 5 min. Drop the
-  batch only after 24 h of continuous failure.
+Compatible with v1.0; tighter defaults.
+
+* **Batch size:** up to **500 records per batch** OR **1 MiB on the wire**, whichever is smaller.
+* **Flush triggers:**
+  * every **30 s** in foreground / **5 min** in background
+  * batch hits 500 records OR 1 MiB
+  * any record with `severityNumber >= 17` (ERROR/FATAL) — flush immediately
+* **Network gating:** Wi-Fi by default; cellular only if the user opts in via app setting.
+* **Persistence:** queue locally to a JSONL or SQLite buffer; drop oldest when the buffer exceeds **20 MiB** or **50 000 records**.
+* **Retry:** exponential backoff 5 s → 30 s → 5 min, max 5 min. Drop a batch after 24 h of continuous failure.
+* **Empty batch handling:** sending `{"resourceLogs":[]}` (or equivalent for metrics/traces) is a valid heartbeat — the server returns `200 OK` with `inserted:0`. Use this once at app start to confirm the contract is honoured.
 
 ---
 
-## Resource attributes (every batch)
+## 3. Payload (carries v1.0 schema verbatim — receiver matches it)
 
-Set on the OTLP `Resource` object **once per batch**, NOT per record:
+### 3.1. Resource attributes — set once per batch
+
+The receiver persists the full Resource block as JSON on every record, so cross-record queries on resource attributes are cheap.
 
 ```json
 {
   "attributes": [
-    {"key":"service.name",         "value":{"stringValue":"outpost-android"}},
-    {"key":"service.version",      "value":{"stringValue":"<your app version>"}},
-    {"key":"device.id",            "value":{"stringValue":"<HW serial / IMEI>"}},
-    {"key":"device.model",         "value":{"stringValue":"Ulefone Armor 28 Ultra"}},
-    {"key":"os.type",              "value":{"stringValue":"android"}},
-    {"key":"os.version",           "value":{"stringValue":"14"}}
+    { "key": "service.name",              "value": { "stringValue": "outpost-android" } },
+    { "key": "service.version",           "value": { "stringValue": "<app version>" } },
+    { "key": "device.id",                 "value": { "stringValue": "<random per-install UUID>" } },
+    { "key": "device.model",              "value": { "stringValue": "Armor 28 Ultra" } },
+    { "key": "device.manufacturer",       "value": { "stringValue": "Ulefone" } },
+    { "key": "os.name",                   "value": { "stringValue": "android" } },
+    { "key": "os.version",                "value": { "intValue":    "34" } },
+    { "key": "telemetry.sdk.name",        "value": { "stringValue": "outpost-usage-telemetry" } },
+    { "key": "telemetry.sdk.language",    "value": { "stringValue": "kotlin" } },
+    { "key": "telemetry.sdk.version",     "value": { "stringValue": "<sender lib version>" } }
   ]
 }
 ```
 
-The receiver does **not** need `device.id` for auth (the bearer token
-identifies the device), but the value is preserved for debugging.
+The receiver does **not** authenticate by `device.id` — see §1 — but the value is preserved for cross-reference with on-device logs.
 
----
+### 3.2. Severity mapping — unchanged from v1.0
 
-## Logs (`/v1/logs`)
+| Outpost event suffix | severityNumber | severityText | Use case |
+|---|---|---|---|
+| `_done` (success)      |  9 | INFO  | Pipeline completed successfully |
+| `_warn`                | 13 | WARN  | Recoverable issue |
+| `_error`               | 17 | ERROR | Pipeline failed, user-visible degradation |
+| `error.uncaught_exception`, `error.anr` | 21 | FATAL | Crash / ANR |
+| (other lifecycle / nav) |  9 | INFO  | Generic informational event |
 
-### Schema
+Standard OTEL SeverityNumber values (RFC-5424-aligned). The `/telemetry` overview treats `severityNumber >= 17` as the "error" bucket in all KPI cards.
 
-The receiver persists each `LogRecord` to `device_logs` with the columns:
+### 3.3. Logs (`/v1/logs`) — required catalog
+
+| `event.name` (also `body.stringValue`) | Triggered when | Attributes |
+|---|---|---|
+| `app_open`               | `App.onCreate` in main process       | `cold_start: bool` |
+| `app_close`              | `onTerminate` (best-effort)          | — |
+| `<pipeline>_done`        | `PipelineLog.done(op, detail)`       | `duration_ms: int64`, `detail: string` (≤200 chars) |
+| `<pipeline>_error`       | `PipelineLog.error(op, msg, ex?)`    | `error_message: string` (≤200), `exception: string?`, `duration_ms: int64?` |
+| `model_load_done`        | LlamaBridge / WhisperBridge init     | `model: string`, `role: "LLM"\|"STT"\|"VLM"\|"TTS"`, `duration_ms: int64` |
+| `model_load_error`       | init failure                         | `model, role, error_message` |
+| `model_swap`             | runtime model swap                   | `from, to, role` |
+| `screen_open`            | NavGraph onComposable (Phase 2)      | `screen: string` |
+| `feature_use`            | user action in screen (Phase 2)      | `screen, action` |
+| `network.unavailable`    | no usable network                    | `kind: "wifi"\|"cell"\|"none"` |
+| `error.uncaught_exception` | crash handler caught a throwable   | `type: string`, `message: string` (≤200) |
+| `error.anr`              | ANR detected                         | `thread: string` |
+
+Pipeline names that send `_done`/`_error`: `chat`, `vlm`, `stt`, `stt-conf`, `translate`, `bench`. New pipelines should follow the same convention.
+
+The receiver column mapping is:
 
 | OTLP field | DB column | Notes |
 |---|---|---|
-| `timeUnixNano` (preferred) or `observedTimeUnixNano` | `ts` | If missing, server-side `datetime('now')`. |
-| `severityNumber` | `severity_number` | RFC 5424–style mapping (TRACE=1..4, INFO=9..12, ERROR=17..20, FATAL=21..24). |
-| `severityText`    | `severity_text` | Falls back to mapping from `severityNumber` if absent. |
-| `body.stringValue` | `body` | Other AnyValue variants are JSON-stringified. |
-| `attributes`     | `attrs_json` (JSON object) | Flattened from KeyValue[]. |
-| (resource)       | `resource_json`    | Stored once per record so cross-record queries are cheap. |
-| `traceId`        | `trace_id`         | Optional. |
-| `spanId`         | `span_id`          | Optional. |
+| `timeUnixNano` (or `observedTimeUnixNano`) | `ts` | If absent → `datetime('now')` |
+| `severityNumber` | `severity_number` | |
+| `severityText`   | `severity_text`   | Falls back to mapping from `severityNumber` |
+| `body.stringValue` | `body` | Other AnyValue variants are JSON-stringified |
+| `attributes` | `attrs_json` | Flattened to a JSON object |
+| (resource) | `resource_json` | Stored per record |
+| `traceId` | `trace_id` | Optional |
+| `spanId`  | `span_id`  | Optional |
 
-### Required log signals — minimum set
+### 3.4. Metrics (`/v1/metrics`) — optional but recommended
 
-The dashboard at `/telemetry` keys off these names. Emit them all:
+Send these names so the Prometheus `/metrics` endpoint can publish them as `outpost_metric_latest{name="…"}` (curated label set, fixed cardinality):
 
-| `body` | When | `attributes` |
+| `name` | Kind | Unit | Notes |
+|---|---|---|---|
+| `app.session_seconds`   | sum   | `s`     | Cumulative foreground time since install |
+| `app.foreground_ms`     | gauge | `ms`    | Last session duration |
+| `app.crashes`           | sum   | `1`     | Lifetime crash count |
+| `app.anr_count`         | sum   | `1`     | Lifetime ANR count |
+| `battery.pct`           | gauge | `1`     | 0..100 |
+| `battery.charging`      | gauge | `1`     | 0 or 1 |
+| `network.requests_total`| sum   | `1`     | All outbound HTTPS, including this telemetry POST |
+| `network.errors_total`  | sum   | `1`     | Attributes: `kind: "timeout"\|"5xx"\|"dns"\|"tls"\|"reset"` |
+| `ml.inference_ms`       | gauge | `ms`    | Last finished inference; attrs `{model, role}` |
+| `ml.queue_depth`        | gauge | `1`     | Pending inference requests |
+| `storage.free_mb`       | gauge | `MiBy`  | Internal storage free |
+| `ram.available_mb`      | gauge | `MiBy`  | App's perception of free RAM |
+
+Other metric names are accepted and stored, but only the names above appear on the Prometheus `/metrics` curated exposition. Add new names to `routes/prom.rs` `common_names` if you want them graphable in Grafana.
+
+Receiver handles: `gauge.dataPoints`, `sum.dataPoints`, `histogram.dataPoints` (only `count` is persisted; bucket layout is dropped), `summary.dataPoints` (only `count`). `exponentialHistogram` is not yet supported — do not send.
+
+Value parsing tolerates `asDouble`, `asInt` (integer or numeric string), and `count` as fallbacks.
+
+### 3.5. Traces (`/v1/traces`) — optional
+
+When to emit spans (in priority order, send what's cheap):
+
+| span `name` | kind | useful attributes |
 |---|---|---|
-| `app.launched`           | App's first foreground after install or reboot | `{install_seq:<n>, since_install_seconds:<n>}` |
-| `app.foregrounded`       | Each time app comes to foreground | `{prev_state:"background"\|"new"}` |
-| `app.backgrounded`       | Each time app goes to background | `{session_seconds:<n>}` |
-| `screen.opened`          | A top-level screen mounts | `{screen:"home"\|"library"\|"chat"\|...}` |
-| `model.load.started`     | LLM/Whisper/TTS load begins | `{model:"<id>", kind:"llm"\|"whisper"\|"tts"\|"mmproj"}` |
-| `model.load.finished`    | Load succeeds | `{model:"<id>", duration_ms:<n>}` |
-| `model.load.failed`      | Load errors | `{model:"<id>", error:"<short message>"}` |
-| `inference.started`      | An LLM/translator inference call begins | `{model:"<id>", role:"llm"\|"translator"}` |
-| `inference.finished`     | Same call ends OK | `{model:"<id>", tokens_in:<n>, tokens_out:<n>, duration_ms:<n>}` |
-| `inference.failed`       | Same call errors | `{model:"<id>", error:"<short>"}` |
-| `network.unavailable`    | App detected no usable network | `{kind:"wifi"\|"cell"\|"none"}` |
-| `error.uncaught_exception` | Crash handler caught a throwable | `{type:"<exception class>", message:"<short>"}` |
-| `error.anr`              | ANR detected | `{thread:"<name>"}` |
+| `boot`                   | INTERNAL | App cold-start → first foreground frame |
+| `screen.render.<name>`   | INTERNAL | Mount → first interactive |
+| `mdm.sync`               | CLIENT   | `/api/v1/sync` request |
+| `ml.inference`           | INTERNAL | `{model, tokens_in, tokens_out}` |
+| `network.request`        | CLIENT   | Outbound HTTPS |
 
-**severityNumber convention:**
-* `info` → 9 (TRACE/DEBUG/INFO/WARN/ERROR/FATAL = 1/5/9/13/17/21).
-* App-launched, screen-opened, lifecycle → severityNumber `9`.
-* Warn-class (slow network, retry succeeded) → `13`.
-* `model.load.failed`, `inference.failed`, `network.unavailable` → `17`
-  (ERROR).
-* `error.uncaught_exception`, `error.anr` → `21` (FATAL).
-
-The `/telemetry` overview counts `severityNumber >= 17` as "errors" in
-all KPI cards.
+Required fields: `traceId` (32-hex), `spanId` (16-hex), `name`, `startTimeUnixNano`, `endTimeUnixNano`. Open spans (no `endTimeUnixNano`) are **rejected**. Span duration is computed server-side; clamped to ≥ 0.
 
 ---
 
-## Metrics (`/v1/metrics`)
+## 4. Privacy — unchanged from v1.0
 
-### Supported instrument kinds
+**Sender MUST filter out:**
+- ❌ Chat content (LLM prompts / responses)
+- ❌ Photo content
+- ❌ GPS coordinates
+- ❌ Audio recordings
+- ❌ User-identifiable info (contacts, files, accounts)
+- ❌ Sensitive device IDs (IMEI / MAC / Serial / Android-ID)
 
-The receiver flattens each data point in:
-* `gauge.dataPoints[]`
-* `sum.dataPoints[]`
-* `histogram.dataPoints[]` (the histogram payload is reduced to `count` —
-  full bucket layout is dropped; if histograms matter, prefer many
-  per-bucket gauges)
-* `summary.dataPoints[]` (same — only `count` is stored)
-* `exponentialHistogram` — **not yet** stored; do not send
+**Sender MAY collect:**
+- ✅ Random per-install UUID (`device.id`) — not PII
+- ✅ Device fingerprint: model, manufacturer, Android SDK
+- ✅ App version
+- ✅ Counters / durations / outcomes of LLM operations
+- ✅ Error messages truncated to 200 chars (must not contain user input)
 
-`asDouble`, `asInt` (integer or string), and `count` are all accepted for
-the value.
-
-### Required metric set — minimum
-
-| `name` | Kind | Unit | Attributes | Notes |
-|---|---|---|---|---|
-| `app.session_seconds`       | `sum`   | `s`  | (none) | Cumulative foreground time since install. |
-| `app.foreground_ms`         | `gauge` | `ms` | (none) | Last session duration. |
-| `app.crashes`               | `sum`   | `1`  | (none) | Lifetime crash count. |
-| `app.anr_count`             | `sum`   | `1`  | (none) | Lifetime ANR count. |
-| `battery.pct`               | `gauge` | `1`  | `{state:"charging"\|"discharging"}` | 0..100. |
-| `battery.charging`          | `gauge` | `1`  | (none) | 0 or 1. |
-| `network.requests_total`    | `sum`   | `1`  | `{result:"ok"\|"error"}` | All outbound HTTPS (excluding telemetry POSTs themselves — don't recurse). |
-| `network.errors_total`      | `sum`   | `1`  | `{kind:"timeout"\|"5xx"\|"dns"\|"tls"\|"reset"}` | |
-| `ml.inference_ms`           | `gauge` | `ms` | `{model, role}` | Last finished inference. |
-| `ml.queue_depth`            | `gauge` | `1`  | (none) | Pending inference requests. |
-| `storage.free_mb`           | `gauge` | `MiBy` | (none) | Internal storage. |
-| `ram.available_mb`          | `gauge` | `MiBy` | (none) | App's perception of free RAM. |
-
-These names align with the hard-coded list in the receiver's
-`/metrics` endpoint — Prometheus picks up `outpost_metric_latest{name=…}`
-exactly for these.
-
-### Don't send
-
-* Per-event-id metrics. Use logs for events; metrics for numbers that move
-  continuously.
-* High-cardinality labels (UUIDs, user-supplied strings). The server has
-  no enforced cap but operators will hate you.
-* PII. Hash device serials if anything else needs to reference them.
+**Receiver-side:**
+- 90-day retention for raw events (rollup tables retain forever).
+- GDPR / 152-ФЗ erasure: identify by `device_id` (the MDM numeric id derived from the Bearer token) and batch-delete that device's rows from `device_logs`, `device_metrics`, `device_traces`.
 
 ---
 
-## Traces (`/v1/traces`)
+## 5. Migration guide for the v1.0 sender
 
-### When to use
+If you already implemented the v1.0 contract, three changes:
 
-Spans are the right tool for **measuring multi-step operations** where you
-want to see which step took how long. Examples we want:
+1. **Add the device token.** Right after `/api/v1/enroll` succeeds, store `device_token` in your secure storage. On every OTLP POST, set:
+   ```http
+   Authorization: Bearer <device_token>
+   ```
+   Without it the receiver returns 401. The token rotates only on re-enrollment.
 
-| Span `name` | Kind | What goes inside |
-|---|---|---|
-| `boot`                 | INTERNAL | App cold-start, end at first foreground frame. |
-| `screen.render.<name>` | INTERNAL | Per-screen mount → first interactive. |
-| `mdm.sync`             | CLIENT   | `/api/v1/sync` request lifecycle. |
-| `ml.inference`         | INTERNAL | Inference request, with `{model, tokens_in, tokens_out}` on attributes. |
-| `network.request`      | CLIENT   | Any outbound HTTPS; child spans for DNS/TLS/HTTP. |
+2. **Drop the `X-Outpost-Device-Id` reliance.** The header may continue to be sent; the receiver ignores it. Use the `device.id` resource attribute for app-side correlation, not for receiver identification.
 
-### Required fields
+3. **(Optional) Wire metrics + traces.** Sender is welcome to keep emitting only logs in Phase 1 — the receiver accepts that. To enable richer dashboards, plug an OpenTelemetry SDK (Kotlin) and emit the metrics listed in §3.4 plus the spans in §3.5.
 
-The receiver maps OTLP `Span` → `device_traces`:
-
-| OTLP | DB column | Notes |
-|---|---|---|
-| `traceId` (32-hex) | `trace_id` | |
-| `spanId`  (16-hex) | `span_id`  | |
-| `parentSpanId`     | `parent_span_id` | Empty string → NULL. |
-| `name`             | `name` | |
-| `kind`             | `kind` | 0 INTERNAL / 1 SERVER / 2 CLIENT / 3 PRODUCER / 4 CONSUMER. |
-| `startTimeUnixNano`| `start_ts` | Falls back to `datetime('now')` if missing. |
-| `endTimeUnixNano`  | `end_ts`   | |
-| (computed)         | `duration_ms` | Server computes `end - start`; clamped to ≥0. |
-| `status.code`      | `status_code` | 0 UNSET / 1 OK / 2 ERROR. |
-| `status.message`   | `status_message` | |
-| `attributes`       | `attrs_json` | JSON object. |
-| (resource)         | `resource_json` | |
-
-### Don't send
-
-* Spans without `endTimeUnixNano` — open spans are not supported in v0.6.
-* Spans wider than 10 s for app-lifecycle, or 5 min for any single span.
-  Long spans wreck dashboard time-bucketing.
+That's it. No JSON schema changes within the OTLP envelope.
 
 ---
 
-## What the server does with the data
+## 6. Smoke test (for the sender)
 
-* **Logs:** persisted to `device_logs`. The `/telemetry` overview and
-  `/devices/{id}/logs` HTMX pages query this table directly.
-* **Metrics:** persisted to `device_metrics`. The `/metrics` Prometheus
-  endpoint exposes a curated subset (the names listed above) as
-  `outpost_metric_latest{name="…"}` gauges so Prometheus and Grafana can
-  graph them. Histogram/exponential payloads are reduced to a scalar
-  `count`.
-* **Traces:** persisted to `device_traces`. The `/devices/{id}/telemetry`
-  HTMX page lists the latest 20 spans per device with name, duration,
-  status. Full waterfall view is on the roadmap (likely Tempo
-  integration once we have the budget).
+After plugging in the token:
 
-There is **no exemplar-trace correlation, no log-trace correlation, and
-no metric-exemplar correlation** in v0.6. Send `trace_id`/`span_id` on
-log records freely — they are stored, but not yet rendered as links.
+```bash
+TOKEN="<device_token>"
+curl -X POST https://mdm.secondf8n.tech/v1/logs \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"resourceLogs":[]}'
+# expect: HTTP 200, body {"inserted":0}
+```
 
----
-
-## Versioning
-
-This contract is `OTEL-CONTRACT v0.6`. A breaking change to any of the
-above (rename of an endpoint, change of an enum, removal of a metric from
-the curated Prometheus set) will land in this doc and tag the server
-release as `v0.7`.
-
-To check compatibility from the device, send a single empty batch:
+Send a single record:
 
 ```bash
 curl -X POST https://mdm.secondf8n.tech/v1/logs \
-  -H "Authorization: Bearer <token>" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"resourceLogs":[]}'
+  -d '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"outpost-android"}}]},"scopeLogs":[{"logRecords":[{"timeUnixNano":"1779000000000000000","severityNumber":9,"severityText":"INFO","body":{"stringValue":"smoke_test"}}]}]}]}'
+# expect: HTTP 200, body {"inserted":1}
 ```
 
-If you get `{"inserted":0}` with `200 OK`, the contract is honoured.
+Verify it landed in the UI:
+
+* `https://mdm.secondf8n.tech/telemetry` — overview KPIs increment
+* `https://mdm.secondf8n.tech/devices/{your-device-id}/telemetry` — your device appears
+* `https://mdm.secondf8n.tech/devices/{your-device-id}/logs` — the `smoke_test` event is in the log stream
+
+Grafana fleet dashboard updates within one Prometheus scrape (≤30 s):
+`https://mdm.secondf8n.tech/grafana/` → Outpost folder → "Fleet overview".
+
+---
+
+## 7. Why not OpenObserve / Loki / Honeycomb (briefly)
+
+The v1.0 contract recommended OpenObserve as a single-binary minimal receiver. We tried it on 2026-05-17 evening:
+
+* It ran (256 MB cap, ~200 MB RSS), but **requires Basic Auth on ingest by default** — there is no clean "anonymous Phase 1" mode without disabling auth globally. That conflicts with the v1.0 "no auth Phase 1" assumption.
+* It does **not** know about MDM `customer_id` / `device_id`, so the UI cannot join telemetry to the device records page-by-page.
+* Adding it on top of Prometheus + Grafana + outpost-server + nginx pushes the 1 GB box to ~80 % RAM.
+
+The in-process Axum receiver wins on integration, costs ~1 MB RSS over baseline, and keeps the operational surface flat (one binary, one DB). External collectors remain a Phase-3 option if the device fleet outgrows SQLite — at which point we'd put `routes/otel.rs` in front of a real time-series store rather than rip it out.
+
+---
+
+## 8. Versioning
+
+This contract is `OTEL-CONTRACT v2.0`. Breaking changes (rename of an endpoint, removal of an instrument kind, change to severity mapping) will land here and tag the server release as **v0.7+**. Non-breaking additions (new optional metric name, new attribute on an existing event) do not bump the contract.
+
+To check compatibility from the device at app start, send the empty-batch smoke (§6). If you receive `200 OK` with `inserted:0`, you are on a compatible receiver.
