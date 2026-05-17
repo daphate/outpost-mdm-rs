@@ -4,6 +4,33 @@ Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https:
 
 ## [Unreleased]
 
+_Nothing yet — open a PR!_
+
+## [0.1.0] — 2026-05-17
+
+First production-ready release: API-complete server with 96 passing
+tests, end-to-end device enrollment + sync + push, multipart uploads
+with HMAC-signed downloads, OWASP-style hardening headers, body size
+limit, per-request timeout, container hardening, deploy runbook,
+CI security scans, and full project hygiene docs.
+
+Designed and tested to fit a **1 vCPU / 512 MB RAM Ubuntu 24.04
+droplet** (`mdm.secondf8n.tech`) alongside SQLite and nginx.
+
+The HTMX/Askama admin UI is intentionally deferred to a follow-up
+phase. Operators drive the server via curl/Postman / the OpenAPI
+surface in the meantime.
+
+### Phase 14 — Production-readiness docs + GitHub project hygiene
+
+**Added**
+- `SECURITY.md` — vulnerability disclosure policy, scope matrix, cryptographic posture table, hardening checklist
+- `docs/ARCHITECTURE.md` — module map, request lifecycle, persistence layer, auth model, push pipeline, file pipeline, out-of-scope list
+- `CONTRIBUTING.md` — dev setup, coding conventions, testing conventions, migration rules, commit/PR template
+- `.github/ISSUE_TEMPLATE/{bug_report.yml,feature_request.yml,config.yml}` (blank issues disabled; security contact link)
+- `.github/PULL_REQUEST_TEMPLATE.md` with verification checklist
+- README extended with a Documentation table linking each doc
+
 ### Phase 13 — Transport hardening: body size limit, request timeout, security headers
 
 **Added**
@@ -200,4 +227,5 @@ Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https:
 - README, `.editorconfig`, `.gitattributes` (LF), `.dockerignore`
 - Release profile tuned for size (`opt-level = "z"`, `lto = "fat"`, `strip = "symbols"`, `panic = "abort"`)
 
-[Unreleased]: https://github.com/daphate/outpost-mdm-rs
+[Unreleased]: https://github.com/daphate/outpost-mdm-rs/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/daphate/outpost-mdm-rs/releases/tag/v0.1.0
