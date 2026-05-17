@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+
+{% block title %}Telemetry{% endblock %}
+
+{% block body %}
+{% include "_nav.html" %}
+
+<main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
+  <div class="flex items-center justify-between">
+    <h2 class="text-2xl font-bold">Telemetry overview</h2>
+    <div class="text-xs text-slate-500">Window: last 24 h · Auto-refresh: every 30 s</div>
+  </div>
+
+  <div class="grid grid-cols-2 lg:grid-cols-6 gap-3">
+    <div class="bg-white rounded-lg shadow-sm p-4">
+      <div class="text-xs uppercase tracking-wide text-slate-500">Active devices</div>
+      <div class="text-2xl font-bold mt-1">{{ active_devices }}</div>
+    </div>
+    <div class="bg-white rounded-lg shadow-sm p-4">
+      <div class="text-xs uppercase tracking-wide text-slate-500">Log records</div>
+      <div class="text-2xl font-bold mt-1">{{ logs_24h }}</div>
+    </div>
+    <div class="bg-white rounded-lg shadow-sm p-4">
+      <div class="text-xs uppercase tracking-wide text-slate-500">Errors</div>
+      <div class="text-2xl font-bold mt-1 text-red-600">{{ errors_24h }}</div>
+    </div>
+    <div class="bg-white rounded-lg shadow-sm p-4">
+      <div class="text-xs uppercase tracking-wide text-slate-500">Metric points</div>
+      <div class="text-2xl font-bold mt-1">{{ metrics_24h }}</div>
+    </div>
+    <div class="bg-white rounded-lg shadow-sm p-4">
+      <div class="text-xs uppercase tracking-wide text-slate-500">Spans</div>
+      <div class="text-2xl font-bold mt-1">{{ traces_24h }}</div>
+    </div>
+    <div class="bg-white rounded-lg shadow-sm p-4">
+      <div class="text-xs uppercase tracking-wide text-slate-500">Last ingest</div>
+      <div class="text-sm font-mono mt-2">{{ last_ingest }}</div>
+    </div>
+  </div>
+
+  <section class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    <div class="bg-white rounded-lg shadow-sm overflow-hidden">
+      <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
+        <h3 class="font-medium">Most active devices (24 h)</h3>
+        <span class="text-xs text-slate-500">by log volume</span>
+      </div>
+      <table class="min-w-full divide-y divide-slate-200">
+        <thead class="bg-slate-50">
+          <tr class="text-xs uppercase tracking-wide text-slate-500 text-left">
+            <th class="px-4 py-2">Device</th>
+            <th class="px-4 py-2">Logs</th>
+            <th class="px-4 py-2">Errors</th>
+            <th class="px-4 py-2">Last seen</th>
+            <th class="px-4 py-2 text-right">Open</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+          {% for d in top_devices %}
+          <tr class="hover:bg-slate-50">
+            <td class="px-4 py-2 font-mono text-xs">{{ d.serial }}</td>
+            <td class="px-4 py-2 text-sm">{{ d.logs }}</td>
+            <td class="px-4 py-2 text-sm {% if d.errors > 0 %}text-red-700{% endif %}">{{ d.errors }}</td>
+            <td class="px-4 py-2 text-sm text-slate-500">{{ d.last_seen }}</td>
+            <td class="px-4 py-2 text-right text-sm">
+              <a href="/devices/{{ d.id }}/telemetry" class="text-blue-600 hover:text-blue-800">telemetry</a>
+              <a href="/devices/{{ d.id }}/logs" class="ml-2 text-slate-600 hover:text-slate-900">logs</a>
+            </td>
+          </tr>
+          {% endfor %}
+          {% if top_devices.is_empty() %}
+          <tr><td colspan="5" class="px-4 py-6 text-center text-slate-400 text-sm">No telemetry received yet.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="bg-white rounded-lg shadow-sm overflow-hidden">
+      <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
+        <h3 class="font-medium">Recent errors</h3>
+        <span class="text-xs text-slate-500">severity &ge; ERROR</span>
+      </div>
+      <table class="min-w-full divide-y divide-slate-200">
+        <thead class="bg-slate-50">
+          <tr class="text-xs uppercase tracking-wide text-slate-500 text-left">
+            <th class="px-4 py-2">When</th>
+            <th class="px-4 py-2">Device</th>
+            <th class="px-4 py-2">Severity</th>
+            <th class="px-4 py-2">Body</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+          {% for r in recent_errors %}
+          <tr>
+            <td class="px-4 py-2 text-xs text-slate-500 font-mono">{{ r.ts }}</td>
+            <td class="px-4 py-2 font-mono text-xs"><a href="/devices/{{ r.device_id }}/telemetry" class="hover:underline">{{ r.serial }}</a></td>
+            <td class="px-4 py-2 text-xs">
+              <span class="inline-block px-1.5 py-0.5 rounded bg-red-100 text-red-700">{{ r.severity_text }}</span>
+            </td>
+            <td class="px-4 py-2 text-xs">{{ r.body }}</td>
+          </tr>
+          {% endfor %}
+          {% if recent_errors.is_empty() %}
+          <tr><td colspan="4" class="px-4 py-6 text-center text-slate-400 text-sm">No errors in the last 24 h. </td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="bg-white rounded-lg shadow-sm overflow-hidden">
+    <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
+      <h3 class="font-medium">Top metric names</h3>
+      <span class="text-xs text-slate-500">distinct samples in 24 h</span>
+    </div>
+    <table class="min-w-full divide-y divide-slate-200">
+      <thead class="bg-slate-50">
+        <tr class="text-xs uppercase tracking-wide text-slate-500 text-left">
+          <th class="px-4 py-2">Metric</th>
+          <th class="px-4 py-2">Points</th>
+          <th class="px-4 py-2">Devices</th>
+          <th class="px-4 py-2">Latest sample</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-100">
+        {% for m in top_metrics %}
+        <tr>
+          <td class="px-4 py-2 font-mono text-xs">{{ m.name }}</td>
+          <td class="px-4 py-2 text-sm">{{ m.points }}</td>
+          <td class="px-4 py-2 text-sm">{{ m.devices }}</td>
+          <td class="px-4 py-2 text-sm font-mono">{{ m.latest }}</td>
+        </tr>
+        {% endfor %}
+        {% if top_metrics.is_empty() %}
+        <tr><td colspan="4" class="px-4 py-6 text-center text-slate-400 text-sm">No metrics yet.</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="bg-slate-50 border border-slate-200 rounded-lg p-4 text-sm text-slate-600 space-y-2">
+    <p><strong>Grafana dashboards</strong> (auto-refreshing) are at <a href="/grafana/" class="text-blue-600 hover:underline">/grafana/</a>. The Prometheus scrape happens against this server's <code class="text-xs">/metrics</code> endpoint (loopback only).</p>
+    <p>Devices push OTLP via <code class="text-xs">POST /v1/{traces,metrics,logs}</code> authenticated with the device-token issued at <code class="text-xs">/api/v1/enroll</code>.</p>
+  </section>
+</main>
+
+<meta http-equiv="refresh" content="30">
+{% endblock %}

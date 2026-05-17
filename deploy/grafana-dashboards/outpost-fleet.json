@@ -1,0 +1,118 @@
+{
+  "title": "Outpost — Fleet overview",
+  "uid": "outpost-fleet",
+  "tags": ["outpost", "fleet"],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Devices online",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
+      "targets": [
+        { "refId": "A", "expr": "outpost_devices_online_total" }
+      ],
+      "options": { "colorMode": "value", "graphMode": "area" }
+    },
+    {
+      "id": 2,
+      "title": "Devices enrolled",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
+      "targets": [
+        { "refId": "A", "expr": "outpost_devices_enrolled_total" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Active devices (24h)",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
+      "targets": [
+        { "refId": "A", "expr": "outpost_devices_active_24h" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "OTLP errors (24h)",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
+      "targets": [
+        { "refId": "A", "expr": "outpost_otlp_errors_24h" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Push pending",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
+      "targets": [
+        { "refId": "A", "expr": "outpost_push_pending_total" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Push failed",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 20, "y": 0, "w": 4, "h": 4 },
+      "targets": [
+        { "refId": "A", "expr": "outpost_push_failed_total" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "OTLP ingest — last 24 h",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "outpost_otlp_logs_24h",    "legendFormat": "logs" },
+        { "refId": "B", "expr": "outpost_otlp_metrics_24h", "legendFormat": "metrics" },
+        { "refId": "C", "expr": "outpost_otlp_traces_24h",  "legendFormat": "traces" }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Fleet metrics — latest value per metric name",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "outpost_metric_latest", "legendFormat": "{{name}}" }
+      ]
+    }
+  ]
+}

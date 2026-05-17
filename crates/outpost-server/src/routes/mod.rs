@@ -11,6 +11,8 @@ pub mod devices;
 pub mod enrollment;
 pub mod files;
 pub mod groups;
+pub mod otel;
+pub mod prom;
 pub mod push;
 pub mod settings;
 pub mod stats;
@@ -34,6 +36,8 @@ pub fn api_v1(state: AppState) -> Router {
         .merge(push::router())
         .merge(files::router())
         .merge(enrollment::router())
+        .merge(otel::router())
+        .merge(prom::router())
         .merge(web::router())
         .with_state(state)
 }

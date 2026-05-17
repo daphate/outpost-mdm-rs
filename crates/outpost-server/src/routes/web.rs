@@ -97,6 +97,10 @@ pub fn router() -> Router<AppState> {
         .route("/settings", get(settings_page).post(settings_save))
         // Self-profile (email, etc)
         .route("/profile", get(profile_view).post(profile_save))
+        // Telemetry — fleet overview, per-device drill-down, per-device log stream
+        .route("/telemetry", get(telemetry_overview))
+        .route("/devices/{id}/telemetry", get(device_telemetry_view))
+        .route("/devices/{id}/logs", get(device_logs_view))
         // Current-user password change
         .route(
             "/me/password",
@@ -3572,5 +3576,548 @@ fn format_size(bytes: i64) -> String {
         format!("{:.1} KiB", b / 1024.0)
     } else {
         format!("{bytes} B")
+    }
+}
+
+// =====================================================================
+// Phase 22 — Telemetry UI (OTLP-backed; reads device_logs/_metrics/_traces)
+// =====================================================================
+
+#[derive(Template)]
+#[template(path = "telemetry.html")]
+struct TelemetryOverviewTemplate {
+    user_login: String,
+    active_devices: i64,
+    logs_24h: i64,
+    errors_24h: i64,
+    metrics_24h: i64,
+    traces_24h: i64,
+    last_ingest: String,
+    top_devices: Vec<TopDeviceRow>,
+    recent_errors: Vec<RecentErrorRow>,
+    top_metrics: Vec<TopMetricRow>,
+}
+
+struct TopDeviceRow {
+    id: i64,
+    serial: String,
+    logs: i64,
+    errors: i64,
+    last_seen: String,
+}
+
+struct RecentErrorRow {
+    ts: String,
+    device_id: i64,
+    serial: String,
+    severity_text: String,
+    body: String,
+}
+
+struct TopMetricRow {
+    name: String,
+    points: i64,
+    devices: i64,
+    latest: String,
+}
+
+async fn telemetry_overview(
+    user: WebUser,
+    State(state): State<AppState>,
+) -> Result<Response, ApiError> {
+    let active_devices: i64 = sqlx::query_scalar(
+        "SELECT COUNT(DISTINCT device_id) FROM device_logs \
+         WHERE customer_id = ? AND received_at >= datetime('now', '-1 day')",
+    )
+    .bind(user.customer_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+    let logs_24h: i64 = scalar(
+        &state,
+        user.customer_id,
+        "SELECT COUNT(*) FROM device_logs WHERE customer_id = ? AND received_at >= datetime('now', '-1 day')",
+    )
+    .await
+    .unwrap_or(0);
+    let errors_24h: i64 = scalar(
+        &state,
+        user.customer_id,
+        "SELECT COUNT(*) FROM device_logs WHERE customer_id = ? AND severity_number >= 17 AND received_at >= datetime('now', '-1 day')",
+    )
+    .await
+    .unwrap_or(0);
+    let metrics_24h: i64 = scalar(
+        &state,
+        user.customer_id,
+        "SELECT COUNT(*) FROM device_metrics WHERE customer_id = ? AND received_at >= datetime('now', '-1 day')",
+    )
+    .await
+    .unwrap_or(0);
+    let traces_24h: i64 = scalar(
+        &state,
+        user.customer_id,
+        "SELECT COUNT(*) FROM device_traces WHERE customer_id = ? AND received_at >= datetime('now', '-1 day')",
+    )
+    .await
+    .unwrap_or(0);
+    let last_ingest: String = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT MAX(received_at) FROM device_logs WHERE customer_id = ?",
+    )
+    .bind(user.customer_id)
+    .fetch_one(&state.db)
+    .await
+    .ok()
+    .flatten()
+    .map(|s| fmt_ts(&s))
+    .unwrap_or_else(|| "—".into());
+
+    #[derive(sqlx::FromRow)]
+    struct TopDevRaw {
+        id: i64,
+        serial: String,
+        logs: i64,
+        errors: i64,
+        last_seen: Option<String>,
+    }
+    let top_raw: Vec<TopDevRaw> = sqlx::query_as::<_, TopDevRaw>(
+        "SELECT d.id, d.serial, \
+                COUNT(l.id) AS logs, \
+                SUM(CASE WHEN l.severity_number >= 17 THEN 1 ELSE 0 END) AS errors, \
+                MAX(l.received_at) AS last_seen \
+         FROM devices d \
+         LEFT JOIN device_logs l ON l.device_id = d.id AND l.received_at >= datetime('now', '-1 day') \
+         WHERE d.customer_id = ? \
+         GROUP BY d.id \
+         ORDER BY logs DESC, d.id DESC \
+         LIMIT 10",
+    )
+    .bind(user.customer_id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+    let top_devices: Vec<TopDeviceRow> = top_raw
+        .into_iter()
+        .filter(|r| r.logs > 0)
+        .map(|r| TopDeviceRow {
+            id: r.id,
+            serial: r.serial,
+            logs: r.logs,
+            errors: r.errors,
+            last_seen: r.last_seen.as_deref().map(fmt_ts).unwrap_or_else(|| "—".into()),
+        })
+        .collect();
+
+    #[derive(sqlx::FromRow)]
+    struct ErrRaw {
+        ts: String,
+        device_id: i64,
+        serial: String,
+        severity_text: String,
+        body: String,
+    }
+    let err_raw: Vec<ErrRaw> = sqlx::query_as::<_, ErrRaw>(
+        "SELECT l.ts, l.device_id, d.serial, l.severity_text, l.body \
+         FROM device_logs l JOIN devices d ON d.id = l.device_id \
+         WHERE l.customer_id = ? AND l.severity_number >= 17 \
+         ORDER BY l.id DESC LIMIT 20",
+    )
+    .bind(user.customer_id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+    let recent_errors: Vec<RecentErrorRow> = err_raw
+        .into_iter()
+        .map(|r| RecentErrorRow {
+            ts: fmt_ts(&r.ts),
+            device_id: r.device_id,
+            serial: r.serial,
+            severity_text: r.severity_text,
+            body: trim_to(&r.body, 80),
+        })
+        .collect();
+
+    #[derive(sqlx::FromRow)]
+    struct TopMRaw {
+        name: String,
+        points: i64,
+        devices: i64,
+        latest: Option<f64>,
+    }
+    let metric_raw: Vec<TopMRaw> = sqlx::query_as::<_, TopMRaw>(
+        "SELECT name, COUNT(*) AS points, COUNT(DISTINCT device_id) AS devices, \
+                (SELECT value FROM device_metrics m2 WHERE m2.name = m1.name AND m2.customer_id = m1.customer_id ORDER BY m2.id DESC LIMIT 1) AS latest \
+         FROM device_metrics m1 \
+         WHERE customer_id = ? AND received_at >= datetime('now', '-1 day') \
+         GROUP BY name \
+         ORDER BY points DESC \
+         LIMIT 20",
+    )
+    .bind(user.customer_id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+    let top_metrics: Vec<TopMetricRow> = metric_raw
+        .into_iter()
+        .map(|r| TopMetricRow {
+            name: r.name,
+            points: r.points,
+            devices: r.devices,
+            latest: r
+                .latest
+                .map(|v| format!("{v}"))
+                .unwrap_or_else(|| "—".into()),
+        })
+        .collect();
+
+    Ok(render(TelemetryOverviewTemplate {
+        user_login: user.login,
+        active_devices,
+        logs_24h,
+        errors_24h,
+        metrics_24h,
+        traces_24h,
+        last_ingest,
+        top_devices,
+        recent_errors,
+        top_metrics,
+    }))
+}
+
+#[derive(Template)]
+#[template(path = "device_telemetry.html")]
+struct DeviceTelemetryTemplate {
+    user_login: String,
+    device_id: i64,
+    serial: String,
+    counts: DeviceCounts,
+    latest_metrics: Vec<DeviceMetricRow>,
+    recent_spans: Vec<DeviceSpanRow>,
+    recent_logs: Vec<DeviceLogRow>,
+}
+
+struct DeviceCounts {
+    logs_24h: i64,
+    errors_24h: i64,
+    metrics_24h: i64,
+    traces_24h: i64,
+    last_ingest: String,
+}
+
+struct DeviceMetricRow {
+    name: String,
+    value: String,
+    unit: String,
+    ts: String,
+}
+
+struct DeviceSpanRow {
+    name: String,
+    duration_ms: i64,
+    status_code: i64,
+    start_ts: String,
+}
+
+struct DeviceLogRow {
+    ts: String,
+    severity_number: i64,
+    severity_text: String,
+    body: String,
+    attrs_preview: String,
+}
+
+async fn device_telemetry_view(
+    user: WebUser,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Response, ApiError> {
+    let serial: Option<String> =
+        sqlx::query_scalar("SELECT serial FROM devices WHERE id = ? AND customer_id = ?")
+            .bind(id)
+            .bind(user.customer_id)
+            .fetch_optional(&state.db)
+            .await?;
+    let Some(serial) = serial else {
+        return Err(ApiError::NotFound);
+    };
+
+    let logs_24h: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM device_logs WHERE device_id = ? AND received_at >= datetime('now', '-1 day')",
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+    let errors_24h: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM device_logs WHERE device_id = ? AND severity_number >= 17 AND received_at >= datetime('now', '-1 day')",
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+    let metrics_24h: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM device_metrics WHERE device_id = ? AND received_at >= datetime('now', '-1 day')",
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+    let traces_24h: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM device_traces WHERE device_id = ? AND received_at >= datetime('now', '-1 day')",
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+    let last_ingest: String = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT MAX(received_at) FROM device_logs WHERE device_id = ?",
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await
+    .ok()
+    .flatten()
+    .map(|s| fmt_ts(&s))
+    .unwrap_or_else(|| "—".into());
+
+    #[derive(sqlx::FromRow)]
+    struct MRaw {
+        name: String,
+        value: f64,
+        unit: Option<String>,
+        ts: String,
+    }
+    let m_raw: Vec<MRaw> = sqlx::query_as::<_, MRaw>(
+        "SELECT name, value, unit, ts FROM device_metrics WHERE device_id = ? \
+         AND id IN (SELECT MAX(id) FROM device_metrics WHERE device_id = ? GROUP BY name) \
+         ORDER BY name LIMIT 40",
+    )
+    .bind(id)
+    .bind(id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+    let latest_metrics: Vec<DeviceMetricRow> = m_raw
+        .into_iter()
+        .map(|r| DeviceMetricRow {
+            name: r.name,
+            value: format!("{}", r.value),
+            unit: r.unit.unwrap_or_else(|| "".into()),
+            ts: fmt_ts(&r.ts),
+        })
+        .collect();
+
+    #[derive(sqlx::FromRow)]
+    struct SRaw {
+        name: String,
+        duration_ms: i64,
+        status_code: i64,
+        start_ts: String,
+    }
+    let s_raw: Vec<SRaw> = sqlx::query_as::<_, SRaw>(
+        "SELECT name, duration_ms, status_code, start_ts FROM device_traces \
+         WHERE device_id = ? ORDER BY id DESC LIMIT 20",
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+    let recent_spans: Vec<DeviceSpanRow> = s_raw
+        .into_iter()
+        .map(|r| DeviceSpanRow {
+            name: r.name,
+            duration_ms: r.duration_ms,
+            status_code: r.status_code,
+            start_ts: fmt_ts(&r.start_ts),
+        })
+        .collect();
+
+    #[derive(sqlx::FromRow)]
+    struct LRaw {
+        ts: String,
+        severity_number: i64,
+        severity_text: String,
+        body: String,
+        attrs_json: String,
+    }
+    let l_raw: Vec<LRaw> = sqlx::query_as::<_, LRaw>(
+        "SELECT ts, severity_number, severity_text, body, attrs_json \
+         FROM device_logs WHERE device_id = ? ORDER BY id DESC LIMIT 20",
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+    let recent_logs: Vec<DeviceLogRow> = l_raw
+        .into_iter()
+        .map(|r| DeviceLogRow {
+            ts: fmt_ts(&r.ts),
+            severity_number: r.severity_number,
+            severity_text: r.severity_text,
+            body: trim_to(&r.body, 200),
+            attrs_preview: trim_to(&r.attrs_json, 80),
+        })
+        .collect();
+
+    Ok(render(DeviceTelemetryTemplate {
+        user_login: user.login,
+        device_id: id,
+        serial,
+        counts: DeviceCounts {
+            logs_24h,
+            errors_24h,
+            metrics_24h,
+            traces_24h,
+            last_ingest,
+        },
+        latest_metrics,
+        recent_spans,
+        recent_logs,
+    }))
+}
+
+#[derive(Template)]
+#[template(path = "device_logs.html")]
+struct DeviceLogsTemplate {
+    user_login: String,
+    device_id: i64,
+    serial: String,
+    total: i64,
+    logs: Vec<DeviceLogStreamRow>,
+    min_severity: i64,
+    q: String,
+    since: String,
+    limit: i64,
+}
+
+struct DeviceLogStreamRow {
+    ts: String,
+    severity_number: i64,
+    severity_text: String,
+    body: String,
+    attrs_preview: String,
+    trace_short: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LogsFilter {
+    min_severity: Option<i64>,
+    q: Option<String>,
+    since: Option<String>,
+    limit: Option<i64>,
+}
+
+async fn device_logs_view(
+    user: WebUser,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    axum::extract::Query(filter): axum::extract::Query<LogsFilter>,
+) -> Result<Response, ApiError> {
+    let serial: Option<String> =
+        sqlx::query_scalar("SELECT serial FROM devices WHERE id = ? AND customer_id = ?")
+            .bind(id)
+            .bind(user.customer_id)
+            .fetch_optional(&state.db)
+            .await?;
+    let Some(serial) = serial else {
+        return Err(ApiError::NotFound);
+    };
+
+    let min_severity = filter.min_severity.unwrap_or(1).clamp(1, 24);
+    let since = filter
+        .since
+        .as_deref()
+        .map(str::to_string)
+        .unwrap_or_else(|| "24h".to_string());
+    let since_sql = match since.as_str() {
+        "1h" => "-1 hours",
+        "6h" => "-6 hours",
+        "7d" => "-7 days",
+        "30d" => "-30 days",
+        _ => "-1 days",
+    };
+    let q = filter.q.as_deref().unwrap_or("").trim().to_string();
+    let limit = filter.limit.unwrap_or(200).clamp(10, 1000);
+    let like = if q.is_empty() {
+        "%".to_string()
+    } else {
+        format!("%{q}%")
+    };
+
+    #[derive(sqlx::FromRow)]
+    struct StreamRaw {
+        ts: String,
+        severity_number: i64,
+        severity_text: String,
+        body: String,
+        attrs_json: String,
+        trace_id: Option<String>,
+    }
+    let stream: Vec<StreamRaw> = sqlx::query_as::<_, StreamRaw>(
+        &format!(
+            "SELECT ts, severity_number, severity_text, body, attrs_json, trace_id \
+             FROM device_logs \
+             WHERE device_id = ? \
+               AND severity_number >= ? \
+               AND received_at >= datetime('now', ?) \
+               AND body LIKE ? \
+             ORDER BY id DESC LIMIT {limit}"
+        ),
+    )
+    .bind(id)
+    .bind(min_severity)
+    .bind(since_sql)
+    .bind(&like)
+    .fetch_all(&state.db)
+    .await?;
+    let total: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM device_logs \
+         WHERE device_id = ? AND severity_number >= ? \
+           AND received_at >= datetime('now', ?) \
+           AND body LIKE ?",
+    )
+    .bind(id)
+    .bind(min_severity)
+    .bind(since_sql)
+    .bind(&like)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+
+    let logs: Vec<DeviceLogStreamRow> = stream
+        .into_iter()
+        .map(|r| DeviceLogStreamRow {
+            ts: fmt_ts(&r.ts),
+            severity_number: r.severity_number,
+            severity_text: r.severity_text,
+            body: trim_to(&r.body, 500),
+            attrs_preview: trim_to(&r.attrs_json, 200),
+            trace_short: r
+                .trace_id
+                .as_deref()
+                .map(|t| t.chars().take(12).collect::<String>())
+                .unwrap_or_default(),
+        })
+        .collect();
+
+    Ok(render(DeviceLogsTemplate {
+        user_login: user.login,
+        device_id: id,
+        serial,
+        total,
+        logs,
+        min_severity,
+        q,
+        since,
+        limit,
+    }))
+}
+
+fn trim_to(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max).collect();
+        format!("{truncated}…")
     }
 }

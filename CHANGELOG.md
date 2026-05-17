@@ -4,6 +4,91 @@ Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https:
 
 ## [Unreleased]
 
+### Phase 22 — Device telemetry: OTLP/HTTP-JSON receiver + Prometheus + Grafana
+
+**Why:** Phones go to clients as demo units. We have to see — without
+intruding — whether the client opens the app, what features they touch,
+what errors they hit. The telemetry stream is the only loopback that
+tells us if a demo is alive or sitting in a drawer.
+
+**Schema (migration 0012_telemetry.sql)**
+- `device_logs` (severity-tagged events): timestamp, severity_number /
+  severity_text, body, attrs_json, resource_json, trace_id, span_id.
+- `device_metrics` (counters/gauges/histograms reduced to count): name,
+  kind, value, attrs_json, resource_json, unit.
+- `device_traces`: trace_id, span_id, parent_span_id, name, kind,
+  start_ts/end_ts, duration_ms, status_code, attrs_json, resource_json.
+- `device_activity_daily` rollup table (precomputed nightly for cheap
+  dashboard queries).
+- All four tables have indices on `(device_id, ts)` and `(customer_id,
+  ts)` plus a `received_at` index for the Prometheus 24-h windows.
+
+**Server-side OTLP receiver (`routes/otel.rs`)**
+- `POST /v1/traces`, `POST /v1/metrics`, `POST /v1/logs` — OTLP/HTTP-JSON
+  spec. The spec's protobuf wire format is deferred (JSON is fine on the
+  512 MB box; protobuf needs `prost` + build-time codegen).
+- Authentication: `Authorization: Bearer <device_token>` — the same
+  long-lived JWT issued at `/api/v1/enroll`. The receiver rejects
+  user-issued tokens (401) so admins can't masquerade as devices.
+- Robust parsing: tolerates int / int-as-string / float for both
+  `timeUnixNano` and numeric metric values; flattens OTLP `KeyValue[]`
+  → JSON; handles gauge / sum / histogram / summary instrument kinds.
+
+**Prometheus exposition (`routes/prom.rs`)**
+- `GET /metrics` (no auth — nginx site does not expose it publicly).
+- Server-self metrics: `outpost_build_info`, `outpost_devices_*_total`,
+  `outpost_push_pending_total` / `_failed_total`, `outpost_otlp_*_24h`.
+- `outpost_metric_latest{name="…"}` exposes the latest sample across
+  the fleet for a hard-coded set of 10 common Outpost metric names
+  (battery.pct, app.session_seconds, ml.inference_ms, etc.). This
+  bounds cardinality — Prometheus stays performant.
+
+**Admin UI**
+- New page `/telemetry`: 6 KPI cards (active devices 24 h / logs /
+  errors / metrics / traces / last ingest), top-10 most-active devices
+  table, recent-errors table, top-metric-names table. 30-s auto-refresh.
+- New page `/devices/{id}/telemetry`: 5 KPI cards + latest metric
+  samples + recent spans + recent log events.
+- New page `/devices/{id}/logs`: full log stream with min-severity
+  filter, body-substring search, since-window selector (1h / 6h / 24h /
+  7d / 30d), limit selector (10..1000).
+- `_nav.html` got a Telemetry link.
+
+**Host stack (mdm.secondf8n.tech)**
+- Prometheus installed via apt; scrapes `localhost:8080/metrics` every
+  30 s. 14-day retention, 200 MB cap. RSS ~36 MB.
+- Grafana installed via official apt; pre-provisioned Prometheus
+  datasource; pre-provisioned starter dashboard
+  (`deploy/grafana-dashboards/outpost-fleet.json`).
+  Behind nginx at `/grafana/`. RSS ~290 MB.
+- nginx site config gained `/grafana/` (with WebSocket upgrade) and
+  `/prometheus/` reverse-proxy locations. Canonical version-controlled
+  copy at `deploy/nginx-mdm.secondf8n.tech.conf`.
+- **Operational note:** the 512 MB droplet OOM-killed on first Grafana
+  start. User power-cycled and resized to 1 GB; current free ≈ 400 MB.
+  Phase 22 deploy depends on the 1 GB droplet.
+
+**Tests**
+- 8 new OTLP integration tests in `tests/otel.rs`: logs ingest persists
+  records; rejects user-token / no-token / malformed JSON; gauge + sum
+  metrics ingested; traces compute duration_ms; `/metrics` emits
+  Prometheus-format; empty batches return 200 with `inserted:0`.
+- Suite total: **149 passing**, 0 failed.
+
+**Contract for the device sender** (other session writing OTLP sender
+in Outpost-Android): see `docs/OTEL-CONTRACT.md`. Stable for v0.6.x;
+breaking changes will tag the server release as v0.7.
+
+**Bringing back from the "dropped" list (per user, 2026-05-17 evening)**
+- **Customer / multi-tenant management** — admin UI for managing tenants
+  on shared server.
+- **2FA (TOTP)** — second factor for admin web login.
+- **Signup** — self-service tenant creation.
+
+All three are now on the active roadmap; previously listed as "dropped
+per plan" in v0.5 status table. Memory updated:
+`project_outpost_mdm_rs.md`.
+
 ### Phase 21 — Edit / delete + Headwind feature parity (files, roles, settings, profile)
 
 **Why:** v0.4.0 closed creation but every list page was a one-way street —

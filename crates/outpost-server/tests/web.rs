@@ -597,7 +597,7 @@ async fn config_edit_then_add_then_remove_app_then_delete() {
     let cid = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"].as_i64().unwrap();
 
     // Edit (update description)
-    let body = format!("name=baseline&description=edited&kiosk_package=&is_active=1&settings_json=%7B%7D");
+    let body = "name=baseline&description=edited&kiosk_package=&is_active=1&settings_json=%7B%7D".to_string();
     let (status, _raw) = raw_request_with_cookie(
         "POST",
         &app.url(&format!("/configurations/{cid}/edit")),
