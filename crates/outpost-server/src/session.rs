@@ -25,6 +25,11 @@ use sqlx::SqlitePool;
 /// makes ad-hoc admin queries readable.
 pub const KIND_USER: &str = "user";
 pub const KIND_DEVICE: &str = "device";
+/// Half-authenticated state for TOTP-gated logins. Password verified,
+/// second factor pending. Short TTL (5 min); the WebUser extractor
+/// rejects this kind so no protected endpoint can be reached until
+/// /login/2fa upgrades it to KIND_USER by issuing a new session.
+pub const KIND_PENDING_2FA: &str = "pending_2fa";
 
 /// Result of a successful `verify` — populated from the cached columns
 /// on the `sessions` row.
@@ -88,6 +93,21 @@ pub async fn create_user_session(
         ttl_secs,
     )
     .await
+}
+
+/// Issue a short-lived pending-2FA session. Used between password verify
+/// and TOTP verify. Cannot reach any protected endpoint — see
+/// `WebUser::from_request_parts` rejecting any kind other than KIND_USER.
+pub async fn create_pending_2fa_session(
+    db: &SqlitePool,
+    user_id: i64,
+    customer_id: i64,
+    role_id: i64,
+    login: &str,
+) -> Result<String, sqlx::Error> {
+    // 5-minute TTL — long enough to fish out the phone, short enough that
+    // a forgotten browser tab doesn't sit half-authenticated forever.
+    create(db, KIND_PENDING_2FA, user_id, customer_id, role_id, login, 300).await
 }
 
 /// Create a session for an enrolled device. `role_id` is forced to `0`.

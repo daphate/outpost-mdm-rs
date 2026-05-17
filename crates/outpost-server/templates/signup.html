@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block title %}Sign up — Outpost MDM{% endblock %}
+
+{% block body %}
+<div class="min-h-screen flex items-center justify-center px-4 py-8">
+  <div class="bg-white p-8 rounded-lg shadow-md w-full max-w-md">
+    <h1 class="text-2xl font-semibold mb-1">Outpost MDM</h1>
+    <p class="text-sm text-slate-500 mb-6">Create a new tenant. You'll be the first administrator.</p>
+
+    {% if !signup_enabled %}
+      <div class="bg-amber-50 border border-amber-200 text-amber-900 text-sm px-3 py-3 rounded">
+        Self-service signup is currently <strong>disabled</strong> on this deployment.
+        Ask the operator to enable it in <code class="text-xs">/settings</code> or to create a customer + admin for you manually.
+      </div>
+      <p class="text-xs text-slate-400 mt-4 text-center">
+        <a href="/login" class="hover:underline">Back to sign in</a>
+      </p>
+    {% else %}
+      {% if let Some(e) = error %}
+        <div class="bg-red-50 border border-red-200 text-red-700 text-sm px-3 py-2 rounded mb-4">{{ e }}</div>
+      {% endif %}
+
+      <form method="POST" action="/signup" class="space-y-4">
+        <div>
+          <h2 class="text-xs uppercase tracking-wide text-slate-500 mb-2">Tenant</h2>
+          <label class="block">
+            <span class="text-sm font-medium text-slate-700">Organisation name</span>
+            <input name="customer_name" required minlength="2" maxlength="100" value="{{ customer_name }}"
+                   class="mt-1 block w-full rounded border-slate-300 focus:border-blue-500 focus:ring focus:ring-blue-200 px-3 py-2">
+          </label>
+        </div>
+
+        <div class="pt-2">
+          <h2 class="text-xs uppercase tracking-wide text-slate-500 mb-2">Administrator account</h2>
+          <label class="block">
+            <span class="text-sm font-medium text-slate-700">Login</span>
+            <input name="login" required minlength="2" maxlength="40" pattern="[a-zA-Z0-9_-]+"
+                   value="{{ login }}"
+                   class="mt-1 block w-full rounded border-slate-300 focus:border-blue-500 focus:ring focus:ring-blue-200 px-3 py-2 font-mono">
+          </label>
+          <label class="block mt-3">
+            <span class="text-sm font-medium text-slate-700">Email</span>
+            <input name="email" type="email" required value="{{ email }}"
+                   class="mt-1 block w-full rounded border-slate-300 focus:border-blue-500 focus:ring focus:ring-blue-200 px-3 py-2">
+          </label>
+          <label class="block mt-3">
+            <span class="text-sm font-medium text-slate-700">Password (≥12 chars)</span>
+            <input name="password" type="password" required minlength="12"
+                   class="mt-1 block w-full rounded border-slate-300 focus:border-blue-500 focus:ring focus:ring-blue-200 px-3 py-2">
+          </label>
+        </div>
+
+        <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 rounded mt-4">
+          Create tenant
+        </button>
+      </form>
+
+      <p class="text-xs text-slate-400 mt-6 text-center">
+        Already have an account? <a href="/login" class="text-blue-600 hover:underline">Sign in</a>
+      </p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

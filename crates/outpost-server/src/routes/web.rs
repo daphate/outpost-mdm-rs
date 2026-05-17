@@ -101,6 +101,26 @@ pub fn router() -> Router<AppState> {
         .route("/telemetry", get(telemetry_overview))
         .route("/devices/{id}/telemetry", get(device_telemetry_view))
         .route("/devices/{id}/logs", get(device_logs_view))
+        // Customers (multi-tenant) — super-admin only.
+        .route("/customers", get(customers_page).post(customers_create))
+        .route("/customers/new", post(customers_create))
+        .route(
+            "/customers/{id}/edit",
+            get(customer_edit_view).post(customer_edit_post),
+        )
+        .route("/customers/{id}/toggle-active", post(customer_toggle_active))
+        .route("/customers/{id}/switch", post(customer_switch))
+        // 2FA TOTP — every authenticated user can enrol; login flow uses the
+        // separate /login/2fa step.
+        .route("/me/2fa", get(me_2fa_view))
+        .route("/me/2fa/setup", post(me_2fa_setup))
+        .route("/me/2fa/verify", post(me_2fa_verify))
+        .route("/me/2fa/cancel", post(me_2fa_cancel))
+        .route("/me/2fa/disable", post(me_2fa_disable))
+        .route("/login/2fa", get(login_2fa_page).post(login_2fa_submit))
+        // Public self-service signup. Gated by a server-wide settings flag
+        // (`signup.enabled`). Off by default.
+        .route("/signup", get(signup_view).post(signup_submit))
         // Current-user password change
         .route(
             "/me/password",
@@ -113,9 +133,38 @@ pub fn router() -> Router<AppState> {
 #[derive(Debug, Clone)]
 pub struct WebUser {
     pub id: i64,
+    /// The customer this session is scoped to right now. Equal to the
+    /// authenticated user's home tenant in the common case; differs when
+    /// a super-admin has "switched into" another tenant via the
+    /// `outpost_acting` cookie. Every query that filters by tenant should
+    /// use this value, not the home_customer_id.
     pub customer_id: i64,
+    /// The customer the user actually belongs to. Authoritative for
+    /// authorisation; the customer-switch overlay only mutates the active
+    /// scope, not membership.
+    pub home_customer_id: i64,
     pub role_id: i64,
     pub login: String,
+    /// True when the user's role is the super-admin role (id = 1). Computed
+    /// once at extract time so handlers can short-circuit cross-tenant
+    /// checks without a second DB round-trip.
+    pub is_super_admin: bool,
+}
+
+impl WebUser {
+    /// Reject early if the current user is not super-admin.
+    ///
+    /// The lint says `Result<_, Response>` carries a ~150-byte Err
+    /// variant — that's true of every handler in this file already, so
+    /// accept the local opt-out.
+    #[allow(clippy::result_large_err)]
+    pub fn require_super_admin(&self) -> Result<(), Response> {
+        if self.is_super_admin {
+            Ok(())
+        } else {
+            Err((StatusCode::FORBIDDEN, "Super-admin required").into_response())
+        }
+    }
 }
 
 impl FromRequestParts<AppState> for WebUser {
@@ -137,16 +186,64 @@ impl FromRequestParts<AppState> for WebUser {
             .fetch_optional(&state.db)
             .await
             .map_err(|_| Redirect::to("/login"))?;
-        match active {
-            Some(1) => Ok(WebUser {
-                id: s.subject_id,
-                customer_id: s.customer_id,
-                role_id: s.role_id,
-                login: s.login,
-            }),
-            _ => Err(Redirect::to("/login")),
+        if active != Some(1) {
+            return Err(Redirect::to("/login"));
+        }
+
+        let is_super_admin: bool = sqlx::query_scalar::<_, i64>(
+            "SELECT is_super_admin FROM user_roles WHERE id = ?",
+        )
+        .bind(s.role_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|_| Redirect::to("/login"))?
+        .map(|n| n != 0)
+        .unwrap_or(false);
+
+        // Customer-switch overlay: super-admin only. The cookie value is the
+        // numeric customer_id they want to act as. Any other user with the
+        // cookie set is ignored (cookie is harmless — they can't escalate).
+        let mut active_customer_id = s.customer_id;
+        if is_super_admin {
+            if let Some(acting) = read_cookie(parts, "outpost_acting")
+                .and_then(|v| v.parse::<i64>().ok())
+            {
+                let exists: Option<i64> = sqlx::query_scalar(
+                    "SELECT 1 FROM customers WHERE id = ? AND is_active = 1",
+                )
+                .bind(acting)
+                .fetch_optional(&state.db)
+                .await
+                .ok()
+                .flatten();
+                if exists.is_some() {
+                    active_customer_id = acting;
+                }
+            }
+        }
+
+        Ok(WebUser {
+            id: s.subject_id,
+            customer_id: active_customer_id,
+            home_customer_id: s.customer_id,
+            role_id: s.role_id,
+            login: s.login,
+            is_super_admin,
+        })
+    }
+}
+
+fn read_cookie(parts: &Parts, name: &str) -> Option<String> {
+    let hdr = parts.headers.get(header::COOKIE)?.to_str().ok()?;
+    for kv in hdr.split(';') {
+        let kv = kv.trim();
+        if let Some(v) = kv.strip_prefix(&format!("{name}=")) {
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
         }
     }
+    None
 }
 
 // ----- Handlers ----------------------------------------------------------
@@ -182,8 +279,18 @@ async fn login_submit(
             error: Some("Too many login attempts. Try again in a moment.".into()),
         });
     }
-    let row: Option<(i64, i64, i64, Option<String>, i64)> = match sqlx::query_as(
-        "SELECT id, customer_id, role_id, password_hash, is_active FROM users WHERE login = ?",
+    #[derive(sqlx::FromRow)]
+    struct LoginRow {
+        id: i64,
+        customer_id: i64,
+        role_id: i64,
+        password_hash: Option<String>,
+        is_active: i64,
+        totp_enabled: i64,
+    }
+    let row: Option<LoginRow> = match sqlx::query_as::<_, LoginRow>(
+        "SELECT id, customer_id, role_id, password_hash, is_active, totp_enabled \
+         FROM users WHERE login = ?",
     )
     .bind(&form.login)
     .fetch_optional(&state.db)
@@ -197,7 +304,15 @@ async fn login_submit(
             });
         }
     };
-    let Some((id, customer_id, role_id, password_hash, is_active)) = row else {
+    let Some(LoginRow {
+        id,
+        customer_id,
+        role_id,
+        password_hash,
+        is_active,
+        totp_enabled,
+    }) = row
+    else {
         return render(LoginTemplate {
             error: Some("Invalid login or password.".into()),
         });
@@ -216,6 +331,34 @@ async fn login_submit(
         return render(LoginTemplate {
             error: Some("Invalid login or password.".into()),
         });
+    }
+
+    // 2FA gate: if the user has TOTP enabled, issue a short-lived
+    // pending-2FA session and bounce them to /login/2fa for the second
+    // factor. The pending session token rides in the cookie just like a
+    // normal session, but its `kind = pending_2fa` keeps every protected
+    // route inaccessible until upgraded.
+    if totp_enabled != 0 {
+        let pending = match session::create_pending_2fa_session(
+            &state.db,
+            id,
+            customer_id,
+            role_id,
+            &form.login,
+        )
+        .await
+        {
+            Ok(t) => t,
+            Err(_) => {
+                return render(LoginTemplate {
+                    error: Some("Could not issue session.".into()),
+                });
+            }
+        };
+        let mut resp = Redirect::to("/login/2fa").into_response();
+        // Pending cookie has a 5-minute Max-Age — matches the session TTL.
+        set_pending_2fa_cookie(&mut resp, &pending, state.secure_cookies);
+        return resp;
     }
 
     let token = match session::create_user_session(
@@ -248,6 +391,23 @@ async fn login_submit(
         state.session_ttl_secs,
     );
     resp
+}
+
+fn set_pending_2fa_cookie(resp: &mut Response, token: &str, secure: bool) {
+    let cookie = format!(
+        "outpost_pending_2fa={token}; Path=/; HttpOnly; SameSite=Lax{}; Max-Age=300",
+        if secure { "; Secure" } else { "" },
+    );
+    if let Ok(v) = HeaderValue::from_str(&cookie) {
+        resp.headers_mut().append(header::SET_COOKIE, v);
+    }
+}
+
+fn clear_pending_2fa_cookie(resp: &mut Response) {
+    let cookie = "outpost_pending_2fa=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0";
+    if let Ok(v) = HeaderValue::from_str(cookie) {
+        resp.headers_mut().append(header::SET_COOKIE, v);
+    }
 }
 
 async fn logout(parts_extractor: LogoutToken, State(state): State<AppState>) -> Response {
@@ -4120,4 +4280,911 @@ fn trim_to(s: &str, max: usize) -> String {
         let truncated: String = s.chars().take(max).collect();
         format!("{truncated}…")
     }
+}
+
+// =====================================================================
+// Phase 23 — Customer / 2FA / Signup
+// =====================================================================
+
+// ----- /customers (super-admin only) ---------------------------------------
+
+#[derive(Template)]
+#[template(path = "customers.html")]
+struct CustomersTemplate {
+    user_login: String,
+    total: i64,
+    customers: Vec<CustomerListRow>,
+    flash: Option<String>,
+    create_error: Option<String>,
+}
+
+struct CustomerListRow {
+    id: i64,
+    name: String,
+    kind: String,
+    is_active: bool,
+    device_count: i64,
+    user_count: i64,
+    created_at: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct CustomerListRaw {
+    id: i64,
+    name: String,
+    kind: String,
+    is_active: bool,
+    device_count: i64,
+    user_count: i64,
+    created_at: String,
+}
+
+async fn customers_page(
+    user: WebUser,
+    State(state): State<AppState>,
+    flash: FlashCookie,
+) -> Result<Response, Response> {
+    user.require_super_admin()?;
+    render_customers(&user, &state, flash.0, None)
+        .await
+        .map_err(|e| e.into_response())
+}
+
+async fn render_customers(
+    user: &WebUser,
+    state: &AppState,
+    flash: Option<String>,
+    create_error: Option<String>,
+) -> Result<Response, ApiError> {
+    let rows: Vec<CustomerListRaw> = sqlx::query_as::<_, CustomerListRaw>(
+        "SELECT c.id, c.name, c.kind, c.is_active, \
+                (SELECT COUNT(*) FROM devices d WHERE d.customer_id = c.id) AS device_count, \
+                (SELECT COUNT(*) FROM users  u WHERE u.customer_id = c.id) AS user_count, \
+                c.created_at \
+         FROM customers c ORDER BY c.id LIMIT 500",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM customers")
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(0);
+    let customers = rows
+        .into_iter()
+        .map(|r| CustomerListRow {
+            id: r.id,
+            name: r.name,
+            kind: r.kind,
+            is_active: r.is_active,
+            device_count: r.device_count,
+            user_count: r.user_count,
+            created_at: fmt_ts(&r.created_at),
+        })
+        .collect();
+    let mut resp = render(CustomersTemplate {
+        user_login: user.login.clone(),
+        total,
+        customers,
+        flash,
+        create_error,
+    });
+    clear_flash_cookie(&mut resp);
+    Ok(resp)
+}
+
+#[derive(Debug, Deserialize)]
+struct NewCustomerForm {
+    name: String,
+    description: Option<String>,
+    kind: Option<String>,
+}
+
+async fn customers_create(
+    user: WebUser,
+    State(state): State<AppState>,
+    Form(req): Form<NewCustomerForm>,
+) -> Result<Response, Response> {
+    user.require_super_admin()?;
+    let name = req.name.trim();
+    if name.is_empty() {
+        return render_customers(&user, &state, None, Some("Name is required".into()))
+            .await
+            .map_err(|e| e.into_response());
+    }
+    let description = req
+        .description
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let kind = req
+        .kind
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| matches!(*s, "production" | "demo" | "test"))
+        .unwrap_or("production");
+    let res = sqlx::query(
+        "INSERT INTO customers (name, description, kind) VALUES (?, ?, ?)",
+    )
+    .bind(name)
+    .bind(description)
+    .bind(kind)
+    .execute(&state.db)
+    .await;
+    match res {
+        Ok(_) => Ok(redirect_with_flash("/customers", "Customer created.")),
+        Err(sqlx::Error::Database(db)) if db.is_unique_violation() => render_customers(
+            &user,
+            &state,
+            None,
+            Some(format!("Customer '{name}' already exists")),
+        )
+        .await
+        .map_err(|e| e.into_response()),
+        Err(e) => {
+            tracing::error!(error = %e, "customers_create insert failed");
+            render_customers(&user, &state, None, Some("Database error".into()))
+                .await
+                .map_err(|e| e.into_response())
+        }
+    }
+}
+
+#[derive(Template)]
+#[template(path = "customer_edit.html")]
+struct CustomerEditTemplate {
+    user_login: String,
+    customer_id: i64,
+    name: String,
+    description: String,
+    metadata_json: String,
+    kind_options: Vec<(&'static str, bool)>,
+    device_count: i64,
+    user_count: i64,
+    flash: Option<String>,
+    error: Option<String>,
+}
+
+const CUSTOMER_KINDS: &[&str] = &["production", "demo", "test"];
+
+async fn customer_edit_view(
+    user: WebUser,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    flash: FlashCookie,
+) -> Result<Response, Response> {
+    user.require_super_admin()?;
+    render_customer_edit(&user, &state, id, flash.0, None)
+        .await
+        .map_err(|e| e.into_response())
+}
+
+async fn render_customer_edit(
+    user: &WebUser,
+    state: &AppState,
+    id: i64,
+    flash: Option<String>,
+    error: Option<String>,
+) -> Result<Response, ApiError> {
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        name: String,
+        description: Option<String>,
+        kind: String,
+        metadata_json: String,
+    }
+    let row: Option<Row> = sqlx::query_as::<_, Row>(
+        "SELECT name, description, kind, metadata_json FROM customers WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?;
+    let Some(Row {
+        name,
+        description,
+        kind,
+        metadata_json,
+    }) = row
+    else {
+        return Err(ApiError::NotFound);
+    };
+    let device_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE customer_id = ?")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(0);
+    let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE customer_id = ?")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(0);
+    let kind_options = CUSTOMER_KINDS.iter().map(|k| (*k, *k == kind.as_str())).collect();
+    let mut resp = render(CustomerEditTemplate {
+        user_login: user.login.clone(),
+        customer_id: id,
+        name,
+        description: description.unwrap_or_default(),
+        metadata_json,
+        kind_options,
+        device_count,
+        user_count,
+        flash,
+        error,
+    });
+    clear_flash_cookie(&mut resp);
+    Ok(resp)
+}
+
+#[derive(Debug, Deserialize)]
+struct CustomerEditForm {
+    name: String,
+    description: Option<String>,
+    kind: String,
+    metadata_json: Option<String>,
+}
+
+async fn customer_edit_post(
+    user: WebUser,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Form(req): Form<CustomerEditForm>,
+) -> Result<Response, Response> {
+    user.require_super_admin()?;
+    let name = req.name.trim();
+    if name.is_empty() {
+        return render_customer_edit(&user, &state, id, None, Some("Name is required".into()))
+            .await
+            .map_err(|e| e.into_response());
+    }
+    let kind = req.kind.trim();
+    if !CUSTOMER_KINDS.contains(&kind) {
+        return render_customer_edit(&user, &state, id, None, Some("Unknown kind".into()))
+            .await
+            .map_err(|e| e.into_response());
+    }
+    let metadata = req
+        .metadata_json
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("{}");
+    if let Err(e) = serde_json::from_str::<serde_json::Value>(metadata) {
+        return render_customer_edit(
+            &user,
+            &state,
+            id,
+            None,
+            Some(format!("metadata_json invalid: {e}")),
+        )
+        .await
+        .map_err(|err| err.into_response());
+    }
+    let description = req
+        .description
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let res = sqlx::query(
+        "UPDATE customers SET name = ?, description = ?, kind = ?, metadata_json = ?, \
+                              updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(name)
+    .bind(description)
+    .bind(kind)
+    .bind(metadata)
+    .bind(id)
+    .execute(&state.db)
+    .await;
+    match res {
+        Ok(r) if r.rows_affected() > 0 => Ok(redirect_with_flash(
+            &format!("/customers/{id}/edit"),
+            "Customer updated.",
+        )),
+        Ok(_) => Err((StatusCode::NOT_FOUND, "Not found").into_response()),
+        Err(sqlx::Error::Database(db)) if db.is_unique_violation() => render_customer_edit(
+            &user,
+            &state,
+            id,
+            None,
+            Some(format!("Customer '{name}' already exists")),
+        )
+        .await
+        .map_err(|e| e.into_response()),
+        Err(e) => {
+            tracing::error!(error = %e, "customer_edit_post failed");
+            render_customer_edit(&user, &state, id, None, Some("Database error".into()))
+                .await
+                .map_err(|e| e.into_response())
+        }
+    }
+}
+
+async fn customer_toggle_active(
+    user: WebUser,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Response, Response> {
+    user.require_super_admin()?;
+    // Don't allow disabling the customer the super-admin is logged into.
+    if id == user.home_customer_id {
+        return Ok(redirect_with_flash(
+            "/customers",
+            "Cannot disable your own home tenant.",
+        ));
+    }
+    let res = sqlx::query(
+        "UPDATE customers SET is_active = 1 - is_active, updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await;
+    Ok(match res {
+        Ok(r) if r.rows_affected() > 0 => {
+            redirect_with_flash("/customers", "Customer status toggled.")
+        }
+        Ok(_) => redirect_with_flash("/customers", "Customer not found."),
+        Err(e) => {
+            tracing::error!(error = %e, "customer_toggle_active failed");
+            redirect_with_flash("/customers", "Database error.")
+        }
+    })
+}
+
+async fn customer_switch(
+    user: WebUser,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Response, Response> {
+    user.require_super_admin()?;
+    // Verify the customer exists and is active.
+    let exists: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM customers WHERE id = ? AND is_active = 1",
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+    if exists.is_none() {
+        return Ok(redirect_with_flash(
+            "/customers",
+            "Customer not found or disabled.",
+        ));
+    }
+    let mut resp = Redirect::to("/dashboard").into_response();
+    // 24 hour Max-Age, scoped to /. SameSite=Lax so following a link from
+    // /customers picks it up immediately.
+    let cookie = format!(
+        "outpost_acting={id}; Path=/; HttpOnly; SameSite=Lax{}; Max-Age=86400",
+        if state.secure_cookies { "; Secure" } else { "" },
+    );
+    if let Ok(v) = HeaderValue::from_str(&cookie) {
+        resp.headers_mut().append(header::SET_COOKIE, v);
+    }
+    set_flash_cookie(
+        &mut resp,
+        &format!("Now acting as customer #{id}"),
+    );
+    Ok(resp)
+}
+
+// ----- /me/2fa (TOTP setup) ------------------------------------------------
+
+#[derive(Template)]
+#[template(path = "me_2fa.html")]
+struct Me2faTemplate {
+    user_login: String,
+    totp_enabled: bool,
+    setup_secret: Option<String>,
+    qr_svg: String,
+    flash: Option<String>,
+    error: Option<String>,
+    recovery_codes: Option<Vec<String>>,
+}
+
+async fn me_2fa_view(
+    user: WebUser,
+    State(state): State<AppState>,
+    flash: FlashCookie,
+) -> Result<Response, ApiError> {
+    let row: Option<(i64, Option<String>)> = sqlx::query_as(
+        "SELECT totp_enabled, totp_secret FROM users WHERE id = ?",
+    )
+    .bind(user.id)
+    .fetch_optional(&state.db)
+    .await?;
+    let (totp_enabled, current_secret) = row.unwrap_or((0, None));
+    // If totp is NOT enabled but a secret exists, we're in mid-setup —
+    // show the QR for that secret. If enabled, hide the secret.
+    let (setup_secret, qr_svg) = if totp_enabled == 0 {
+        match current_secret {
+            Some(s) => {
+                let uri = crate::totp::otpauth_uri(&s, "Outpost MDM", &user.login);
+                (Some(s), qrcode_svg(&uri))
+            }
+            None => (None, String::new()),
+        }
+    } else {
+        (None, String::new())
+    };
+    let mut resp = render(Me2faTemplate {
+        user_login: user.login,
+        totp_enabled: totp_enabled != 0,
+        setup_secret,
+        qr_svg,
+        flash: flash.0,
+        error: None,
+        recovery_codes: None,
+    });
+    clear_flash_cookie(&mut resp);
+    Ok(resp)
+}
+
+async fn me_2fa_setup(
+    user: WebUser,
+    State(state): State<AppState>,
+) -> Result<Response, ApiError> {
+    // Fresh secret — overrides any previous half-enrolled secret. Doesn't
+    // touch totp_enabled (still 0 until /verify succeeds).
+    let secret = crate::totp::generate_secret();
+    sqlx::query("UPDATE users SET totp_secret = ?, totp_enabled = 0 WHERE id = ?")
+        .bind(&secret)
+        .bind(user.id)
+        .execute(&state.db)
+        .await?;
+    Ok(Redirect::to("/me/2fa").into_response())
+}
+
+#[derive(Debug, Deserialize)]
+struct Me2faVerifyForm {
+    code: String,
+}
+
+async fn me_2fa_verify(
+    user: WebUser,
+    State(state): State<AppState>,
+    Form(req): Form<Me2faVerifyForm>,
+) -> Result<Response, ApiError> {
+    let secret: Option<String> =
+        sqlx::query_scalar("SELECT totp_secret FROM users WHERE id = ?")
+            .bind(user.id)
+            .fetch_optional(&state.db)
+            .await?
+            .flatten();
+    let Some(secret) = secret else {
+        return Ok(Redirect::to("/me/2fa").into_response());
+    };
+    if !crate::totp::verify(&secret, req.code.trim()) {
+        // Re-render with error.
+        let uri = crate::totp::otpauth_uri(&secret, "Outpost MDM", &user.login);
+        let qr = qrcode_svg(&uri);
+        let mut resp = render(Me2faTemplate {
+            user_login: user.login,
+            totp_enabled: false,
+            setup_secret: Some(secret),
+            qr_svg: qr,
+            flash: None,
+            error: Some("Code did not match. Try again — codes change every 30 s.".into()),
+            recovery_codes: None,
+        });
+        clear_flash_cookie(&mut resp);
+        return Ok(resp);
+    }
+    // Generate 10 single-use recovery codes; show them once.
+    let mut tx = state.db.begin().await?;
+    sqlx::query("UPDATE users SET totp_enabled = 1, updated_at = datetime('now') WHERE id = ?")
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM totp_recovery_codes WHERE user_id = ?")
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await?;
+    let mut plain_codes = Vec::with_capacity(10);
+    for _ in 0..10 {
+        let code = generate_recovery_code();
+        let hash = crypto::hash_password(&code).map_err(|_| ApiError::Internal)?;
+        sqlx::query(
+            "INSERT INTO totp_recovery_codes (user_id, code_hash) VALUES (?, ?)",
+        )
+        .bind(user.id)
+        .bind(&hash)
+        .execute(&mut *tx)
+        .await?;
+        plain_codes.push(code);
+    }
+    tx.commit().await?;
+    let mut resp = render(Me2faTemplate {
+        user_login: user.login,
+        totp_enabled: true,
+        setup_secret: None,
+        qr_svg: String::new(),
+        flash: Some("2FA enabled. Save the recovery codes shown below — they will not be displayed again.".into()),
+        error: None,
+        recovery_codes: Some(plain_codes),
+    });
+    clear_flash_cookie(&mut resp);
+    Ok(resp)
+}
+
+async fn me_2fa_cancel(
+    user: WebUser,
+    State(state): State<AppState>,
+) -> Result<Response, ApiError> {
+    sqlx::query("UPDATE users SET totp_secret = NULL, totp_enabled = 0 WHERE id = ? AND totp_enabled = 0")
+        .bind(user.id)
+        .execute(&state.db)
+        .await?;
+    Ok(redirect_with_flash("/me/2fa", "Setup cancelled."))
+}
+
+async fn me_2fa_disable(
+    user: WebUser,
+    State(state): State<AppState>,
+) -> Result<Response, ApiError> {
+    let mut tx = state.db.begin().await?;
+    sqlx::query("UPDATE users SET totp_secret = NULL, totp_enabled = 0 WHERE id = ?")
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM totp_recovery_codes WHERE user_id = ?")
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(redirect_with_flash("/me/2fa", "2FA disabled."))
+}
+
+fn generate_recovery_code() -> String {
+    // Human-readable: 4 groups of 4 alphanumerics, dash-separated.
+    let mut out = String::with_capacity(19);
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let alphabet: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
+    for g in 0..4 {
+        for _ in 0..4 {
+            let idx = rng.gen_range(0..alphabet.len());
+            out.push(alphabet[idx] as char);
+        }
+        if g < 3 {
+            out.push('-');
+        }
+    }
+    out
+}
+
+// ----- /login/2fa (second factor) ------------------------------------------
+
+#[derive(Template)]
+#[template(path = "login_2fa.html")]
+struct Login2faTemplate {
+    pending_token: String,
+    error: Option<String>,
+}
+
+/// Extractor that reads `outpost_pending_2fa` cookie and verifies the
+/// session kind is `pending_2fa`. Returns the pending Session info.
+struct Pending2fa(session::Session);
+
+impl FromRequestParts<AppState> for Pending2fa {
+    type Rejection = Redirect;
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let token = read_cookie(parts, "outpost_pending_2fa")
+            .ok_or_else(|| Redirect::to("/login"))?;
+        let s = session::verify(&token, &state.db)
+            .await
+            .map_err(|_| Redirect::to("/login"))?;
+        if s.kind != session::KIND_PENDING_2FA {
+            return Err(Redirect::to("/login"));
+        }
+        Ok(Pending2fa(s))
+    }
+}
+
+async fn login_2fa_page(pending: Pending2fa) -> Response {
+    // No flash-cookie clear here — we still need the pending-2FA cookie.
+    render(Login2faTemplate {
+        pending_token: pending.0.id_hash.clone(),
+        error: None,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct Login2faForm {
+    code: Option<String>,
+    recovery_code: Option<String>,
+}
+
+async fn login_2fa_submit(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    pending: Pending2fa,
+    Form(req): Form<Login2faForm>,
+) -> Response {
+    if !state.login_limiter.try_take(ip) {
+        return render(Login2faTemplate {
+            pending_token: pending.0.id_hash.clone(),
+            error: Some("Too many attempts. Try again in a moment.".into()),
+        });
+    }
+    let user_id = pending.0.subject_id;
+    let secret: Option<String> =
+        sqlx::query_scalar("SELECT totp_secret FROM users WHERE id = ?")
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .flatten();
+    let Some(secret) = secret else {
+        return render(Login2faTemplate {
+            pending_token: pending.0.id_hash.clone(),
+            error: Some("2FA is not set up on this account. Sign in again.".into()),
+        });
+    };
+
+    let mut ok = false;
+    let code = req.code.as_deref().unwrap_or("").trim();
+    if !code.is_empty() && crate::totp::verify(&secret, code) {
+        ok = true;
+    }
+    if !ok {
+        let recovery = req.recovery_code.as_deref().unwrap_or("").trim();
+        if !recovery.is_empty() {
+            ok = consume_recovery_code(&state, user_id, recovery)
+                .await
+                .unwrap_or(false);
+        }
+    }
+
+    if !ok {
+        return render(Login2faTemplate {
+            pending_token: pending.0.id_hash.clone(),
+            error: Some("Code did not match.".into()),
+        });
+    }
+
+    // Upgrade the pending session: issue a fresh full-strength user session
+    // and revoke the pending one. (Two-step so the pending token can't be
+    // replayed.)
+    let token = match session::create_user_session(
+        &state.db,
+        user_id,
+        pending.0.customer_id,
+        pending.0.role_id,
+        &pending.0.login,
+        state.session_ttl_secs,
+    )
+    .await
+    {
+        Ok(t) => t,
+        Err(_) => {
+            return render(Login2faTemplate {
+                pending_token: pending.0.id_hash.clone(),
+                error: Some("Could not issue session.".into()),
+            });
+        }
+    };
+    // Pending-session row will expire on its own in <5 min, but revoke it
+    // immediately so the cookie can't be reused.
+    let _ = session::revoke_all_for_subject(
+        &state.db,
+        session::KIND_PENDING_2FA,
+        user_id,
+    )
+    .await;
+    let _ = sqlx::query("UPDATE users SET last_login_at = datetime('now') WHERE id = ?")
+        .bind(user_id)
+        .execute(&state.db)
+        .await;
+    let mut resp = Redirect::to("/dashboard").into_response();
+    set_session_cookie(&mut resp, &token, state.secure_cookies, state.session_ttl_secs);
+    clear_pending_2fa_cookie(&mut resp);
+    resp
+}
+
+async fn consume_recovery_code(
+    state: &AppState,
+    user_id: i64,
+    plain: &str,
+) -> Result<bool, sqlx::Error> {
+    // We can't query by hash (each row has a different salt). Pull all
+    // unused codes, attempt verify against each; on match, mark used.
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        id: i64,
+        code_hash: String,
+    }
+    let rows: Vec<Row> = sqlx::query_as::<_, Row>(
+        "SELECT id, code_hash FROM totp_recovery_codes WHERE user_id = ? AND used_at IS NULL",
+    )
+    .bind(user_id)
+    .fetch_all(&state.db)
+    .await?;
+    for r in rows {
+        if crypto::verify_password(plain, &r.code_hash).unwrap_or(false) {
+            sqlx::query(
+                "UPDATE totp_recovery_codes SET used_at = datetime('now') WHERE id = ?",
+            )
+            .bind(r.id)
+            .execute(&state.db)
+            .await?;
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+// ----- /signup (public, opt-in) --------------------------------------------
+
+#[derive(Template)]
+#[template(path = "signup.html")]
+struct SignupTemplate {
+    signup_enabled: bool,
+    customer_name: String,
+    login: String,
+    email: String,
+    error: Option<String>,
+}
+
+async fn signup_view(State(state): State<AppState>) -> Response {
+    let enabled = signup_is_enabled(&state).await;
+    render(SignupTemplate {
+        signup_enabled: enabled,
+        customer_name: String::new(),
+        login: String::new(),
+        email: String::new(),
+        error: None,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct SignupForm {
+    customer_name: String,
+    login: String,
+    email: String,
+    password: String,
+}
+
+async fn signup_submit(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    Form(req): Form<SignupForm>,
+) -> Response {
+    if !signup_is_enabled(&state).await {
+        return render(SignupTemplate {
+            signup_enabled: false,
+            customer_name: req.customer_name,
+            login: req.login,
+            email: req.email,
+            error: None,
+        });
+    }
+    // Reuse the login rate limiter — signup is just as brute-forceable.
+    if !state.login_limiter.try_take(ip) {
+        return render(SignupTemplate {
+            signup_enabled: true,
+            customer_name: req.customer_name.clone(),
+            login: req.login.clone(),
+            email: req.email.clone(),
+            error: Some("Too many signup attempts. Try again in a moment.".into()),
+        });
+    }
+    let cname = req.customer_name.trim();
+    let login = req.login.trim();
+    let email = req.email.trim();
+    if cname.len() < 2 {
+        return render_signup_error(&req, "Organisation name must be ≥2 chars");
+    }
+    if login.len() < 2 {
+        return render_signup_error(&req, "Login must be ≥2 chars");
+    }
+    if email.is_empty() || !email.contains('@') {
+        return render_signup_error(&req, "Email looks invalid");
+    }
+    if req.password.len() < 12 {
+        return render_signup_error(&req, "Password must be ≥12 chars");
+    }
+
+    let phc = match crypto::hash_password(&req.password) {
+        Ok(s) => s,
+        Err(_) => return render_signup_error(&req, "Password hash error"),
+    };
+
+    let mut tx = match state.db.begin().await {
+        Ok(t) => t,
+        Err(_) => return render_signup_error(&req, "Database error"),
+    };
+    let customer_id: i64 = match sqlx::query_scalar(
+        "INSERT INTO customers (name, kind) VALUES (?, 'production') RETURNING id",
+    )
+    .bind(cname)
+    .fetch_one(&mut *tx)
+    .await
+    {
+        Ok(id) => id,
+        Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
+            return render_signup_error(&req, "An organisation with that name already exists");
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "signup customer insert failed");
+            return render_signup_error(&req, "Database error");
+        }
+    };
+    // role_id = 2 (admin) — admin of THEIR tenant only, not super-admin.
+    let user_insert = sqlx::query(
+        "INSERT INTO users (customer_id, role_id, login, email, password_hash, is_active) \
+         VALUES (?, 2, ?, ?, ?, 1)",
+    )
+    .bind(customer_id)
+    .bind(login)
+    .bind(email)
+    .bind(&phc)
+    .execute(&mut *tx)
+    .await;
+    match user_insert {
+        Ok(_) => {}
+        Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
+            return render_signup_error(&req, "That login is already taken");
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "signup user insert failed");
+            return render_signup_error(&req, "Database error");
+        }
+    }
+    if let Err(e) = tx.commit().await {
+        tracing::error!(error = %e, "signup tx commit failed");
+        return render_signup_error(&req, "Database error");
+    }
+    tracing::info!(customer = cname, login, "tenant signed up via /signup");
+    // Issue a session immediately so they land on /dashboard logged-in.
+    let row: Option<(i64, i64)> =
+        sqlx::query_as("SELECT id, role_id FROM users WHERE login = ?")
+            .bind(login)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
+    let Some((user_id, role_id)) = row else {
+        return render_signup_error(&req, "Internal error — please sign in manually");
+    };
+    let token = match session::create_user_session(
+        &state.db,
+        user_id,
+        customer_id,
+        role_id,
+        login,
+        state.session_ttl_secs,
+    )
+    .await
+    {
+        Ok(t) => t,
+        Err(_) => return render_signup_error(&req, "Internal error"),
+    };
+    let mut resp = Redirect::to("/dashboard").into_response();
+    set_session_cookie(&mut resp, &token, state.secure_cookies, state.session_ttl_secs);
+    resp
+}
+
+fn render_signup_error(req: &SignupForm, msg: &str) -> Response {
+    render(SignupTemplate {
+        signup_enabled: true,
+        customer_name: req.customer_name.clone(),
+        login: req.login.clone(),
+        email: req.email.clone(),
+        error: Some(msg.into()),
+    })
+}
+
+async fn signup_is_enabled(state: &AppState) -> bool {
+    let row: Option<String> = sqlx::query_scalar(
+        "SELECT value_json FROM settings WHERE key = 'signup.enabled'",
+    )
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+    matches!(row.as_deref().map(str::trim), Some("true") | Some("\"true\""))
 }

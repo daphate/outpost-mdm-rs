@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+
+{% block title %}Customers{% endblock %}
+
+{% block body %}
+{% include "_nav.html" %}
+
+<main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
+  <div class="flex items-center justify-between">
+    <h2 class="text-2xl font-bold">Customers (tenants)</h2>
+    <span class="text-sm text-slate-500">{{ total }} total · super-admin view</span>
+  </div>
+
+  {% if let Some(msg) = flash %}
+    <div class="bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm px-4 py-2 rounded">{{ msg }}</div>
+  {% endif %}
+
+  <details class="bg-white rounded-lg shadow-sm p-4" {% if create_error.is_some() %}open{% endif %}>
+    <summary class="cursor-pointer font-medium text-slate-700">+ New customer (tenant)</summary>
+    <form method="POST" action="/customers/new" class="grid grid-cols-1 md:grid-cols-4 gap-3 mt-4">
+      <label class="block md:col-span-1">
+        <span class="text-xs uppercase tracking-wide text-slate-500">Name (unique)</span>
+        <input name="name" required class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+      </label>
+      <label class="block md:col-span-2">
+        <span class="text-xs uppercase tracking-wide text-slate-500">Description</span>
+        <input name="description" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+      </label>
+      <label class="block md:col-span-1">
+        <span class="text-xs uppercase tracking-wide text-slate-500">Kind</span>
+        <select name="kind" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+          <option value="production" selected>production</option>
+          <option value="demo">demo</option>
+          <option value="test">test</option>
+        </select>
+      </label>
+      <div class="md:col-span-4">
+        <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded">Create customer</button>
+      </div>
+      {% if let Some(e) = create_error %}
+        <p class="md:col-span-4 text-red-600 text-sm">{{ e }}</p>
+      {% endif %}
+    </form>
+  </details>
+
+  <div class="bg-white rounded-lg shadow-sm overflow-hidden">
+    <table class="min-w-full divide-y divide-slate-200">
+      <thead class="bg-slate-50">
+        <tr class="text-xs uppercase tracking-wide text-slate-500 text-left">
+          <th class="px-4 py-3">ID</th>
+          <th class="px-4 py-3">Name</th>
+          <th class="px-4 py-3">Kind</th>
+          <th class="px-4 py-3">Status</th>
+          <th class="px-4 py-3">Devices</th>
+          <th class="px-4 py-3">Users</th>
+          <th class="px-4 py-3">Created</th>
+          <th class="px-4 py-3 text-right">Actions</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-100">
+        {% for c in customers %}
+        <tr class="hover:bg-slate-50">
+          <td class="px-4 py-3 text-sm font-mono">{{ c.id }}</td>
+          <td class="px-4 py-3 font-medium">{{ c.name }}</td>
+          <td class="px-4 py-3">
+            <span class="inline-block px-2 py-0.5 text-xs font-medium rounded
+              {% if c.kind == "production" %}bg-emerald-100 text-emerald-700
+              {% else if c.kind == "demo" %}bg-amber-100 text-amber-700
+              {% else %}bg-slate-100 text-slate-700{% endif %}">{{ c.kind }}</span>
+          </td>
+          <td class="px-4 py-3">
+            {% if c.is_active %}
+              <span class="inline-block px-2 py-0.5 text-xs rounded bg-emerald-100 text-emerald-700">active</span>
+            {% else %}
+              <span class="inline-block px-2 py-0.5 text-xs rounded bg-slate-100 text-slate-500">disabled</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3 text-sm">{{ c.device_count }}</td>
+          <td class="px-4 py-3 text-sm">{{ c.user_count }}</td>
+          <td class="px-4 py-3 text-sm text-slate-500">{{ c.created_at }}</td>
+          <td class="px-4 py-3 text-right text-sm space-x-3">
+            <a href="/customers/{{ c.id }}/edit" class="text-slate-600 hover:text-slate-900">Edit</a>
+            <form method="POST" action="/customers/{{ c.id }}/toggle-active" class="inline">
+              {% if c.is_active %}
+                <button class="text-amber-700 hover:text-amber-900">Disable</button>
+              {% else %}
+                <button class="text-emerald-700 hover:text-emerald-900">Enable</button>
+              {% endif %}
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <section class="bg-slate-50 border border-slate-200 rounded-lg p-4 text-sm text-slate-600">
+    <p><strong>Tenant scoping:</strong> every device / configuration / application / user row carries a <code class="text-xs">customer_id</code>. Regular admins (role <code>admin</code>) are scoped to their own customer. Super-admin (role <code>super-admin</code>) sees this page and can switch into a tenant via the dropdown in the nav header.</p>
+    <p class="mt-2"><strong>Disabling a customer</strong> keeps all data but blocks new logins from users in that tenant and stops the push scheduler from emitting commands for its devices.</p>
+  </section>
+</main>
+{% endblock %}

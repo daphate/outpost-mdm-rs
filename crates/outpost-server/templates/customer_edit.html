@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block title %}Edit customer {{ name }}{% endblock %}
+
+{% block body %}
+{% include "_nav.html" %}
+
+<main class="max-w-3xl mx-auto px-4 py-6 space-y-6">
+  <div>
+    <a href="/customers" class="text-sm text-slate-500 hover:text-slate-900">← back to customers</a>
+    <h2 class="text-2xl font-bold mt-2">Edit customer</h2>
+    <p class="text-sm text-slate-500">ID: {{ customer_id }} · {{ device_count }} devices · {{ user_count }} users</p>
+  </div>
+
+  {% if let Some(msg) = flash %}
+    <div class="bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm px-4 py-2 rounded">{{ msg }}</div>
+  {% endif %}
+
+  <form method="POST" action="/customers/{{ customer_id }}/edit" class="bg-white rounded-lg shadow-sm p-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+    <label class="block">
+      <span class="text-xs uppercase tracking-wide text-slate-500">Name</span>
+      <input name="name" value="{{ name }}" required class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+    </label>
+    <label class="block">
+      <span class="text-xs uppercase tracking-wide text-slate-500">Kind</span>
+      <select name="kind" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+        {% for k in kind_options %}
+          <option value="{{ k.0 }}" {% if k.1 %}selected{% endif %}>{{ k.0 }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="block md:col-span-2">
+      <span class="text-xs uppercase tracking-wide text-slate-500">Description</span>
+      <input name="description" value="{{ description }}" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+    </label>
+    <label class="block md:col-span-2">
+      <span class="text-xs uppercase tracking-wide text-slate-500">Metadata JSON</span>
+      <textarea name="metadata_json" rows="3" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm font-mono">{{ metadata_json }}</textarea>
+    </label>
+    <div class="md:col-span-2 flex items-center justify-between pt-2">
+      <a href="/customers" class="text-sm text-slate-500 hover:text-slate-900">Cancel</a>
+      <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded">Save</button>
+    </div>
+    {% if let Some(e) = error %}
+      <p class="md:col-span-2 text-red-600 text-sm">{{ e }}</p>
+    {% endif %}
+  </form>
+
+  <form method="POST" action="/customers/{{ customer_id }}/switch" class="bg-white rounded-lg shadow-sm p-4 flex items-center justify-between">
+    <div>
+      <p class="font-medium">Switch into this tenant</p>
+      <p class="text-sm text-slate-500">Your session becomes scoped to <code class="font-mono">{{ name }}</code> for the rest of this browser session. To return, hit /customers again.</p>
+    </div>
+    <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded">Switch</button>
+  </form>
+</main>
+{% endblock %}

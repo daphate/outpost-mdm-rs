@@ -48,6 +48,11 @@ subtle = "2"
 hex = "0.4"
 # QR-code SVG generation for device enrollment payload
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+# RFC 6238 TOTP for admin 2FA. `totp-lite` is one file, no transitive deps
+# beyond hmac/sha1 which we already pull in.
+totp-lite = "2"
+# base32 encoding for the TOTP secret (otpauth:// URI requires base32).
+base32 = "0.5"
 
 [profile.release]
 opt-level = "z"          # optimize for size — 512 MB box

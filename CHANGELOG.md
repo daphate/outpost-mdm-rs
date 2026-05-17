@@ -4,6 +4,82 @@ Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https:
 
 ## [Unreleased]
 
+### Phase 23 — Multi-tenant + 2FA + Signup
+
+The three features that v0.5's status table listed as "dropped per plan"
+land in one phase: super-admins manage tenants, admins protect their
+account with TOTP, and a public signup form lets new tenants sign up
+without operator action (gated by a settings kill-switch).
+
+**Schema (migration 0013_customers_active.sql — one migration covers
+all of 23a + 23b)**
+- `customers.is_active` + `customers.kind` (production / demo / test).
+- `customers.read` + `customers.write` permissions; granted only to the
+  super-admin role (id=1). Regular admin (id=2) stays per-tenant.
+- `users.totp_secret` + `users.totp_enabled` columns.
+- `totp_recovery_codes` table — argon2id-hashed single-use codes; 10
+  are generated at enrollment and shown once.
+
+**23a — Customer (multi-tenant) management**
+- `/customers` (super-admin only): list every tenant with device + user
+  counts, status badge (active / disabled), kind tag. New-customer
+  inline form.
+- `/customers/{id}/edit` — rename, change description, change kind, edit
+  metadata_json. Plus a "Switch into" button for super-admins.
+- `/customers/{id}/toggle-active` — soft-disable (keeps data, blocks new
+  logins / push for the tenant). Cannot disable your own home tenant.
+- `/customers/{id}/switch` — sets `outpost_acting` cookie; for the next
+  24 h the super-admin's queries are scoped to that tenant just like a
+  regular admin. Original `home_customer_id` is preserved on `WebUser`.
+
+**23b — 2FA (TOTP)**
+- New module `src/totp.rs` — RFC 6238, SHA-1 HMAC, 6-digit code, 30-s
+  step, ±1-step skew. ~120 LOC + 5 unit tests. Compatible with Google
+  Authenticator, Authy, 1Password, Bitwarden.
+- New deps: `totp-lite 2` (one file, depends on sha1 already in tree)
+  and `base32 0.5` for the otpauth URI.
+- `/me/2fa` — enable / disable / regenerate setup. QR-code SVG via the
+  existing `qrcode` crate (same one we use for device enrollment).
+- Login flow now branches: after correct password,
+  `users.totp_enabled = 1` → issue a short-lived (5 min) `pending_2fa`
+  session and redirect to `/login/2fa`. The pending session's `kind`
+  prevents it from reaching any protected page until upgraded.
+- `/login/2fa` accepts either the 6-digit code or a one-time recovery
+  code. Verifies, issues full session, revokes pending.
+- 10 recovery codes (formatted `xxxx-xxxx-xxxx-xxxx`) generated at
+  enrollment; shown once, stored as argon2id hashes.
+
+**23c — Signup (self-service)**
+- `/signup` — public page. Disabled by default; super-admin flips
+  `settings.signup.enabled = "true"` to turn it on.
+- Atomic in a single tx: create `customers` row + admin user (role
+  `admin`, not super-admin). Login fails → tx rolls back; tenant rolls
+  back too.
+- Rate-limited via the existing login limiter (signup is brute-forceable
+  the same way).
+- On success: session cookie issued, redirect to `/dashboard`. New
+  admin can change password / enable 2FA immediately.
+
+**WebUser extractor enhancements**
+- New `is_super_admin: bool` field (computed from
+  `user_roles.is_super_admin` once at extract time).
+- `home_customer_id` preserved separately from `customer_id` so the
+  customer-switch overlay doesn't lose membership info.
+- `WebUser::require_super_admin()` helper for handlers that need
+  cross-tenant access.
+
+**Tests**
+- 5 new TOTP unit tests in `src/totp.rs` (secret format, otpauth URI,
+  current-step verify, previous-step skew, garbage rejection).
+- 7 new web integration tests: customers list / create / toggle /
+  duplicate-name reject, /me/2fa setup + verify-with-correct-code path,
+  signup disabled banner + signup enabled-flow auto-login.
+- Suite total: **161 passing**, 0 failed (up from 149 at v0.6.1).
+
+**Deployed** to `mdm.secondf8n.tech` as `preview-23`; migration 0013
+applied on top of existing data; browser smoke OK on /customers,
+/me/2fa, /signup. Test customer cleaned.
+
 ### Phase 22 — Device telemetry: OTLP/HTTP-JSON receiver + Prometheus + Grafana
 
 **Why:** Phones go to clients as demo units. We have to see — without
