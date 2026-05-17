@@ -29,10 +29,16 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM rust:${RUST_VERSION}-slim-bookworm AS builder
 WORKDIR /app
 ARG TARGET
+# Copy the toolchain pin FIRST so the subsequent `rustup target add`
+# installs the musl target against the channel the project actually uses.
+# Without this, COPY . . later triggers a rustup channel re-sync that
+# discards the previously-installed musl target.
+COPY rust-toolchain.toml ./
 RUN cargo install --locked cargo-chef cargo-zigbuild \
  && apt-get update \
  && apt-get install -y --no-install-recommends pkg-config wget xz-utils ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
+ && rustup show \
  && rustup target add ${TARGET}
 
 # Install Zig (cargo-zigbuild needs it on PATH).
