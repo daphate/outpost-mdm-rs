@@ -4,6 +4,23 @@ Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https:
 
 ## [Unreleased]
 
+### Phase 10 — Container hardening, deploy docs, CI security scans
+
+**Added**
+- `Dockerfile` rewritten as three-stage build:
+  - planner stage (cargo-chef recipe extraction)
+  - builder stage (cargo-zigbuild → x86_64-unknown-linux-musl static binary; Zig 0.13 installed for the linker)
+  - runtime stage on `cgr.dev/chainguard/static:latest` (~few MB, no shell, glibc-free, `USER nonroot` by default)
+  - `LABEL` annotations for OCI image metadata
+- `docker-compose.yml` requires `JWT_SECRET` in `.env` (fail-fast via `${JWT_SECRET:?…}`)
+- `deny.toml` allow-list for licenses (MIT / Apache-2.0 / BSD / ISC / Unicode-3.0 / etc.) and blocked unknown registries/git sources
+- `.github/workflows/ci.yml` extended with new jobs:
+  - `cargo-deny` (advisories + licenses)
+  - `cargo-audit` (RustSec CVE database)
+  - Trivy scan of the built image (HIGH/CRITICAL severities reported as SARIF)
+- `docs/DEPLOY.md` — full production guide: Ubuntu prep, image pull, `.env` generation, compose file, nginx + certbot, backup pattern via Litestream, footprint expectations, hardening checklist
+- README extended with `/readyz` mention + reference to `docs/DEPLOY.md`
+
 ### Phase 6 — Device enrollment + long-polling sync + push scheduler
 
 **Added**

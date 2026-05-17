@@ -33,15 +33,28 @@ docker-compose.yml
 ## Quick start
 
 ```sh
-# Local development
+# Local development — set a long secret first
+export JWT_SECRET="$(openssl rand -base64 48)"
 cargo run -p outpost-server
 
-# With Docker
+# With Docker (Compose) — needs .env file with JWT_SECRET
+echo "JWT_SECRET=$(openssl rand -base64 48)" > .env
 docker compose up --build
 
-# Health check
-curl http://localhost:8080/healthz
+# Health
+curl http://localhost:8080/healthz   # liveness
+curl http://localhost:8080/readyz    # readiness (touches DB)
 ```
+
+The server prints the bootstrap admin password to stderr exactly once on
+first boot — capture from `docker compose logs` before the container
+exits or restarts.
+
+## Deployment
+
+See [`docs/DEPLOY.md`](docs/DEPLOY.md) for the production deploy guide
+(Ubuntu droplet + nginx + certbot, sizing, env vars, backups,
+hardening checklist).
 
 ## License
 

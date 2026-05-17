@@ -3,14 +3,24 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    image: outpost-mdm-rs:local
     ports:
       - "8080:8080"
     environment:
       RUST_LOG: info
       BIND_ADDR: 0.0.0.0:8080
+      DB_PATH: /var/lib/outpost/outpost.db
+      APP_FILES_DIR: /var/lib/outpost/files
+      # MUST be set per-deployment. Generate with:
+      #   openssl rand -base64 48
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set; e.g. via .env file}
     volumes:
       - outpost-data:/var/lib/outpost
     restart: unless-stopped
+    # Chainguard static images don't carry curl/wget, so the healthcheck
+    # uses the binary's `--health` flag is not present — instead, rely on
+    # external orchestration to poll /healthz. Compose's healthcheck is
+    # therefore omitted; configure in Kubernetes / nginx / Docker Swarm.
 
 volumes:
   outpost-data:

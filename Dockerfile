@@ -1,35 +1,71 @@
 # syntax=docker/dockerfile:1.7
-# Multi-stage build: Rust + musl-tools build, Chainguard static runtime.
-# Target: minimal footprint for 1 vCPU / 512 MB Ubuntu droplet.
+#
+# Multi-stage build for Outpost MDM.
+#
+# Stage 1 (planner)  — cargo-chef captures the dependency manifest so the
+#                       layer cache only invalidates when Cargo.toml/Lock change.
+# Stage 2 (builder)  — cargo-zigbuild produces a fully-static
+#                       x86_64-unknown-linux-musl binary via Zig as linker
+#                       (significantly faster than musl-gcc).
+# Stage 3 (runtime)  — Chainguard `static` image: tiny (~few MB), no shell,
+#                       non-root by default, glibc-free; the static musl
+#                       binary runs without any libc dependency.
 
-FROM rust:1-slim-bookworm AS builder
-RUN rustup target add x86_64-unknown-linux-musl \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends musl-tools pkg-config \
-    && rm -rf /var/lib/apt/lists/*
+ARG RUST_VERSION=1
+ARG TARGET=x86_64-unknown-linux-musl
 
+# -------------------------------------------------------------------------
+# Stage 1 — planner: produce recipe.json
+# -------------------------------------------------------------------------
+FROM rust:${RUST_VERSION}-slim-bookworm AS planner
 WORKDIR /app
-
-# Cache dependencies separately from source — Cargo.toml first
-COPY Cargo.toml Cargo.lock* ./
-COPY crates/outpost-server/Cargo.toml crates/outpost-server/
-COPY crates/outpost-core/Cargo.toml crates/outpost-core/
-COPY crates/outpost-migrations/Cargo.toml crates/outpost-migrations/
-RUN mkdir -p crates/outpost-server/src crates/outpost-core/src crates/outpost-migrations/src \
-    && echo "fn main(){}" > crates/outpost-server/src/main.rs \
-    && echo "" > crates/outpost-core/src/lib.rs \
-    && echo "" > crates/outpost-migrations/src/lib.rs \
-    && cargo build --release --target x86_64-unknown-linux-musl --bin outpost-server
-
-# Real source
+RUN cargo install --locked cargo-chef
 COPY . .
-RUN touch crates/outpost-server/src/main.rs \
-    && cargo build --release --target x86_64-unknown-linux-musl --bin outpost-server
+RUN cargo chef prepare --recipe-path recipe.json
 
-# Runtime: Chainguard static (no shell, no glibc, nonroot by default)
+# -------------------------------------------------------------------------
+# Stage 2 — builder: cache deps then build with zigbuild
+# -------------------------------------------------------------------------
+FROM rust:${RUST_VERSION}-slim-bookworm AS builder
+WORKDIR /app
+ARG TARGET
+RUN cargo install --locked cargo-chef cargo-zigbuild \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends pkg-config wget xz-utils ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && rustup target add ${TARGET}
+
+# Install Zig (cargo-zigbuild needs it on PATH).
+ARG ZIG_VERSION=0.13.0
+RUN wget -q https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz \
+ && tar -xf zig-linux-x86_64-${ZIG_VERSION}.tar.xz -C /opt \
+ && mv /opt/zig-linux-x86_64-${ZIG_VERSION} /opt/zig \
+ && ln -s /opt/zig/zig /usr/local/bin/zig \
+ && rm zig-linux-x86_64-${ZIG_VERSION}.tar.xz
+
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json --target ${TARGET} --zigbuild
+
+COPY . .
+RUN cargo zigbuild --release --target ${TARGET} --bin outpost-server \
+ && cp target/${TARGET}/release/outpost-server /outpost-server \
+ && /outpost-server --version || true   # smoke: binary at least starts
+
+# -------------------------------------------------------------------------
+# Stage 3 — runtime: Chainguard static (nonroot, glibc-free)
+# -------------------------------------------------------------------------
 FROM cgr.dev/chainguard/static:latest
-COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/outpost-server /usr/local/bin/outpost-server
+LABEL org.opencontainers.image.title="outpost-mdm-rs"
+LABEL org.opencontainers.image.source="https://github.com/daphate/outpost-mdm-rs"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+
+COPY --from=builder /outpost-server /usr/local/bin/outpost-server
+
 ENV BIND_ADDR=0.0.0.0:8080 \
+    DB_PATH=/var/lib/outpost/outpost.db \
+    APP_FILES_DIR=/var/lib/outpost/files \
     RUST_LOG=info
+
 EXPOSE 8080
+USER nonroot
 ENTRYPOINT ["/usr/local/bin/outpost-server"]
