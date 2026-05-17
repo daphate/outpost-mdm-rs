@@ -4,6 +4,29 @@ Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https:
 
 ## [Unreleased]
 
+### Phase 4 — Core CRUD endpoints
+
+**Added**
+- `outpost-server::permission::require_permission` — DB-backed permission checker against `user_role_permissions`
+- `outpost-server::page::{Page, PageParams}` — paginated list envelope with `MAX_LIMIT=200` cap and `clamp()` safety
+- 8 route sub-modules under `crates/outpost-server/src/routes/`:
+  - **devices** — list / get / create / update / delete + `/devices/{id}/telemetry`
+  - **groups** — CRUD + `/groups/{id}/devices` membership management
+  - **applications** — CRUD + `/applications/{id}/versions` (sub-resource for versioned releases)
+  - **configurations** — CRUD + `/configurations/{id}/applications` assignment
+  - **users** — CRUD + `/users/{id}/password` (self-service + admin override)
+  - **settings** — list / get / set key-value system settings
+  - **stats** — `/stats/fleet` rollup (device counts, push counters)
+  - **push** — list / get / cancel push messages + create / cancel scheduled tasks
+- `routes::api_v1()` composes all sub-routers and applies shared state
+- Every CRUD path enforces multi-tenant scoping (`WHERE customer_id = ?`) and a per-permission check before mutation
+- 5 new unit tests: page param clamp, 3 permission role checks; new `devices_without_token` route guard
+- 4 new integration tests in `tests/devices.rs`: full CRUD happy path, duplicate-serial 400, viewer role 403 on create, empty-tenant fleet stats
+
+**Notes**
+- `applications` upload-the-binary path is deferred to P5; this commit lands the metadata surface only
+- The push scheduler tick that drains `push_schedule` → `push_messages` is deferred to P6; this commit lands the REST surface only
+
 ### Phase 3 — Auth: JWT + argon2id + bootstrap
 
 **Added**
