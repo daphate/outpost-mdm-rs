@@ -67,50 +67,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
 
-  docker:
-    name: Docker build + Trivy scan
-    runs-on: ubuntu-24.04
-    needs: [fmt, clippy, test]
-    permissions:
-      contents: read
-      packages: write
-      security-events: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - name: Log in to GHCR
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          load: true
-          tags: |
-            ghcr.io/daphate/outpost-mdm-rs:sha-${{ github.sha }}
-            ghcr.io/daphate/outpost-mdm-rs:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      - name: Trivy scan
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ghcr.io/daphate/outpost-mdm-rs:latest
-          format: sarif
-          output: trivy.sarif
-          severity: HIGH,CRITICAL
-          exit-code: '0'
-        continue-on-error: true
-      - name: Push image
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-            ghcr.io/daphate/outpost-mdm-rs:sha-${{ github.sha }}
-            ghcr.io/daphate/outpost-mdm-rs:latest
-          cache-from: type=gha
+  # Docker image builds are intentionally NOT run in CI.
+  # Policy: production artifacts are built locally on the maintainer's
+  # workstation and pushed directly to GHCR. CI only verifies source-level
+  # quality (fmt, clippy, test, deny, audit). Do not add a docker job here.
