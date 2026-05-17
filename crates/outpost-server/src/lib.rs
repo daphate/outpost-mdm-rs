@@ -13,6 +13,7 @@ pub mod i18n;
 pub mod page;
 pub mod permission;
 pub mod rate_limit;
+pub mod rollout_monitor;
 pub mod routes;
 pub mod scheduler;
 pub mod session;

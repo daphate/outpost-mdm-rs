@@ -37,6 +37,31 @@
         <option value="0" {% if !is_active %}selected{% endif %}>отключено</option>
       </select>
     </label>
+    <fieldset class="md:col-span-2 border border-slate-200 rounded p-3 bg-slate-50">
+      <legend class="text-xs uppercase tracking-wide text-slate-500 px-1">Версия приложения</legend>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <span class="text-xs uppercase tracking-wide text-slate-500">Сейчас на устройстве</span>
+          <div class="mt-1 text-sm font-mono">
+            {% if let Some(name) = current_app_version_name %}
+              {{ name }}{% if let Some(code) = current_app_version_code %} <span class="text-slate-400">(code {{ code }})</span>{% endif %}
+            {% else %}
+              <span class="text-slate-400">— ещё не синхронизировалось</span>
+            {% endif %}
+          </div>
+        </div>
+        <label class="block">
+          <span class="text-xs uppercase tracking-wide text-slate-500">Закрепить версию (pin)</span>
+          <select name="pinned_version_id" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+            <option value="" {% if pinned_version_id.is_none() %}selected{% endif %}>— следовать policy раскатки —</option>
+            {% for v in app_versions %}
+              <option value="{{ v.id }}" {% if pinned_version_id.unwrap_or(-1) == v.id %}selected{% endif %}>{{ v.label }}</option>
+            {% endfor %}
+          </select>
+          <p class="text-xs text-slate-500 mt-1">Pin переопределяет canary/fleet rollout: устройство получает ровно эту версию. Пустое значение возвращает к policy.</p>
+        </label>
+      </div>
+    </fieldset>
     <fieldset class="md:col-span-2 border border-slate-200 rounded p-3">
       <legend class="text-xs uppercase tracking-wide text-slate-500 px-1">Группы</legend>
       {% if groups.is_empty() %}

@@ -64,6 +64,15 @@ pub fn router() -> Router<AppState> {
             "/applications/{id}/versions/{vid}/delete",
             post(application_version_delete),
         )
+        // v0.12 Tier-2 — rollout policy management
+        .route(
+            "/applications/{id}/rollouts",
+            get(application_rollouts_view).post(application_rollout_create),
+        )
+        .route(
+            "/applications/{id}/rollouts/{rid}/phase",
+            post(application_rollout_phase),
+        )
         // Configurations
         .route("/configurations", get(configurations_page))
         .route("/configurations/new", post(configurations_create))
@@ -2188,6 +2197,16 @@ struct DeviceEditTemplate {
     current_configuration_id: Option<i64>,
     configurations: Vec<ConfigOption>,
     groups: Vec<GroupCheckbox>,
+    /// v0.12 Tier-2: список APK-версий для dropdown «закрепить версию».
+    /// Filter'нут: только APK для этого customer'а, отсортирован по
+    /// version_code DESC. Без сжатой пагинации — у одного приложения
+    /// rare когда > 50 версий.
+    app_versions: Vec<AppVersionOption>,
+    /// Текущая закреплённая версия (NULL = follow rollout policy).
+    pinned_version_id: Option<i64>,
+    /// Что сейчас сообщает устройство — для UI «есть отставание / на target».
+    current_app_version_name: Option<String>,
+    current_app_version_code: Option<i64>,
     flash: Option<String>,
     error: Option<String>,
 }
@@ -2196,6 +2215,12 @@ struct DeviceEditTemplate {
 struct ConfigOption {
     id: i64,
     name: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct AppVersionOption {
+    id: i64,
+    label: String, // "rc42-b35 (code 176, sha 36c93e1f…)"
 }
 
 struct GroupCheckbox {
@@ -2220,15 +2245,26 @@ async fn render_device_edit(
     flash: Option<String>,
     error: Option<String>,
 ) -> Result<Response, ApiError> {
-    let row: Option<(String, Option<String>, bool, Option<i64>)> = sqlx::query_as(
-        "SELECT serial, display_name, is_active, configuration_id \
-         FROM devices WHERE id = ? AND customer_id = ?",
-    )
-    .bind(id)
-    .bind(user.customer_id)
-    .fetch_optional(&state.db)
-    .await?;
-    let Some((serial, display_name, is_active, current_configuration_id)) = row else {
+    let row: Option<(String, Option<String>, bool, Option<i64>, Option<i64>, Option<String>, Option<i64>)> =
+        sqlx::query_as(
+            "SELECT serial, display_name, is_active, configuration_id, pinned_version_id, \
+                    app_version, app_version_code \
+             FROM devices WHERE id = ? AND customer_id = ?",
+        )
+        .bind(id)
+        .bind(user.customer_id)
+        .fetch_optional(&state.db)
+        .await?;
+    let Some((
+        serial,
+        display_name,
+        is_active,
+        current_configuration_id,
+        pinned_version_id,
+        current_app_version_name,
+        current_app_version_code,
+    )) = row
+    else {
         return Err(ApiError::NotFound);
     };
     let configurations: Vec<ConfigOption> = sqlx::query_as::<_, ConfigOption>(
@@ -2255,6 +2291,19 @@ async fn render_device_edit(
             assigned: dev_match.is_some(),
         })
         .collect();
+    // APK versions для pin-dropdown'а: оба `discovery` и `uploaded` rows.
+    let app_versions: Vec<AppVersionOption> = sqlx::query_as(
+        "SELECT av.id, \
+                av.version_name || ' (code ' || av.version_code || ', sha ' || \
+                substr(av.sha256, 1, 8) || '…)' AS label \
+         FROM application_versions av \
+         JOIN applications a ON a.id = av.application_id \
+         WHERE a.customer_id = ? AND a.kind = 'apk' \
+         ORDER BY av.version_code DESC LIMIT 200",
+    )
+    .bind(user.customer_id)
+    .fetch_all(&state.db)
+    .await?;
     let mut resp = render(DeviceEditTemplate {
         user_login: user.login.clone(),
         device_id: id,
@@ -2264,6 +2313,10 @@ async fn render_device_edit(
         current_configuration_id,
         configurations,
         groups,
+        app_versions,
+        pinned_version_id,
+        current_app_version_name,
+        current_app_version_code,
         flash,
         error,
     });
@@ -2281,6 +2334,7 @@ async fn device_edit_post(
     let req_display_name = form.first("display_name").map(|s| s.to_string());
     let req_configuration_id = form.first("configuration_id").map(|s| s.to_string());
     let req_is_active = form.first("is_active").map(|s| s.to_string());
+    let req_pinned_version_id = form.first("pinned_version_id").map(|s| s.to_string());
     let req_group_ids: Vec<i64> = form
         .all("group_ids")
         .iter()
@@ -2309,16 +2363,42 @@ async fn device_edit_post(
         .map(|s| s.trim())
         .and_then(|s| s.parse::<i64>().ok())
         .unwrap_or(1);
+    // Pin-version: пустая строка = NULL (отвязать пин), иначе валидируем
+    // что эта application_versions реально принадлежит customer'у.
+    let pinned_version_id: Option<i64> = match req_pinned_version_id.as_deref() {
+        None | Some("") => None,
+        Some(s) => match s.trim().parse::<i64>().ok() {
+            Some(v) => {
+                let owned: Option<i64> = sqlx::query_scalar(
+                    "SELECT av.id FROM application_versions av \
+                     JOIN applications a ON a.id = av.application_id \
+                     WHERE av.id = ? AND a.customer_id = ?",
+                )
+                .bind(v)
+                .bind(user.customer_id)
+                .fetch_optional(&state.db)
+                .await?;
+                if owned.is_none() {
+                    return Err(ApiError::BadRequest(
+                        "pinned_version_id does not belong to this customer".into(),
+                    ));
+                }
+                Some(v)
+            }
+            None => None,
+        },
+    };
 
     let mut tx = state.db.begin().await?;
     sqlx::query(
         "UPDATE devices SET display_name = ?, configuration_id = ?, is_active = ?, \
-                            updated_at = datetime('now') \
+                            pinned_version_id = ?, updated_at = datetime('now') \
          WHERE id = ?",
     )
     .bind(display_name)
     .bind(config_id)
     .bind(is_active)
+    .bind(pinned_version_id)
     .bind(id)
     .execute(&mut *tx)
     .await?;
@@ -2982,6 +3062,294 @@ async fn application_version_delete(
                 "Database error.",
             )
         }
+    }
+}
+
+// ----- v0.12 Tier-2: APK rollouts (canary / fleet / paused / rolled_back) ---
+
+#[derive(Template)]
+#[template(path = "application_rollouts.html")]
+struct AppRolloutsTemplate {
+    user_login: String,
+    app_id: i64,
+    package_name: String,
+    rollouts: Vec<RolloutRow>,
+    versions: Vec<AppVersionOption>,
+    groups: Vec<GroupOption>,
+    flash: Option<String>,
+    error: Option<String>,
+}
+
+struct RolloutRow {
+    id: i64,
+    target_version_label: String,
+    group_name: Option<String>,
+    phase: String,
+    canary_until_at: Option<String>,
+    crash_threshold_pct: f64,
+    created_at: String,
+    rolled_back_at: Option<String>,
+    rolled_back_reason: Option<String>,
+    notes: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct RolloutRowRaw {
+    id: i64,
+    target_version_id: i64,
+    target_version_code: i64,
+    target_version_name: String,
+    group_id: Option<i64>,
+    group_name: Option<String>,
+    phase: String,
+    canary_until_at: Option<String>,
+    crash_threshold_pct: f64,
+    created_at: String,
+    rolled_back_at: Option<String>,
+    rolled_back_reason: Option<String>,
+    notes: Option<String>,
+}
+
+async fn application_rollouts_view(
+    user: WebUser,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    flash: FlashCookie,
+) -> Result<Response, ApiError> {
+    render_app_rollouts(&user, &state, id, flash.0, None).await
+}
+
+async fn render_app_rollouts(
+    user: &WebUser,
+    state: &AppState,
+    id: i64,
+    flash: Option<String>,
+    error: Option<String>,
+) -> Result<Response, ApiError> {
+    let pkg: Option<String> =
+        sqlx::query_scalar("SELECT package_name FROM applications WHERE id = ? AND customer_id = ?")
+            .bind(id)
+            .bind(user.customer_id)
+            .fetch_optional(&state.db)
+            .await?;
+    let Some(package_name) = pkg else {
+        return Err(ApiError::NotFound);
+    };
+    let raw: Vec<RolloutRowRaw> = sqlx::query_as(
+        "SELECT r.id, r.target_version_id, av.version_code AS target_version_code, \
+                av.version_name AS target_version_name, \
+                r.group_id, g.name AS group_name, \
+                r.phase, r.canary_until_at, r.crash_threshold_pct, r.created_at, \
+                r.rolled_back_at, r.rolled_back_reason, r.notes \
+         FROM application_rollouts r \
+         JOIN application_versions av ON av.id = r.target_version_id \
+         LEFT JOIN groups g ON g.id = r.group_id \
+         WHERE r.application_id = ? \
+         ORDER BY r.created_at DESC LIMIT 100",
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await?;
+    let rollouts: Vec<RolloutRow> = raw
+        .into_iter()
+        .map(|r| RolloutRow {
+            id: r.id,
+            target_version_label: format!(
+                "{} (code {})",
+                r.target_version_name, r.target_version_code
+            ),
+            group_name: r.group_name,
+            phase: r.phase,
+            canary_until_at: r.canary_until_at,
+            crash_threshold_pct: r.crash_threshold_pct,
+            created_at: fmt_ts(&r.created_at),
+            rolled_back_at: r.rolled_back_at.map(|s| fmt_ts(&s)),
+            rolled_back_reason: r.rolled_back_reason,
+            notes: r.notes,
+        })
+        .collect();
+    let versions: Vec<AppVersionOption> = sqlx::query_as(
+        "SELECT av.id, \
+                av.version_name || ' (code ' || av.version_code || ', sha ' || \
+                substr(av.sha256, 1, 8) || '…)' AS label \
+         FROM application_versions av \
+         WHERE av.application_id = ? \
+         ORDER BY av.version_code DESC LIMIT 200",
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await?;
+    let groups: Vec<GroupOption> = sqlx::query_as(
+        "SELECT id, name FROM groups WHERE customer_id = ? ORDER BY name LIMIT 200",
+    )
+    .bind(user.customer_id)
+    .fetch_all(&state.db)
+    .await?;
+    let mut resp = render(AppRolloutsTemplate {
+        user_login: user.login.clone(),
+        app_id: id,
+        package_name,
+        rollouts,
+        versions,
+        groups,
+        flash,
+        error,
+    });
+    clear_flash_cookie(&mut resp);
+    Ok(resp)
+}
+
+async fn application_rollout_create(
+    user: WebUser,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    body: axum::body::Bytes,
+) -> Result<Response, ApiError> {
+    // Verify the application belongs to this customer.
+    let owned: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM applications WHERE id = ? AND customer_id = ?",
+    )
+    .bind(id)
+    .bind(user.customer_id)
+    .fetch_optional(&state.db)
+    .await?;
+    if owned.is_none() {
+        return Err(ApiError::NotFound);
+    }
+    let form = parse_form(&body);
+    let target_version_id = form
+        .first("target_version_id")
+        .and_then(|s| s.parse::<i64>().ok());
+    let Some(target_version_id) = target_version_id else {
+        return render_app_rollouts(
+            &user,
+            &state,
+            id,
+            None,
+            Some("Не выбрана target версия.".into()),
+        )
+        .await;
+    };
+    // Validate target version belongs to this application.
+    let valid: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM application_versions WHERE id = ? AND application_id = ?",
+    )
+    .bind(target_version_id)
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?;
+    if valid.is_none() {
+        return render_app_rollouts(
+            &user,
+            &state,
+            id,
+            None,
+            Some("Версия не принадлежит этому приложению.".into()),
+        )
+        .await;
+    }
+    let group_id: Option<i64> = form
+        .first("group_id")
+        .and_then(|s| if s.is_empty() { None } else { s.parse::<i64>().ok() });
+    let phase = if group_id.is_some() { "canary" } else { "fleet" };
+    let canary_until_at: Option<String> = form
+        .first("canary_until_at")
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty());
+    let crash_threshold_pct: f64 = form
+        .first("crash_threshold_pct")
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|v| (0.0..=100.0).contains(v))
+        .unwrap_or(5.0);
+    let notes: Option<String> = form
+        .first("notes")
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty());
+
+    sqlx::query(
+        "INSERT INTO application_rollouts \
+            (application_id, target_version_id, group_id, phase, canary_until_at, \
+             crash_threshold_pct, created_by, notes) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(target_version_id)
+    .bind(group_id)
+    .bind(phase)
+    .bind(canary_until_at.as_deref())
+    .bind(crash_threshold_pct)
+    .bind(user.id)
+    .bind(notes.as_deref())
+    .execute(&state.db)
+    .await?;
+    Ok(redirect_with_flash(
+        &format!("/applications/{id}/rollouts"),
+        "Rollout создан.",
+    ))
+}
+
+async fn application_rollout_phase(
+    user: WebUser,
+    State(state): State<AppState>,
+    Path((id, rid)): Path<(i64, i64)>,
+    body: axum::body::Bytes,
+) -> Response {
+    let form = parse_form(&body);
+    let new_phase = form.first("phase").unwrap_or("");
+    let valid_phase = matches!(new_phase, "canary" | "fleet" | "paused" | "rolled_back");
+    if !valid_phase {
+        return redirect_with_flash(
+            &format!("/applications/{id}/rollouts"),
+            "Недопустимая фаза.",
+        );
+    }
+    // Verify rollout belongs to this customer.
+    let owned: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM application_rollouts r \
+         JOIN applications a ON a.id = r.application_id \
+         WHERE r.id = ? AND a.id = ? AND a.customer_id = ?",
+    )
+    .bind(rid)
+    .bind(id)
+    .bind(user.customer_id)
+    .fetch_optional(&state.db)
+    .await
+    .unwrap_or(None);
+    if owned.is_none() {
+        return redirect_with_flash(
+            &format!("/applications/{id}/rollouts"),
+            "Rollout не найден.",
+        );
+    }
+    let res = if new_phase == "rolled_back" {
+        sqlx::query(
+            "UPDATE application_rollouts SET phase = ?, updated_at = datetime('now'), \
+                rolled_back_at = datetime('now'), rolled_back_reason = ? \
+             WHERE id = ?",
+        )
+        .bind(new_phase)
+        .bind("Manual rollback by admin")
+        .bind(rid)
+        .execute(&state.db)
+        .await
+    } else {
+        sqlx::query(
+            "UPDATE application_rollouts SET phase = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(new_phase)
+        .bind(rid)
+        .execute(&state.db)
+        .await
+    };
+    match res {
+        Ok(_) => redirect_with_flash(
+            &format!("/applications/{id}/rollouts"),
+            &format!("Rollout {rid} → {new_phase}"),
+        ),
+        Err(_) => redirect_with_flash(
+            &format!("/applications/{id}/rollouts"),
+            "Database error.",
+        ),
     }
 }
 

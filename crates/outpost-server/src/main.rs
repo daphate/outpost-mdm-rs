@@ -4,7 +4,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use outpost_server::{
-    apk_watcher, app, bootstrap, config::Config, db, scheduler, shutdown, state::AppState,
+    apk_watcher, app, bootstrap, config::Config, db, rollout_monitor, scheduler, shutdown,
+    state::AppState,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -64,8 +65,12 @@ async fn main() -> Result<()> {
     let _scheduler_handle = scheduler::spawn(pool.clone());
     // v0.11: APK upstream watcher. Polls R2 mirror каждые 15 минут,
     // регистрирует свежие сборки Outpost-Android в `application_versions`.
-    // No-op'ит если upstream pointer не движется. Без auto-push на устройства.
-    let _apk_watcher_handle = apk_watcher::spawn(pool);
+    // No-op'ит если upstream pointer не движется.
+    let _apk_watcher_handle = apk_watcher::spawn(pool.clone());
+    // v0.12 Tier-2: rollout monitor. Каждые 60 секунд проходит по
+    // `application_rollouts` с phase='canary' — auto-promote по
+    // canary_until_at, auto-rollback по crash-rate gate (5% по умолчанию).
+    let _rollout_monitor_handle = rollout_monitor::spawn(pool);
 
     let listener = tokio::net::TcpListener::bind(&cfg.bind_addr)
         .await
