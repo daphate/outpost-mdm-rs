@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block title %}Enroll device {{ serial }}{% endblock %}
+
+{% block body %}
+{% include "_nav.html" %}
+
+<main class="max-w-3xl mx-auto px-4 py-6 space-y-6">
+  <div>
+    <a href="/devices" class="text-sm text-slate-500 hover:text-slate-900">← back to devices</a>
+    <h2 class="text-2xl font-bold mt-2">Enroll device</h2>
+    <p class="text-sm text-slate-500">Serial: <code class="font-mono">{{ serial }}</code> · ID: {{ device_id }}</p>
+  </div>
+
+  {% if let Some(s) = secret %}
+    <div class="bg-amber-50 border border-amber-200 text-amber-900 text-sm px-4 py-3 rounded space-y-2">
+      <p class="font-medium">Enrollment payload — show this on the device once, then it is invalidated:</p>
+      <pre class="font-mono text-xs bg-white p-2 rounded overflow-x-auto">{{ payload_json }}</pre>
+      <p class="text-xs">Operator workflow: scan the QR with the Outpost-Android client (or type the secret manually). The device then POSTs to <code>/api/v1/enroll</code> and the secret is one-shot consumed.</p>
+    </div>
+
+    <div class="bg-white rounded-lg shadow-sm p-6">
+      <div class="text-xs uppercase tracking-wide text-slate-500 mb-3">Scan with the device</div>
+      <div class="flex justify-center">{{ qr_svg|safe }}</div>
+    </div>
+
+    <div class="bg-white rounded-lg shadow-sm p-4 space-y-3">
+      <div>
+        <div class="text-xs uppercase tracking-wide text-slate-500">Server URL</div>
+        <code class="font-mono text-sm">{{ server_url }}</code>
+      </div>
+      <div>
+        <div class="text-xs uppercase tracking-wide text-slate-500">Device ID</div>
+        <code class="font-mono text-sm">{{ device_id }}</code>
+      </div>
+      <div>
+        <div class="text-xs uppercase tracking-wide text-slate-500">Enrollment secret</div>
+        <code class="font-mono text-sm break-all">{{ s }}</code>
+      </div>
+    </div>
+
+    <form method="POST" action="/devices/{{ device_id }}/enroll" class="flex justify-end">
+      <button class="text-sm text-slate-500 hover:text-red-700">Regenerate (invalidates current)</button>
+    </form>
+  {% else %}
+    <div class="bg-white rounded-lg shadow-sm p-6 space-y-3">
+      <p class="text-sm">No active enrollment payload for this device.</p>
+      <form method="POST" action="/devices/{{ device_id }}/enroll">
+        <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded">Generate enrollment payload</button>
+      </form>
+      {% if let Some(e) = error %}
+        <p class="text-red-600 text-sm">{{ e }}</p>
+      {% endif %}
+    </div>
+  {% endif %}
+</main>
+{% endblock %}

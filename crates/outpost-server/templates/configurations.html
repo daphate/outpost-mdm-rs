@@ -11,6 +11,38 @@
     <span class="text-sm text-slate-500">{{ total }} total</span>
   </div>
 
+  {% if let Some(msg) = flash %}
+    <div class="bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm px-4 py-2 rounded">{{ msg }}</div>
+  {% endif %}
+
+  <details class="bg-white rounded-lg shadow-sm p-4" {% if create_error.is_some() %}open{% endif %}>
+    <summary class="cursor-pointer font-medium text-slate-700">+ New configuration</summary>
+    <form method="POST" action="/configurations/new" class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
+      <label class="block">
+        <span class="text-xs uppercase tracking-wide text-slate-500">Name</span>
+        <input name="name" required class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+      </label>
+      <label class="block">
+        <span class="text-xs uppercase tracking-wide text-slate-500">Description</span>
+        <input name="description" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+      </label>
+      <label class="block">
+        <span class="text-xs uppercase tracking-wide text-slate-500">Kiosk package (leave blank to disable kiosk)</span>
+        <input name="kiosk_package" placeholder="ru.tacticalar.outpost" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm font-mono">
+      </label>
+      <label class="block">
+        <span class="text-xs uppercase tracking-wide text-slate-500">Settings JSON</span>
+        <textarea name="settings_json" rows="3" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm font-mono">{}</textarea>
+      </label>
+      <div class="md:col-span-2">
+        <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded">Create configuration</button>
+      </div>
+      {% if let Some(e) = create_error %}
+        <p class="md:col-span-2 text-red-600 text-sm">{{ e }}</p>
+      {% endif %}
+    </form>
+  </details>
+
   <div class="bg-white rounded-lg shadow-sm overflow-hidden">
     <table class="min-w-full divide-y divide-slate-200">
       <thead class="bg-slate-50">

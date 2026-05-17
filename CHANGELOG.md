@@ -4,6 +4,65 @@ Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https:
 
 ## [Unreleased]
 
+### Phase 20 — Full admin UI: create-forms + enrollment QR + push scheduling + password change
+
+**Why:** v0.3.0 added read-only HTMX pages for all resources, but every
+mutation still required a `curl` JSON call. Operators in the field can't
+provision a fleet from the terminal — the UI has to do everything.
+
+**Added — templates**
+- New: `device_enroll.html`, `device_push.html`, `me_password.html`
+- All 5 existing list pages (`devices`, `groups`, `applications`,
+  `configurations`, `push`, `users`) gained inline `<details>` "+ New X"
+  forms that re-open with an error message on validation failure.
+- `_nav.html` now links the logged-in user's login to `/me/password`.
+
+**Added — handlers (`routes/web.rs`)**
+- `POST /devices/new` — create a device record by serial.
+- `GET /devices/{id}/enroll` + `POST` — show / generate single-use
+  enrollment secret + render a 285×285 QR-SVG embedding the
+  `{server_url, customer_id, device_id, enrollment_secret}` payload.
+- `GET /devices/{id}/push` + `POST` — schedule a per-device push command
+  (reboot / install-apk / update-config / sync-models / sync-knowledge /
+  sync-maps / remote-wipe) with optional `due_at` and JSON payload.
+- `POST /groups/new`, `POST /configurations/new` — straightforward
+  inserts with unique-violation handling.
+- `POST /applications/upload` — single-multipart hop that creates the
+  application row (find-or-create by `package_name`), writes the file
+  under `APP_FILES_DIR`, hashes SHA-256, and creates the
+  `application_version` row in one transaction.
+- `POST /push/new` — schedule push targeting either a device or a group
+  (the dropdown encodes the target as `device:N` / `group:N`).
+- `POST /users/new`, `POST /users/{id}/toggle-active` — admin can mint
+  operators/viewers/admins and toggle account active state. Cannot
+  deactivate self.
+- `GET /me/password` + `POST` — verifies current password before
+  hashing the new one with argon2id; clears the
+  `must_change_password` flag on success.
+
+**Added — infrastructure**
+- `FlashCookie` extractor + `set_flash_cookie` / `clear_flash_cookie`
+  helpers — single-shot success banners across POST→303→GET. URL-encoded
+  values via a small inline percent-encoder; no new dep.
+- `redirect_with_flash(target, msg)` helper packages 303 + Set-Cookie
+  for happy-path POST handlers.
+- `qrcode 0.14` dep with `svg` feature only; `qrcode_svg` helper renders
+  payload to SVG with 285×285 min dimensions + quiet zone.
+
+**Tests**
+- 10 new web integration tests in `tests/web.rs`. Suite now totals
+  **130 passing, 0 failing** (up from 120 at v0.3.0).
+- Coverage: device create + serial validation, group create, user
+  create + role + short-pwd rejection, configuration create + invalid
+  JSON rejection, enrollment view+generate+QR-SVG presence, password
+  change happy path + relogin verification, password mismatch.
+
+**Production state on `mdm.secondf8n.tech`**
+- New binary deployed via WSL2 Ubuntu 24.04 → systemd
+  (`/usr/local/bin/outpost-server.preview-ui`). RSS 1.7 MB on cold
+  start. All 8 UI pages and 6 form-POST flows verified end-to-end over
+  HTTPS.
+
 ### Phase 19 — Drop Docker from production, ship as systemd unit
 
 **Why:** On the 1 vCPU / 512 MB box the Docker daemon costs ~50-80 MB

@@ -37,6 +37,7 @@ sha2.workspace = true
 subtle.workspace = true
 hex.workspace = true
 askama.workspace = true
+qrcode.workspace = true
 outpost-core = { path = "../outpost-core" }
 outpost-migrations = { path = "../outpost-migrations" }
 

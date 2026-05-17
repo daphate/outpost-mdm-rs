@@ -11,6 +11,30 @@
     <span class="text-sm text-slate-500">{{ total }} total</span>
   </div>
 
+  {% if let Some(msg) = flash %}
+    <div class="bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm px-4 py-2 rounded">{{ msg }}</div>
+  {% endif %}
+
+  <details class="bg-white rounded-lg shadow-sm p-4" {% if create_error.is_some() %}open{% endif %}>
+    <summary class="cursor-pointer font-medium text-slate-700">+ New device</summary>
+    <form method="POST" action="/devices/new" class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
+      <label class="block">
+        <span class="text-xs uppercase tracking-wide text-slate-500">Serial / IMEI</span>
+        <input name="serial" required class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 font-mono text-sm">
+      </label>
+      <label class="block">
+        <span class="text-xs uppercase tracking-wide text-slate-500">Display name</span>
+        <input name="display_name" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+      </label>
+      <div class="flex items-end">
+        <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded">Create device</button>
+      </div>
+      {% if let Some(e) = create_error %}
+        <p class="md:col-span-3 text-red-600 text-sm">{{ e }}</p>
+      {% endif %}
+    </form>
+  </details>
+
   <div class="bg-white rounded-lg shadow-sm overflow-hidden">
     <table class="min-w-full divide-y divide-slate-200">
       <thead class="bg-slate-50">
@@ -21,6 +45,7 @@
           <th class="px-4 py-3">Battery</th>
           <th class="px-4 py-3">App version</th>
           <th class="px-4 py-3">Last seen</th>
+          <th class="px-4 py-3 text-right">Actions</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-slate-100">
@@ -29,23 +54,33 @@
           <td class="px-4 py-3 font-mono text-sm">{{ d.serial }}</td>
           <td class="px-4 py-3">{{ d.display_name }}</td>
           <td class="px-4 py-3">
-            {% if d.is_online %}
-              <span class="inline-flex items-center text-emerald-700 text-sm">
-                <span class="w-2 h-2 mr-1.5 rounded-full bg-emerald-500"></span>online
-              </span>
+            {% if d.is_enrolled %}
+              {% if d.is_online %}
+                <span class="inline-flex items-center text-emerald-700 text-sm">
+                  <span class="w-2 h-2 mr-1.5 rounded-full bg-emerald-500"></span>online
+                </span>
+              {% else %}
+                <span class="inline-flex items-center text-slate-400 text-sm">
+                  <span class="w-2 h-2 mr-1.5 rounded-full bg-slate-300"></span>offline
+                </span>
+              {% endif %}
             {% else %}
-              <span class="inline-flex items-center text-slate-400 text-sm">
-                <span class="w-2 h-2 mr-1.5 rounded-full bg-slate-300"></span>offline
+              <span class="inline-flex items-center text-amber-700 text-sm">
+                <span class="w-2 h-2 mr-1.5 rounded-full bg-amber-400"></span>not enrolled
               </span>
             {% endif %}
           </td>
           <td class="px-4 py-3 text-sm">{{ d.battery }}</td>
           <td class="px-4 py-3 text-sm">{{ d.app_version }}</td>
           <td class="px-4 py-3 text-sm text-slate-500">{{ d.last_seen }}</td>
+          <td class="px-4 py-3 text-right text-sm">
+            <a href="/devices/{{ d.id }}/enroll" class="text-blue-600 hover:text-blue-800 mr-3">Enroll</a>
+            <a href="/devices/{{ d.id }}/push" class="text-slate-600 hover:text-slate-900">Push</a>
+          </td>
         </tr>
         {% endfor %}
         {% if devices.is_empty() %}
-        <tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">No devices enrolled yet.</td></tr>
+        <tr><td colspan="7" class="px-4 py-8 text-center text-slate-400">No devices enrolled yet.</td></tr>
         {% endif %}
       </tbody>
     </table>

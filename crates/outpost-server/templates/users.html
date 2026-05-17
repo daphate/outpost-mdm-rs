@@ -11,6 +11,42 @@
     <span class="text-sm text-slate-500">{{ total }} total</span>
   </div>
 
+  {% if let Some(msg) = flash %}
+    <div class="bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm px-4 py-2 rounded">{{ msg }}</div>
+  {% endif %}
+
+  <details class="bg-white rounded-lg shadow-sm p-4" {% if create_error.is_some() %}open{% endif %}>
+    <summary class="cursor-pointer font-medium text-slate-700">+ New user</summary>
+    <form method="POST" action="/users/new" class="grid grid-cols-1 md:grid-cols-5 gap-3 mt-4">
+      <label class="block md:col-span-1">
+        <span class="text-xs uppercase tracking-wide text-slate-500">Login</span>
+        <input name="login" required class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+      </label>
+      <label class="block md:col-span-1">
+        <span class="text-xs uppercase tracking-wide text-slate-500">Email</span>
+        <input name="email" type="email" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+      </label>
+      <label class="block md:col-span-1">
+        <span class="text-xs uppercase tracking-wide text-slate-500">Password (≥8)</span>
+        <input name="password" type="password" required minlength="8" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+      </label>
+      <label class="block md:col-span-1">
+        <span class="text-xs uppercase tracking-wide text-slate-500">Role</span>
+        <select name="role_id" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+          <option value="2">admin</option>
+          <option value="3" selected>operator</option>
+          <option value="4">viewer</option>
+        </select>
+      </label>
+      <div class="flex items-end">
+        <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded">Create user</button>
+      </div>
+      {% if let Some(e) = create_error %}
+        <p class="md:col-span-5 text-red-600 text-sm">{{ e }}</p>
+      {% endif %}
+    </form>
+  </details>
+
   <div class="bg-white rounded-lg shadow-sm overflow-hidden">
     <table class="min-w-full divide-y divide-slate-200">
       <thead class="bg-slate-50">
@@ -20,6 +56,7 @@
           <th class="px-4 py-3">Role</th>
           <th class="px-4 py-3">Status</th>
           <th class="px-4 py-3">Last login</th>
+          <th class="px-4 py-3 text-right">Actions</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-slate-100">
@@ -39,10 +76,23 @@
             {% endif %}
           </td>
           <td class="px-4 py-3 text-sm text-slate-500">{{ u.last_login_at }}</td>
+          <td class="px-4 py-3 text-right text-sm">
+            {% if u.id != current_user_id %}
+              <form method="POST" action="/users/{{ u.id }}/toggle-active" class="inline">
+                {% if u.is_active %}
+                  <button class="text-amber-700 hover:text-amber-900">Deactivate</button>
+                {% else %}
+                  <button class="text-emerald-700 hover:text-emerald-900">Activate</button>
+                {% endif %}
+              </form>
+            {% else %}
+              <span class="text-slate-300 text-xs">(you)</span>
+            {% endif %}
+          </td>
         </tr>
         {% endfor %}
         {% if users.is_empty() %}
-        <tr><td colspan="5" class="px-4 py-8 text-center text-slate-400">No users.</td></tr>
+        <tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">No users.</td></tr>
         {% endif %}
       </tbody>
     </table>

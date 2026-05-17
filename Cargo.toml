@@ -46,6 +46,8 @@ hmac = "0.12"
 sha2 = "0.10"
 subtle = "2"
 hex = "0.4"
+# QR-code SVG generation for device enrollment payload
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 [profile.release]
 opt-level = "z"          # optimize for size — 512 MB box

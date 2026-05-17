@@ -14,6 +14,51 @@
     </div>
   </div>
 
+  {% if let Some(msg) = flash %}
+    <div class="bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm px-4 py-2 rounded">{{ msg }}</div>
+  {% endif %}
+
+  <details class="bg-white rounded-lg shadow-sm p-4" {% if create_error.is_some() %}open{% endif %}>
+    <summary class="cursor-pointer font-medium text-slate-700">+ Schedule push command</summary>
+    <form method="POST" action="/push/new" class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
+      <label class="block">
+        <span class="text-xs uppercase tracking-wide text-slate-500">Target</span>
+        <select name="target" required class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+          <option value="">— select —</option>
+          {% for d in target_devices %}<option value="device:{{ d.id }}">device · {{ d.serial }}</option>{% endfor %}
+          {% for g in target_groups %}<option value="group:{{ g.id }}">group · {{ g.name }}</option>{% endfor %}
+        </select>
+      </label>
+      <label class="block">
+        <span class="text-xs uppercase tracking-wide text-slate-500">Command</span>
+        <select name="command" required class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm font-mono">
+          <option value="reboot">reboot</option>
+          <option value="install-apk">install-apk</option>
+          <option value="update-config">update-config</option>
+          <option value="sync-models">sync-models</option>
+          <option value="sync-knowledge">sync-knowledge</option>
+          <option value="sync-maps">sync-maps</option>
+          <option value="remote-wipe">remote-wipe</option>
+        </select>
+      </label>
+      <label class="block">
+        <span class="text-xs uppercase tracking-wide text-slate-500">Run at (UTC, optional)</span>
+        <input name="due_at" type="datetime-local" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+      </label>
+      <label class="block md:col-span-3">
+        <span class="text-xs uppercase tracking-wide text-slate-500">Payload JSON</span>
+        <textarea name="payload_json" rows="2" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm font-mono">{}</textarea>
+      </label>
+      <div class="md:col-span-3 flex items-center justify-between">
+        <p class="text-xs text-slate-500">Empty <code>due_at</code> = run on the next scheduler tick (≤60 s).</p>
+        <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded">Schedule</button>
+      </div>
+      {% if let Some(e) = create_error %}
+        <p class="md:col-span-3 text-red-600 text-sm">{{ e }}</p>
+      {% endif %}
+    </form>
+  </details>
+
   <div class="bg-white rounded-lg shadow-sm overflow-hidden">
     <table class="min-w-full divide-y divide-slate-200">
       <thead class="bg-slate-50">
