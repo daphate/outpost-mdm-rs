@@ -21,6 +21,9 @@ pub fn router() -> Router<AppState> {
             get(get_one).put(update).delete(delete),
         )
         .route("/api/v1/devices/{id}/telemetry", get(get_telemetry))
+        // v0.13 (MDM-DEVICE-CONTROL-CONTRACT §1.4):
+        .route("/api/v1/devices/{id}/state", get(get_state))
+        .route("/api/v1/devices/{id}/config", axum::routing::post(post_config))
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -231,4 +234,96 @@ async fn get_telemetry(
     .fetch_optional(&state.db)
     .await?;
     t.map(Json).ok_or(ApiError::NotFound)
+}
+
+// ----- v0.13 Settings Sync (MDM-DEVICE-CONTROL-CONTRACT §1.4) --------------
+
+/// `GET /api/v1/devices/{id}/state` — что устройство сообщало о своих
+/// ModelPreferences в последнем /sync. Возвращает {version, seen_at, state}
+/// в формате, идентичном request body field `current_state`.
+#[derive(Debug, Serialize)]
+pub struct DeviceState {
+    pub version: i64,
+    pub seen_at: Option<String>,
+    pub state: serde_json::Value,
+}
+
+async fn get_state(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<DeviceState>, ApiError> {
+    require_permission(&state.db, user.role_id, "devices.read").await?;
+    let row: Option<(String, i64, Option<String>)> = sqlx::query_as(
+        "SELECT current_state_json, current_state_version, current_state_seen_at \
+         FROM devices WHERE id = ? AND customer_id = ?",
+    )
+    .bind(id)
+    .bind(user.customer_id)
+    .fetch_optional(&state.db)
+    .await?;
+    let Some((json_str, version, seen_at)) = row else {
+        return Err(ApiError::NotFound);
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(&json_str).unwrap_or(serde_json::Value::Null);
+    Ok(Json(DeviceState {
+        version,
+        seen_at,
+        state: value,
+    }))
+}
+
+/// `POST /api/v1/devices/{id}/config` — admin отправляет patch
+/// ModelPreferences-настроек устройству. Internally создаёт push_message
+/// с command='update-config'. Устройство применит на следующем /sync
+/// (≤30 мин default polling interval).
+#[derive(Debug, Deserialize)]
+pub struct ConfigUpdateRequest {
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConfigUpdateResponse {
+    pub command_id: i64,
+}
+
+async fn post_config(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<ConfigUpdateRequest>,
+) -> Result<(axum::http::StatusCode, Json<ConfigUpdateResponse>), ApiError> {
+    require_permission(&state.db, user.role_id, "devices.write").await?;
+    // Verify device exists в этом customer-scope.
+    let exists: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM devices WHERE id = ? AND customer_id = ?",
+    )
+    .bind(id)
+    .bind(user.customer_id)
+    .fetch_optional(&state.db)
+    .await?;
+    if exists.is_none() {
+        return Err(ApiError::NotFound);
+    }
+    // payload — JSON object, e.g. {"preferred_llm": "qwen2-vl-2b-instruct-q4_k_m.gguf"}.
+    // Не валидируем ключи здесь — клиент в SyncCommandDispatcher знает
+    // mapping; неизвестные ключи возвращаются в ACK как error.
+    let payload_json = serde_json::to_string(&req.payload).map_err(|e| {
+        ApiError::BadRequest(format!("payload not serializable: {e}"))
+    })?;
+    let cmd_id: i64 = sqlx::query_scalar(
+        "INSERT INTO push_messages (customer_id, device_id, command, payload_json, status) \
+         VALUES (?, ?, 'update-config', ?, 'pending') \
+         RETURNING id",
+    )
+    .bind(user.customer_id)
+    .bind(id)
+    .bind(payload_json)
+    .fetch_one(&state.db)
+    .await?;
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(ConfigUpdateResponse { command_id: cmd_id }),
+    ))
 }

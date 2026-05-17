@@ -165,15 +165,53 @@ pub struct SyncRequest {
     /// `app_version` (string), policy будет no-op для него — мы не парсим
     /// строки в код.
     pub app_version_code: Option<i64>,
+    /// rc42 b37+: monotonic integer, увеличивается на каждый set*() в
+    /// ModelPreferences. Server сравнивает с `devices.current_state_version`
+    /// и обновляет snapshot если client прислал свежее.
+    pub state_version: Option<i64>,
+    /// rc42 b37+: snapshot всех видимых admin'у ModelPreferences-настроек.
+    /// См. MDM-DEVICE-CONTROL-CONTRACT.md §1.3 за полным списком ключей.
+    /// Не содержит secrets (есть только `*_has_token` bool-маркеры).
+    pub current_state: Option<serde_json::Value>,
+    /// rc42 b37+: outcomes исполнения push-команд из prior sync'ов.
+    /// Каждая запись содержит `id` (UUID или int-as-string) и `status`
+    /// ("ok" | "error") + опциональный `message`. Server обновляет
+    /// `push_messages.status` соответственно.
     #[serde(default)]
-    pub acks: Vec<i64>,
+    pub applied_commands: Vec<AppliedCommand>,
+    /// IDs команд которые device считает delivered (idempotent ack).
+    /// Может быть пустым; в случае конфликта с applied_commands побеждает
+    /// applied_commands.status. v0.13: тип сменён с Vec<i64> на Vec<String>
+    /// — id может быть UUID (b37+) или integer-as-string (legacy ≤ b36).
+    /// Server парсит как i64 fallback'ом, иначе ignore-with-warn.
+    #[serde(default)]
+    pub acks: Vec<String>,
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
+#[derive(Debug, Deserialize)]
+pub struct AppliedCommand {
+    pub id: String,
+    pub status: String,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// Wire shape команды в /api/v1/sync response. v0.13: id отправляется как
+/// String для forward-compat с UUID-based client'ами (rc42 b37+
+/// ModelPreferences treats command_id как opaque string). Internally в БД
+/// id остаётся INTEGER PRIMARY KEY AUTOINCREMENT.
+#[derive(Debug, Serialize)]
 pub struct SyncCommand {
-    pub id: i64,
+    pub id: String,
     pub command: String,
     pub payload_json: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct SyncCommandRow {
+    id: i64,
+    command: String,
+    payload_json: String,
 }
 
 /// v0.12 (Tier-2): описание APK-обновления, которое клиент должен скачать
@@ -233,23 +271,80 @@ async fn sync(
     .execute(&state.db)
     .await?;
 
+    // v0.13: store ModelPreferences snapshot if client sent fresh state.
+    if let (Some(version), Some(state_json)) = (req.state_version, req.current_state.as_ref()) {
+        let json_str = serde_json::to_string(state_json).unwrap_or_else(|_| "{}".to_string());
+        sqlx::query(
+            "UPDATE devices SET \
+                current_state_json    = ?, \
+                current_state_version = ?, \
+                current_state_seen_at = datetime('now') \
+             WHERE id = ? AND ? > current_state_version",
+        )
+        .bind(json_str)
+        .bind(version)
+        .bind(device.id)
+        .bind(version)
+        .execute(&state.db)
+        .await?;
+    }
+
+    // v0.13: process applied_commands outcomes (rc42 b37+ clients send these).
+    for ac in &req.applied_commands {
+        // Client может слать id как UUID-строку или legacy integer-as-string.
+        // Поддерживаем integer parse fallback'ом; UUID игнорируется т.к. в текущей
+        // схеме push_messages.id INTEGER. Когда добавим uuid column — расширим.
+        let Ok(ack_id) = ac.id.parse::<i64>() else {
+            tracing::warn!(
+                device_id = device.id,
+                cmd_id = %ac.id,
+                "skip applied_command — non-integer id (UUID schema TBD)"
+            );
+            continue;
+        };
+        let new_status = if ac.status == "ok" {
+            "delivered"
+        } else {
+            "failed"
+        };
+        sqlx::query(
+            "UPDATE push_messages \
+             SET status = ?, last_error = ?, delivered_at = datetime('now') \
+             WHERE id = ? AND device_id = ? AND status IN ('pending','sent')",
+        )
+        .bind(new_status)
+        .bind(ac.message.clone().unwrap_or_default())
+        .bind(ack_id)
+        .bind(device.id)
+        .execute(&state.db)
+        .await?;
+    }
+
     // Mark acked commands as delivered (scoped to this device).
-    if !req.acks.is_empty() {
-        for ack_id in &req.acks {
-            sqlx::query(
-                "UPDATE push_messages \
-                 SET status = 'delivered', delivered_at = datetime('now') \
-                 WHERE id = ? AND device_id = ? AND status IN ('pending','sent')",
-            )
-            .bind(ack_id)
-            .bind(device.id)
-            .execute(&state.db)
-            .await?;
-        }
+    // v0.13: acks теперь Vec<String>; parse через i64::from_str (legacy
+    // integer ids). UUID-only acks ignore-with-warn — uuid column в roadmap.
+    for ack_id_str in &req.acks {
+        let Ok(ack_id) = ack_id_str.parse::<i64>() else {
+            tracing::warn!(
+                device_id = device.id,
+                cmd_id = %ack_id_str,
+                "skip ack — non-integer id"
+            );
+            continue;
+        };
+        sqlx::query(
+            "UPDATE push_messages \
+             SET status = 'delivered', delivered_at = datetime('now') \
+             WHERE id = ? AND device_id = ? AND status IN ('pending','sent')",
+        )
+        .bind(ack_id)
+        .bind(device.id)
+        .execute(&state.db)
+        .await?;
     }
 
     // Drain pending commands; mark them sent atomically.
-    let commands: Vec<SyncCommand> = sqlx::query_as::<_, SyncCommand>(
+    let raw_commands: Vec<SyncCommandRow> = sqlx::query_as::<_, SyncCommandRow>(
         "SELECT id, command, payload_json FROM push_messages \
          WHERE device_id = ? AND status = 'pending' \
          ORDER BY id ASC LIMIT 50",
@@ -258,7 +353,7 @@ async fn sync(
     .fetch_all(&state.db)
     .await?;
 
-    for c in &commands {
+    for c in &raw_commands {
         sqlx::query(
             "UPDATE push_messages SET status = 'sent', sent_at = datetime('now') WHERE id = ?",
         )
@@ -266,6 +361,14 @@ async fn sync(
         .execute(&state.db)
         .await?;
     }
+    let commands: Vec<SyncCommand> = raw_commands
+        .into_iter()
+        .map(|r| SyncCommand {
+            id: r.id.to_string(),
+            command: r.command,
+            payload_json: r.payload_json,
+        })
+        .collect();
 
     // ---------- v0.12 Tier-2: APK rollout policy resolution ----------------
     // Решаем какую версию устройство должно держать:
