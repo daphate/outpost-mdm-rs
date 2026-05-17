@@ -1,5 +1,6 @@
 //! Shared application state injected into every handler.
 
+use crate::cloudru_signer::CloudRuPresigner;
 use crate::rate_limit::LoginRateLimiter;
 use sqlx::SqlitePool;
 use std::path::PathBuf;
@@ -19,6 +20,12 @@ pub struct AppState {
     pub request_timeout_secs: u64,
     pub secure_cookies: bool,
     pub login_limiter: LoginRateLimiter,
+    /// Cloud.ru presigner для генерации APK download QR'ов на странице
+    /// enrollment. `None` если соответствующие env-vars не заданы — в этом
+    /// случае admin UI скрывает APK-QR блок.
+    pub cloudru_signer: Option<Arc<CloudRuPresigner>>,
+    /// Object key для latest APK pointer (`apks/latest/app-debug.apk` by default).
+    pub cloudru_apk_key: Arc<String>,
 }
 
 impl AppState {
@@ -31,6 +38,8 @@ impl AppState {
         max_body_bytes: usize,
         request_timeout_secs: u64,
         secure_cookies: bool,
+        cloudru_signer: Option<CloudRuPresigner>,
+        cloudru_apk_key: String,
     ) -> Self {
         Self {
             db,
@@ -41,6 +50,8 @@ impl AppState {
             request_timeout_secs,
             secure_cookies,
             login_limiter: LoginRateLimiter::default_login(),
+            cloudru_signer: cloudru_signer.map(Arc::new),
+            cloudru_apk_key: Arc::new(cloudru_apk_key),
         }
     }
 }
@@ -63,6 +74,8 @@ pub async fn test_state() -> AppState {
         cfg.max_body_bytes,
         cfg.request_timeout_secs,
         cfg.secure_cookies,
+        None,
+        cfg.cloudru_apk_key,
     )
 }
 

@@ -6,6 +6,7 @@ pub mod auth;
 pub mod auth_extract;
 pub mod bootstrap;
 pub mod client_ip;
+pub mod cloudru_signer;
 pub mod config;
 pub mod db;
 pub mod distribute_gc;

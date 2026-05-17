@@ -23,6 +23,16 @@ APP_SECRET=$(openssl rand -base64 48)
 RUST_LOG=info
 SECURE_COOKIES=true
 SESSION_TTL_SECS=86400
+
+# Cloud.ru read-only IAM (optional). Если все три заданы — на странице
+# /devices/{id}/enroll будет рендериться APK-QR с presigned URL на 7 дней.
+# Если хотя бы одно отсутствует — APK-QR блок скрыт, страница содержит
+# только enrollment QR. Half-set комбинация — server start fail.
+# CLOUDRU_TENANT_ID=00000000-0000-0000-0000-000000000000
+# CLOUDRU_KEY_ID=00000000000000000000000000000000
+# CLOUDRU_SECRET=00000000000000000000000000000000
+# CLOUDRU_BUCKET=outpost                       # default
+# CLOUDRU_APK_KEY=apks/latest/app-debug.apk    # default
 EOF
 chown root:outpost /etc/outpost/env && chmod 640 /etc/outpost/env
 
@@ -88,8 +98,31 @@ The server marks `must_change_password = 1`, so first login forces a password ch
 | `MAX_BODY_BYTES`     | `209715200` (200 MiB) | no | Request body cap → 413 on overflow. |
 | `REQUEST_TIMEOUT_SECS` | `120` | no | Per-request wall-clock timeout → 503. |
 | `SECURE_COOKIES`     | `true` | no | `Secure` flag on the `outpost_session` cookie. Disable only for plain-HTTP local dev. |
+| `CLOUDRU_TENANT_ID`  | — | conditional | Cloud.ru tenant UUID (read-only IAM). Если задан — сервер генерирует SigV4 presigned URL для APK на странице `/devices/{id}/enroll` и рендерит QR-код «Шаг 1 — установить приложение». См. ниже. |
+| `CLOUDRU_KEY_ID`     | — | conditional | Cloud.ru access key ID, read-only. All-or-nothing с `CLOUDRU_TENANT_ID` + `CLOUDRU_SECRET`. |
+| `CLOUDRU_SECRET`     | — | conditional | Cloud.ru secret access key, read-only. |
+| `CLOUDRU_BUCKET`     | `outpost` | no | S3 bucket с APK / моделями. |
+| `CLOUDRU_APK_KEY`    | `apks/latest/app-debug.apk` | no | Object key для latest APK pointer. QR на enrollment-странице ведёт на этот key с TTL 7 дней. |
 
-The server **refuses to start** if `APP_SECRET` is missing or shorter than 32 bytes.
+The server **refuses to start** if:
+- `APP_SECRET` is missing or shorter than 32 bytes.
+- Cloud.ru creds are partially set — `CLOUDRU_TENANT_ID/KEY_ID/SECRET` must be **all three** or **none**. Half-set комбинация → `bail!` со списком какие именно полей не хватает.
+
+### Cloud.ru read-only IAM creds (для APK-QR на странице enrollment)
+
+Когда `CLOUDRU_TENANT_ID/KEY_ID/SECRET` заданы, на странице `/devices/{id}/enroll` рендерится дополнительный QR со SigV4 presigned URL на `apks/latest/app-debug.apk` (или на key из `CLOUDRU_APK_KEY`). TTL — 7 дней (SigV4 max). Юзер открывает страницу с админ-машины, оператор показывает QR оператору телефона, тот сканирует — браузер сразу скачивает APK без ручного копи-паста ссылок через Telegram.
+
+Если переменные не заданы — APK-блок на странице **не отображается**, страница содержит только enrollment QR. Логи на старте:
+
+```
+INFO Cloud.ru presigner enabled tenant_id=… key_id_prefix=… bucket=outpost apk_key=apks/latest/app-debug.apk
+# или
+INFO Cloud.ru presigner disabled — set CLOUDRU_TENANT_ID, CLOUDRU_KEY_ID, CLOUDRU_SECRET to enable APK-QR на странице enrollment
+```
+
+Creds должны быть **read-only**: scope только `GET object` / `HEAD object` / `LIST bucket`. Сервер сам никогда не делает `PUT`/`DELETE` через них, но если ключи скомпрометируются (например leak через misconfigured logging) — read-only minimises blast radius. Cloud.ru console → IAM service account → отдельная роль с одной только `s3:GetObject` permission на `arn:s3:::outpost/*`.
+
+Per-device персонализированные creds (план на будущее) — пока не реализованы. Сейчас один shared read-only ключ на весь fleet.
 
 ---
 

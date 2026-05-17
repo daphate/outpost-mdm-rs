@@ -13,8 +13,28 @@
   </div>
 
   {% if let Some(s) = secret %}
+    {% if let Some(apk_qr) = apk_qr_svg %}
+      <div class="bg-white rounded-lg shadow-sm p-6 border-l-4 border-blue-500">
+        <div class="flex items-baseline justify-between mb-3">
+          <div class="text-xs uppercase tracking-wide text-slate-500">Шаг 1 — установка приложения</div>
+          {% if let Some(exp) = apk_url_expires_human %}
+            <div class="text-xs text-slate-400">QR действителен до {{ exp }}</div>
+          {% endif %}
+        </div>
+        <p class="text-sm text-slate-700 mb-3">Отсканируйте QR с нового телефона — браузер сам откроет ссылку и скачает свежий APK с Cloud.ru. Установите, примите дисклеймер, пройдите onboarding-wizard.</p>
+        <div class="flex justify-center">{{ apk_qr|safe }}</div>
+        {% if let Some(url) = apk_download_url %}
+          <div class="mt-4">
+            <div class="text-xs uppercase tracking-wide text-slate-500 mb-1">Прямая ссылка (если QR не сканируется)</div>
+            <code class="font-mono text-xs break-all bg-slate-50 p-2 rounded block">{{ url }}</code>
+          </div>
+        {% endif %}
+        <p class="text-xs text-slate-500 mt-3">Presigned URL: содержит SigV4-подпись, действует 7 дней с момента генерации. Чтобы перевыпустить — просто обновите эту страницу.</p>
+      </div>
+    {% endif %}
+
     <div class="bg-amber-50 border border-amber-200 text-amber-900 text-sm px-4 py-3 rounded space-y-2">
-      <p class="font-medium">Полезная нагрузка регистрации — покажите устройству один раз, далее она инвалидируется:</p>
+      <p class="font-medium">Шаг 2 — полезная нагрузка регистрации. Покажите устройству один раз, далее она инвалидируется:</p>
       <pre class="font-mono text-xs bg-white p-2 rounded overflow-x-auto">{{ payload_json }}</pre>
       <p class="text-xs">Онлайн-сценарий: на устройстве откройте <em>Settings → Телеметрия → «Подключить по QR»</em> и отсканируйте картинку ниже. Оффлайн / флешка: нажмите «Скачать enrollment.json», положите файл по пути <code>/sdcard/Outpost/enrollment.json</code> на устройстве — при первом запуске с сетью оно подключится автоматически. В обоих случаях секрет одноразовый: после успешного <code>POST /api/v1/enroll</code> переиспользовать нельзя.</p>
     </div>

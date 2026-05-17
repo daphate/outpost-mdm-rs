@@ -1803,6 +1803,16 @@ struct DeviceEnrollTemplate {
     qr_svg: String,
     server_url: String,
     error: Option<String>,
+    /// APK download QR — SVG presigned-URL на Cloud.ru. `None` если
+    /// `cloudru_signer` не сконфигурирован (CLOUDRU_* env'ы не заданы).
+    /// Template условно рендерит блок «Шаг 1 — установить приложение».
+    apk_qr_svg: Option<String>,
+    /// Сама ссылка под QR — текстом, для копирования вручную или для
+    /// admin'а который хочет переслать в Telegram. None ↔ apk_qr_svg None.
+    apk_download_url: Option<String>,
+    /// Срок действия presigned URL — UI показывает «до DD.MM.YYYY HH:MM UTC»
+    /// чтобы admin понимал когда нужно перегенерировать страницу.
+    apk_url_expires_human: Option<String>,
 }
 
 async fn device_enroll_view(
@@ -1941,6 +1951,24 @@ async fn render_device_enroll(
         (String::new(), String::new())
     };
 
+    // v0.16 §A — APK download QR. Если Cloud.ru presigner сконфигурирован
+    // через CLOUDRU_* env'ы, генерируем presigned URL на latest APK pointer
+    // (`apks/latest/app-debug.apk` by default) на 7 дней и кодируем в QR.
+    // Юзер сканирует, открывает в браузере, скачивает, ставит — всё без
+    // ручного копи-паста ссылок из Telegram.
+    let (apk_qr_svg, apk_download_url, apk_url_expires_human) =
+        if let Some(signer) = state.cloudru_signer.as_ref() {
+            const TTL_SECS: u64 = crate::cloudru_signer::SIGV4_MAX_EXPIRES_SECS; // 7 дней
+            let now = chrono::Utc::now();
+            let url = signer.presigned_get_url_at(&state.cloudru_apk_key, TTL_SECS, now);
+            let svg = qrcode_svg(&url);
+            let expires_at = now + chrono::Duration::seconds(TTL_SECS as i64);
+            let expires_str = expires_at.format("%d.%m.%Y %H:%M UTC").to_string();
+            (Some(svg), Some(url), Some(expires_str))
+        } else {
+            (None, None, None)
+        };
+
     render(DeviceEnrollTemplate {
         user_login: user.login.clone(),
         device_id,
@@ -1950,6 +1978,9 @@ async fn render_device_enroll(
         qr_svg,
         server_url,
         error,
+        apk_qr_svg,
+        apk_download_url,
+        apk_url_expires_human,
     })
 }
 

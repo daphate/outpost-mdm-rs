@@ -4,8 +4,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use outpost_server::{
-    apk_watcher, app, bootstrap, config::Config, db, distribute_gc, rollout_monitor, scheduler,
-    shutdown, state::AppState,
+    apk_watcher, app, bootstrap, cloudru_signer::CloudRuPresigner, config::Config, db,
+    distribute_gc, rollout_monitor, scheduler, shutdown, state::AppState,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -53,6 +53,34 @@ async fn main() -> Result<()> {
         tracing::warn!(count = bootstrapped, "bootstrapped initial passwords");
     }
 
+    // Cloud.ru presigner: создаём только если все три creds заданы. Config
+    // уже валидировал all-or-nothing-семантику в `Config::from_env`, поэтому
+    // здесь достаточно тройного `Some(...)` match'а. Если None — admin Web UI
+    // не показывает APK-QR блок на странице enrollment.
+    let cloudru_signer = match (
+        cfg.cloudru_tenant_id.as_deref(),
+        cfg.cloudru_key_id.as_deref(),
+        cfg.cloudru_secret.as_deref(),
+    ) {
+        (Some(t), Some(k), Some(s)) => {
+            tracing::info!(
+                tenant_id = t,
+                key_id_prefix = &k[..k.len().min(8)],
+                bucket = %cfg.cloudru_bucket,
+                apk_key = %cfg.cloudru_apk_key,
+                "Cloud.ru presigner enabled"
+            );
+            Some(CloudRuPresigner::new(t, k, s).with_bucket(cfg.cloudru_bucket.clone()))
+        }
+        _ => {
+            tracing::info!(
+                "Cloud.ru presigner disabled — set CLOUDRU_TENANT_ID, CLOUDRU_KEY_ID, \
+                 CLOUDRU_SECRET to enable APK-QR на странице enrollment"
+            );
+            None
+        }
+    };
+
     let state = AppState::new(
         pool.clone(),
         cfg.app_secret,
@@ -61,6 +89,8 @@ async fn main() -> Result<()> {
         cfg.max_body_bytes,
         cfg.request_timeout_secs,
         cfg.secure_cookies,
+        cloudru_signer,
+        cfg.cloudru_apk_key,
     );
     let _scheduler_handle = scheduler::spawn(pool.clone());
     // v0.11: APK upstream watcher. Polls R2 mirror каждые 15 минут,

@@ -26,6 +26,16 @@ pub struct Config {
     pub max_body_bytes: usize,
     pub request_timeout_secs: u64,
     pub secure_cookies: bool,
+    /// Cloud.ru read-only IAM creds для генерации presigned APK-URL'ов
+    /// (см. `cloudru_signer.rs`). Если хоть одно из трёх полей `None` —
+    /// сервер не рендерит APK QR на странице enrollment, только enrollment QR.
+    pub cloudru_tenant_id: Option<String>,
+    pub cloudru_key_id: Option<String>,
+    pub cloudru_secret: Option<String>,
+    /// Cloud.ru bucket с APK / моделями. Default `outpost`.
+    pub cloudru_bucket: String,
+    /// Object key для latest APK pointer. Default `apks/latest/app-debug.apk`.
+    pub cloudru_apk_key: String,
 }
 
 impl Config {
@@ -65,6 +75,30 @@ impl Config {
             .map(|s| matches!(s.as_str(), "1" | "true" | "TRUE" | "yes"))
             .unwrap_or(DEFAULT_SECURE_COOKIES);
 
+        // Cloud.ru creds — all-or-nothing. Если задано хоть одно но не все три,
+        // лучше отказаться ещё на старте чем рендерить broken QR'ы в production.
+        let cloudru_tenant_id = env::var("CLOUDRU_TENANT_ID").ok().filter(|s| !s.is_empty());
+        let cloudru_key_id = env::var("CLOUDRU_KEY_ID").ok().filter(|s| !s.is_empty());
+        let cloudru_secret = env::var("CLOUDRU_SECRET").ok().filter(|s| !s.is_empty());
+        let partial = [
+            cloudru_tenant_id.is_some(),
+            cloudru_key_id.is_some(),
+            cloudru_secret.is_some(),
+        ];
+        let some_count = partial.iter().filter(|b| **b).count();
+        if some_count != 0 && some_count != 3 {
+            bail!(
+                "CLOUDRU_* env vars must be either ALL set or ALL absent; got tenant_id={} key_id={} secret={}",
+                cloudru_tenant_id.is_some(),
+                cloudru_key_id.is_some(),
+                cloudru_secret.is_some(),
+            );
+        }
+        let cloudru_bucket =
+            env::var("CLOUDRU_BUCKET").unwrap_or_else(|_| "outpost".to_string());
+        let cloudru_apk_key = env::var("CLOUDRU_APK_KEY")
+            .unwrap_or_else(|_| "apks/latest/app-debug.apk".to_string());
+
         Ok(Self {
             bind_addr: env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string()),
             db_path: env::var("DB_PATH")
@@ -78,6 +112,11 @@ impl Config {
             max_body_bytes,
             request_timeout_secs,
             secure_cookies,
+            cloudru_tenant_id,
+            cloudru_key_id,
+            cloudru_secret,
+            cloudru_bucket,
+            cloudru_apk_key,
         })
     }
 
@@ -92,6 +131,11 @@ impl Config {
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
             request_timeout_secs: DEFAULT_REQUEST_TIMEOUT_SECS,
             secure_cookies: false,
+            cloudru_tenant_id: None,
+            cloudru_key_id: None,
+            cloudru_secret: None,
+            cloudru_bucket: "outpost".to_string(),
+            cloudru_apk_key: "apks/latest/app-debug.apk".to_string(),
         }
     }
 }
