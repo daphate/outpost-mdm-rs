@@ -1,5 +1,7 @@
 //! Outpost MDM server binary entry point.
 
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use outpost_server::{app, bootstrap, config::Config, db, scheduler, shutdown, state::AppState};
 use tracing_subscriber::EnvFilter;
@@ -25,9 +27,20 @@ async fn main() -> Result<()> {
         "outpost-mdm-rs starting",
     );
 
-    tokio::fs::create_dir_all(&cfg.app_files_dir)
+    // Verify both the DB parent dir and the app files dir are writable BEFORE
+    // we open the SQLite pool — otherwise the container churns through a
+    // restart loop while the operator stares at "Permission denied (os error 13)"
+    // without any hint about which UID or which path is the problem.
+    if let Some(db_parent) = Path::new(&cfg.db_path).parent() {
+        if !db_parent.as_os_str().is_empty() {
+            ensure_dir_writable(db_parent)
+                .await
+                .with_context(|| format!("db parent dir {}", db_parent.display()))?;
+        }
+    }
+    ensure_dir_writable(&cfg.app_files_dir)
         .await
-        .with_context(|| format!("create app_files_dir {}", cfg.app_files_dir.display()))?;
+        .with_context(|| format!("app_files_dir {}", cfg.app_files_dir.display()))?;
 
     let pool = db::open_pool(&cfg.db_path).await.context("open db pool")?;
     let bootstrapped = bootstrap::bootstrap_pending_passwords(&pool)
@@ -64,4 +77,37 @@ async fn main() -> Result<()> {
 
     tracing::info!("outpost-mdm-rs stopped cleanly");
     Ok(())
+}
+
+/// Create `dir` if missing and confirm the running process can actually write
+/// to it. The probe step catches the case where the directory exists but is
+/// owned by a different UID — which is what happens when the Chainguard
+/// `nonroot` container (UID 65532) lands on a Docker named volume that was
+/// freshly created and is therefore root-owned. The plain `create_dir_all`
+/// path returns the same opaque `os error 13` for both "dir missing + no
+/// permission to create" and "dir present + not writable"; this helper
+/// flattens both into one actionable error message.
+async fn ensure_dir_writable(dir: &Path) -> Result<()> {
+    tokio::fs::create_dir_all(dir)
+        .await
+        .with_context(|| format!("create_dir_all {}", dir.display()))?;
+
+    let probe = dir.join(".outpost-write-probe");
+    match tokio::fs::write(&probe, b"").await {
+        Ok(()) => {
+            let _ = tokio::fs::remove_file(&probe).await;
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Err(anyhow::anyhow!(
+            "data directory {dir} exists but is not writable by the running process. \
+             The Chainguard runtime image runs as UID 65532; if you mounted a Docker \
+             named volume, pre-chown its on-host path to 65532:65532, or switch to a \
+             bind mount whose host directory is owned by 65532:65532.",
+            dir = dir.display(),
+        )),
+        Err(e) => Err(anyhow::Error::new(e).context(format!(
+            "write probe to {dir}",
+            dir = dir.display()
+        ))),
+    }
 }

@@ -7,9 +7,13 @@
 # Stage 2 (builder)  — cargo-zigbuild produces a fully-static
 #                       x86_64-unknown-linux-musl binary via Zig as linker
 #                       (significantly faster than musl-gcc).
-# Stage 3 (runtime)  — Chainguard `static` image: tiny (~few MB), no shell,
-#                       non-root by default, glibc-free; the static musl
-#                       binary runs without any libc dependency.
+# Stage 3 (runtime)  — Google distroless `static-debian12:nonroot`: tiny
+#                       (~few MB), no shell, non-root by default (UID 65532),
+#                       glibc-free; the static musl binary runs without any
+#                       libc dependency. Chainguard's `cgr.dev/chainguard/static`
+#                       moved behind auth in 2026; distroless is the public
+#                       anonymous-pull equivalent with the same UID 65532
+#                       (matters for our bind-mount ownership on the host).
 
 ARG RUST_VERSION=1
 ARG TARGET=x86_64-unknown-linux-musl
@@ -58,9 +62,9 @@ RUN cargo zigbuild --release --target ${TARGET} --bin outpost-server \
  && /outpost-server --version || true   # smoke: binary at least starts
 
 # -------------------------------------------------------------------------
-# Stage 3 — runtime: Chainguard static (nonroot, glibc-free)
+# Stage 3 — runtime: distroless static-debian12:nonroot (UID 65532, glibc-free)
 # -------------------------------------------------------------------------
-FROM cgr.dev/chainguard/static:latest
+FROM gcr.io/distroless/static-debian12:nonroot
 LABEL org.opencontainers.image.title="outpost-mdm-rs"
 LABEL org.opencontainers.image.source="https://github.com/daphate/outpost-mdm-rs"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
@@ -73,5 +77,6 @@ ENV BIND_ADDR=0.0.0.0:8080 \
     RUST_LOG=info
 
 EXPOSE 8080
-USER nonroot
+# distroless:nonroot already runs as UID 65532; restate for clarity.
+USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/outpost-server"]
