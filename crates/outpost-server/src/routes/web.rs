@@ -2,6 +2,7 @@
 
 use crate::auth as crypto;
 use crate::auth_extract::extract_token;
+use crate::client_ip::ClientIp;
 use crate::error::ApiError;
 use crate::session::{self, KIND_USER};
 use crate::state::AppState;
@@ -87,7 +88,17 @@ pub struct LoginForm {
     pub password: String,
 }
 
-async fn login_submit(State(state): State<AppState>, Form(form): Form<LoginForm>) -> Response {
+async fn login_submit(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    Form(form): Form<LoginForm>,
+) -> Response {
+    if !state.login_limiter.try_take(ip) {
+        tracing::warn!(%ip, login = %form.login, "web login rate limit exceeded");
+        return render(LoginTemplate {
+            error: Some("Too many login attempts. Try again in a moment.".into()),
+        });
+    }
     let row: Option<(i64, i64, i64, Option<String>, i64)> = match sqlx::query_as(
         "SELECT id, customer_id, role_id, password_hash, is_active FROM users WHERE login = ?",
     )

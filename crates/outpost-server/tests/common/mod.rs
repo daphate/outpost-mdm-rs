@@ -46,9 +46,13 @@ impl TestApp {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            axum::serve(listener, outpost_server::app::build_router(state))
-                .await
-                .unwrap();
+            axum::serve(
+                listener,
+                outpost_server::app::build_router(state)
+                    .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap();
         });
         tokio::time::sleep(Duration::from_millis(50)).await;
 

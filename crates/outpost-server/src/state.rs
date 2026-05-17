@@ -1,5 +1,6 @@
 //! Shared application state injected into every handler.
 
+use crate::rate_limit::LoginRateLimiter;
 use sqlx::SqlitePool;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,6 +18,7 @@ pub struct AppState {
     pub max_body_bytes: usize,
     pub request_timeout_secs: u64,
     pub secure_cookies: bool,
+    pub login_limiter: LoginRateLimiter,
 }
 
 impl AppState {
@@ -38,6 +40,7 @@ impl AppState {
             max_body_bytes,
             request_timeout_secs,
             secure_cookies,
+            login_limiter: LoginRateLimiter::default_login(),
         }
     }
 }

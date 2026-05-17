@@ -4,7 +4,39 @@ Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https:
 
 ## [Unreleased]
 
-_Nothing yet — open a PR!_
+### Phase 17 — Per-IP login rate limit (brute-force protection)
+
+**Why:** Failed-credential brute force against `/login` is a textbook
+attack; relying on the upstream nginx `limit_req_zone` is correct
+defense-in-depth but the binary itself should not be defenceless when
+nginx is misconfigured or absent (direct-Docker-port deployments).
+
+**Added**
+- `crate::rate_limit::LoginRateLimiter` — hand-rolled token-bucket map,
+  per-IP, no new external deps. Defaults: **10-attempt burst, refilling
+  at 1 token / 30 s** (10 attempts per 5 minutes per IP).
+- `crate::client_ip::ClientIp` extractor — resolves IP from
+  `X-Forwarded-For` (rightmost entry, set by trusted upstream nginx),
+  falling back to `ConnectInfo<SocketAddr>` for direct connections.
+- `ApiError::TooManyRequests` → 429 with `code: "too_many_requests"`.
+- Both API login (`POST /api/v1/auth/login`) and HTML login
+  (`POST /login`) check the rate limiter first; on hit, the API
+  returns 429 JSON, the HTML page re-renders with a friendly error.
+- `AppState::login_limiter` field; lives for the process lifetime.
+- `main.rs` + `tests/common/mod.rs` now serve with
+  `into_make_service_with_connect_info::<SocketAddr>()` so the
+  extractor sees the peer address.
+- 3 new unit tests in `rate_limit::tests` (first burst allowed,
+  buckets-are-per-IP, refill-over-time).
+- 1 new integration test in `tests/security.rs` —
+  `login_rate_limit_kicks_in_after_burst` — drives 10 wrong-password
+  attempts and asserts the next one returns 429 with the expected
+  error code.
+
+**Stats**
+- Test count: **114 passing, 0 failing** (was 110 at v0.2.0; +4)
+
+## [0.2.0] — 2026-05-17
 
 ## [0.2.0] — 2026-05-17
 

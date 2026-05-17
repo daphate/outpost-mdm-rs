@@ -54,10 +54,13 @@ async fn main() -> Result<()> {
     let actual_addr = listener.local_addr().context("local_addr")?;
     tracing::info!(addr = %actual_addr, "listening");
 
-    axum::serve(listener, app::build_router(state))
-        .with_graceful_shutdown(shutdown::signal())
-        .await
-        .context("axum::serve")?;
+    axum::serve(
+        listener,
+        app::build_router(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown::signal())
+    .await
+    .context("axum::serve")?;
 
     tracing::info!("outpost-mdm-rs stopped cleanly");
     Ok(())

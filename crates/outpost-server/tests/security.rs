@@ -1,8 +1,45 @@
-//! Tests for transport-layer hardening: body size limit + security headers.
+//! Tests for transport-layer hardening: body size limit + security headers + rate limit.
 
 mod common;
 
 use common::{TestApp, http_request};
+
+#[tokio::test]
+async fn login_rate_limit_kicks_in_after_burst() {
+    let app = TestApp::start().await;
+    // `TestApp::start` consumed 1 token via the successful admin login.
+    // The default bucket is 10 capacity; we have ~9 attempts before
+    // the rate limiter fires. Send 9 more, all with wrong password, all
+    // expected to return 401. The 10th additional attempt should be 429.
+    for i in 0..9 {
+        let (status, _body) = http_request(
+            "POST",
+            &app.url("/api/v1/auth/login"),
+            None,
+            None,
+            Some(
+                &serde_json::json!({
+                    "login": "admin",
+                    "password": format!("wrong-{i}"),
+                })
+                .to_string(),
+            ),
+        )
+        .await;
+        assert_eq!(status, 401, "attempt {i} should still be 401");
+    }
+    let (status, body) = http_request(
+        "POST",
+        &app.url("/api/v1/auth/login"),
+        None,
+        None,
+        Some(&serde_json::json!({"login": "admin", "password": "wrong-10"}).to_string()),
+    )
+    .await;
+    assert_eq!(status, 429, "expected 429, got {status}: {body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["error"]["code"], "too_many_requests");
+}
 
 #[tokio::test]
 async fn oversized_body_is_rejected() {

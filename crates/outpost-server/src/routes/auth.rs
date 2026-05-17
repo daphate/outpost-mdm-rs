@@ -2,6 +2,7 @@
 
 use crate::auth as crypto;
 use crate::auth_extract::{AuthUser, extract_token};
+use crate::client_ip::ClientIp;
 use crate::error::ApiError;
 use crate::session;
 use crate::state::AppState;
@@ -38,8 +39,13 @@ pub struct LoginResponse {
 /// session token (256 bits hex).
 async fn login(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, ApiError> {
+    if !state.login_limiter.try_take(ip) {
+        tracing::warn!(%ip, login = %req.login, "login rate limit exceeded");
+        return Err(ApiError::TooManyRequests);
+    }
     let row: Option<(i64, i64, i64, Option<String>, i64, i64)> = sqlx::query_as(
         "SELECT id, customer_id, role_id, password_hash, is_active, must_change_password \
          FROM users WHERE login = ?",

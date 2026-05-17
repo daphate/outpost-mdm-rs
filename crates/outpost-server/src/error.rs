@@ -28,6 +28,8 @@ pub enum ApiError {
     NotFound,
     #[error("bad request: {0}")]
     BadRequest(String),
+    #[error("too many requests — try again later")]
+    TooManyRequests,
     #[error("internal server error")]
     Internal,
 }
@@ -52,6 +54,7 @@ impl ApiError {
             Self::Forbidden => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
+            Self::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -66,6 +69,7 @@ impl ApiError {
             Self::Forbidden => "forbidden",
             Self::NotFound => "not_found",
             Self::BadRequest(_) => "bad_request",
+            Self::TooManyRequests => "too_many_requests",
             Self::Internal => "internal",
         }
     }
