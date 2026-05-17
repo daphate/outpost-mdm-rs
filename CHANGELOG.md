@@ -4,6 +4,27 @@ Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https:
 
 ## [Unreleased]
 
+### Phase 6 — Device enrollment + long-polling sync + push scheduler
+
+**Added**
+- `outpost-server::auth` — two-kind JWTs (`kind: "user" | "device"`); `issue_device_token` + verification helpers
+- `outpost-server::auth_extract::AuthDevice` — extractor that yields the authenticated device identity after verifying the JWT kind matches `"device"` and the device is `is_enrolled = 1`
+- `outpost-server::routes::enrollment` — three endpoints:
+  - `POST /api/v1/devices/{id}/enrollment` (admin, `devices.enroll` permission): rotate the device's `enrollment_secret`, return enrollment payload `{server_url, customer_id, device_id, enrollment_secret}` (the admin / web UI renders this as a QR)
+  - `POST /api/v1/enroll` (device-facing, no auth): exchange `(device_id, enrollment_secret, os_version, app_version)` for a 90-day device JWT; secret is consumed (set NULL) on success
+  - `POST /api/v1/sync` (device JWT): per-tick check-in — device sends telemetry + acks, server returns up to 50 pending commands and marks them as `sent`
+- `outpost-server::scheduler` — tokio task that wakes every N seconds (read from `settings.push.scheduler_tick_secs`, default 60, clamped to 5..=3600), drains `push_schedule` rows whose `due_at` is past, and fans them out per-device:
+  - `device_id` targeting → single-device push
+  - `group_id` → all enrolled devices in the group
+  - `configuration_id` → all enrolled devices in the tenant (no device→config FK in v1; treated as broadcast)
+  - Null target → tenant-wide broadcast
+  - One-shot only: cron expressions reserved for a follow-up
+- 3 new unit tests in `scheduler::tests`: direct-device emit, future `due_at` skipped, group fan-out (with un-enrolled device filtered out)
+
+**Changed**
+- `main.rs` clones the pool and spawns `scheduler::spawn(pool)` after building state
+- `Claims` struct gains a `kind` field (default `"user"` for backwards-compatibility with existing tokens)
+
 ### Phase 5 — File uploads + HMAC-signed download URLs
 
 **Added**

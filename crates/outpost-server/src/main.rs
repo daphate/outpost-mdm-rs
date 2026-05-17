@@ -1,7 +1,7 @@
 //! Outpost MDM server binary entry point.
 
 use anyhow::{Context, Result};
-use outpost_server::{app, bootstrap, config::Config, db, shutdown, state::AppState};
+use outpost_server::{app, bootstrap, config::Config, db, scheduler, shutdown, state::AppState};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -35,7 +35,15 @@ async fn main() -> Result<()> {
         tracing::warn!(count = bootstrapped, "bootstrapped initial passwords");
     }
 
-    let state = AppState::new(pool, cfg.jwt_secret, cfg.jwt_ttl_secs, cfg.app_files_dir);
+    let state = AppState::new(
+        pool.clone(),
+        cfg.jwt_secret,
+        cfg.jwt_ttl_secs,
+        cfg.app_files_dir,
+    );
+    // Spawn the push scheduler. Returns immediately; the task lives for
+    // the rest of the process lifetime and dies on tokio runtime shutdown.
+    let _scheduler_handle = scheduler::spawn(pool);
 
     let listener = tokio::net::TcpListener::bind(&cfg.bind_addr)
         .await

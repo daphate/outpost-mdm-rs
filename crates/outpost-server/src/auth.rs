@@ -21,16 +21,25 @@ use chrono::Utc;
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 
+/// Token subject kind — keeps user tokens and device tokens disjoint.
+pub const KIND_USER: &str = "user";
+/// Token subject kind for an enrolled device.
+pub const KIND_DEVICE: &str = "device";
+
 /// JWT claim set issued by `issue_token` and recovered by `verify_token`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
-    /// Subject — primary key of the `users` row.
+    /// `"user"` or `"device"` — handlers MUST check this matches their expectation.
+    #[serde(default = "default_kind")]
+    pub kind: String,
+    /// Subject — primary key of the `users` (or `devices`) row.
     pub sub: i64,
-    /// Tenant of the user.
+    /// Tenant of the principal.
     pub customer_id: i64,
-    /// Role id of the user.
+    /// Role id of the user; 0 for device tokens.
+    #[serde(default)]
     pub role_id: i64,
-    /// Login (display only — do not authorise from this).
+    /// Login (display only — do not authorise from this); device serial for device tokens.
     pub login: String,
     /// Issued-at (unix seconds).
     pub iat: i64,
@@ -38,6 +47,10 @@ pub struct Claims {
     pub exp: i64,
     /// JWT id (UUID v4) — handy for revocation and audit.
     pub jti: String,
+}
+
+fn default_kind() -> String {
+    KIND_USER.to_string()
 }
 
 /// Argon2id-hash the password using a fresh salt.
@@ -72,9 +85,50 @@ pub fn issue_token(
     secret: &str,
     ttl_secs: i64,
 ) -> Result<String> {
+    issue_token_kind(
+        KIND_USER,
+        user_id,
+        customer_id,
+        role_id,
+        login,
+        secret,
+        ttl_secs,
+    )
+}
+
+/// Issue an HS512 JWT for a device — same shape as a user token but with
+/// `kind = "device"` and `role_id = 0`. Use `verify_device_token` to read it back.
+pub fn issue_device_token(
+    device_id: i64,
+    customer_id: i64,
+    serial: &str,
+    secret: &str,
+    ttl_secs: i64,
+) -> Result<String> {
+    issue_token_kind(
+        KIND_DEVICE,
+        device_id,
+        customer_id,
+        0,
+        serial,
+        secret,
+        ttl_secs,
+    )
+}
+
+fn issue_token_kind(
+    kind: &str,
+    sub: i64,
+    customer_id: i64,
+    role_id: i64,
+    login: &str,
+    secret: &str,
+    ttl_secs: i64,
+) -> Result<String> {
     let now = Utc::now().timestamp();
     let claims = Claims {
-        sub: user_id,
+        kind: kind.to_string(),
+        sub,
         customer_id,
         role_id,
         login: login.to_string(),
