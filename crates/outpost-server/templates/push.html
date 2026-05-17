@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block title %}Push messages{% endblock %}
+
+{% block body %}
+{% include "_nav.html" %}
+
+<main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
+  <div class="flex items-center justify-between">
+    <h2 class="text-2xl font-bold">Push messages</h2>
+    <div class="text-sm text-slate-500 space-x-4">
+      <span>Pending: <strong class="text-amber-600">{{ pending }}</strong></span>
+      <span>Sent (24h): <strong>{{ sent_24h }}</strong></span>
+    </div>
+  </div>
+
+  <div class="bg-white rounded-lg shadow-sm overflow-hidden">
+    <table class="min-w-full divide-y divide-slate-200">
+      <thead class="bg-slate-50">
+        <tr class="text-xs uppercase tracking-wide text-slate-500 text-left">
+          <th class="px-4 py-3">When</th>
+          <th class="px-4 py-3">Device</th>
+          <th class="px-4 py-3">Command</th>
+          <th class="px-4 py-3">Status</th>
+          <th class="px-4 py-3">Delivered</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-100">
+        {% for m in messages %}
+        <tr class="hover:bg-slate-50">
+          <td class="px-4 py-3 text-sm text-slate-500">{{ m.created_at }}</td>
+          <td class="px-4 py-3 font-mono text-xs">{{ m.device_serial }}</td>
+          <td class="px-4 py-3 font-mono text-xs">{{ m.command }}</td>
+          <td class="px-4 py-3">
+            {% if m.status == "pending" %}
+              <span class="inline-block px-2 py-0.5 text-xs rounded bg-amber-100 text-amber-700">pending</span>
+            {% else if m.status == "sent" %}
+              <span class="inline-block px-2 py-0.5 text-xs rounded bg-sky-100 text-sky-700">sent</span>
+            {% else if m.status == "delivered" %}
+              <span class="inline-block px-2 py-0.5 text-xs rounded bg-emerald-100 text-emerald-700">delivered</span>
+            {% else if m.status == "failed" %}
+              <span class="inline-block px-2 py-0.5 text-xs rounded bg-red-100 text-red-700">failed</span>
+            {% else %}
+              <span class="inline-block px-2 py-0.5 text-xs rounded bg-slate-100 text-slate-700">{{ m.status }}</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3 text-sm text-slate-500">{{ m.delivered_at }}</td>
+        </tr>
+        {% endfor %}
+        {% if messages.is_empty() %}
+        <tr><td colspan="5" class="px-4 py-8 text-center text-slate-400">No push messages.</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</main>
+{% endblock %}

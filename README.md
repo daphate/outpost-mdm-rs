@@ -9,10 +9,10 @@ Outpost MDM is a field-grade device management server for managing fleets of [Ou
 - **Language:** Rust stable (edition 2024)
 - **HTTP framework:** [axum](https://github.com/tokio-rs/axum) 0.8
 - **Persistence:** SQLite via [sqlx](https://github.com/launchbadge/sqlx) (WAL mode)
-- **Auth:** JWT (jsonwebtoken) + argon2id password hashing
-- **Templating:** [Askama](https://github.com/askama-rs/askama) with HTMX 2.x + Tailwind v4 standalone
+- **Auth:** opaque DB-backed session tokens (sha256-hashed PK, HttpOnly cookies) + argon2id password hashing
+- **Templating:** [Askama](https://github.com/askama-rs/askama) with HTMX 2.x + Tailwind v4 (CDN in admin UI)
 - **OpenAPI:** [utoipa](https://github.com/juhaku/utoipa)
-- **Container:** static musl binary on [Chainguard Wolfi](https://images.chainguard.dev/) base image
+- **Deployment:** single static musl ELF (~12 MB) supervised by systemd; no container runtime in prod
 
 ## Design constraints
 
@@ -25,36 +25,48 @@ crates/
   outpost-server/      # axum HTTP binary
   outpost-core/        # domain types and services
   outpost-migrations/  # sqlx SQLite migrations
+deploy/
+  outpost-server.service   # systemd unit
+  deploy.ps1               # Windows-host cross-compile + scp + restart
 .github/workflows/ci.yml
-Dockerfile
-docker-compose.yml
 ```
 
 ## Quick start
 
 ```sh
 # Local development — set a long secret first
-export JWT_SECRET="$(openssl rand -base64 48)"
+export APP_SECRET="$(openssl rand -base64 48)"
 cargo run -p outpost-server
-
-# With Docker (Compose) — needs .env file with JWT_SECRET
-echo "JWT_SECRET=$(openssl rand -base64 48)" > .env
-docker compose up --build
 
 # Health
 curl http://localhost:8080/healthz   # liveness
 curl http://localhost:8080/readyz    # readiness (touches DB)
 ```
 
-The server prints the bootstrap admin password to stderr exactly once on
-first boot — capture from `docker compose logs` before the container
-exits or restarts.
+On first boot the server prints the bootstrap admin password to stderr
+exactly once. In dev: read from your terminal. In prod (systemd):
+```sh
+sudo journalctl -u outpost-server | grep -A 2 BOOTSTRAP
+```
 
 ## Deployment
 
-See [`docs/DEPLOY.md`](docs/DEPLOY.md) for the production deploy guide
-(Ubuntu droplet + nginx + certbot, sizing, env vars, backups,
-hardening checklist).
+Production runs on `mdm.secondf8n.tech` as a systemd service. The deploy
+loop is intentionally tiny:
+
+```powershell
+# From a Windows dev box (cargo-zigbuild + Zig 0.13 + musl target installed)
+.\deploy\deploy.ps1
+```
+
+The script cross-compiles `outpost-server` to `x86_64-unknown-linux-musl`,
+`scp`s the binary into `/usr/local/bin/outpost-server.<sha>`, atomically
+flips the `/usr/local/bin/outpost-server` symlink, and `systemctl restart`s
+the service. N-1 revisions stay on the host for one-symlink rollback.
+
+See [`docs/DEPLOY.md`](docs/DEPLOY.md) for the full runbook
+(Ubuntu droplet + nginx + certbot, sizing, env vars, backups, hardening
+checklist).
 
 ## Documentation
 

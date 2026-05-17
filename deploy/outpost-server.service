@@ -1,0 +1,78 @@
+[Unit]
+Description=Outpost MDM server
+Documentation=https://github.com/daphate/outpost-mdm-rs
+After=network-online.target
+Wants=network-online.target
+
+# Auto-restart rate-limit knobs live on the [Unit] section in systemd 229+,
+# not on [Service]. With Restart=on-failure below, this caps to 5 restarts
+# per 60 s before systemd gives up.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=outpost
+Group=outpost
+WorkingDirectory=/var/lib/outpost
+
+# Production env (APP_SECRET, RUST_LOG, SECURE_COOKIES, SESSION_TTL_SECS) lives
+# here. Root:outpost ownership, 0640 — readable by the service user, not by
+# anyone else.
+EnvironmentFile=/etc/outpost/env
+
+# Bind to localhost only; nginx terminates TLS and proxies to 127.0.0.1:8080.
+Environment=BIND_ADDR=127.0.0.1:8080
+Environment=DB_PATH=/var/lib/outpost/outpost.db
+Environment=APP_FILES_DIR=/var/lib/outpost/files
+
+ExecStart=/usr/local/bin/outpost-server
+
+# Graceful shutdown — outpost-server traps SIGTERM and drains in-flight HTTP.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+# Auto-restart on crash but not in a tight loop.
+Restart=on-failure
+RestartSec=5s
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Only /var/lib/outpost is writable.
+ReadWritePaths=/var/lib/outpost
+
+# Limits — keep us honest on the 512 MB box. SQLite + axum + small fleet
+# should not blow past 200 MB RSS; 256 MB hard cap catches runaway leaks
+# without choking nginx and the OS.
+MemoryMax=256M
+LimitNOFILE=4096
+
+# Structured-log delivery via journald — `journalctl -u outpost-server -o json`
+# will surface the binary's `tracing` JSON unchanged.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=outpost-server
+
+[Install]
+WantedBy=multi-user.target

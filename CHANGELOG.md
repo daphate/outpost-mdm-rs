@@ -4,6 +4,43 @@ Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https:
 
 ## [Unreleased]
 
+### Phase 19 — Drop Docker from production, ship as systemd unit
+
+**Why:** On the 1 vCPU / 512 MB box the Docker daemon costs ~50-80 MB
+RSS without giving us any isolation value (single service, single
+tenant). Production became simpler: cross-compile to
+`x86_64-unknown-linux-musl` on the maintainer's workstation, `scp` the
+~12 MB static ELF, supervise with systemd. Volume-permission cirque-du-
+chown disappears, and the binary's `/etc/outpost/env` reads via
+`EnvironmentFile=` like any well-behaved unit.
+
+**Added**
+- `deploy/outpost-server.service` — hardened unit (`NoNewPrivileges`,
+  `ProtectSystem=strict`, `PrivateTmp`, `SystemCallFilter=
+  @system-service`, empty `CapabilityBoundingSet`, `MemoryMax=256M`).
+- `deploy/deploy.ps1` — one-shot Windows-host build+ship script:
+  `cargo zigbuild` → `scp` → install + `ln -sfn` symlink swap →
+  `systemctl restart` → poll `/healthz`. Keeps N=3 previous binaries
+  on the host for one-symlink rollback.
+- `docs/DEPLOY.md` — rewritten end-to-end for the systemd path
+  (workstation toolchain setup, unit deployment, health checks,
+  hardening checklist, rollback).
+
+**Removed**
+- `Dockerfile` and `docker-compose.yml` from the repo. The image stays
+  reachable via `ghcr.io/daphate/outpost-mdm-rs:<sha>` for archival
+  purposes but is no longer the production deploy artifact.
+- Docker-related guidance from README and DEPLOY.md.
+
+**Phase 18 — Pre-flight data-dir writability check**
+
+`main.rs` now calls `ensure_dir_writable` for both the DB parent dir
+and `APP_FILES_DIR` before opening the SQLite pool. On
+`PermissionDenied`, the server exits with an explicit message naming
+UID 65532 and pointing at the chown/bind-mount fix — instead of
+bouncing for 20 seconds in a `restart: unless-stopped` loop that emits
+`os error 13` and nothing else. Less surface to debug at 2 a.m.
+
 ### Phase 17 — Per-IP login rate limit (brute-force protection)
 
 **Why:** Failed-credential brute force against `/login` is a textbook

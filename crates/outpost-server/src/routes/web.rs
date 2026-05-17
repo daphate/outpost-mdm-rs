@@ -23,6 +23,11 @@ pub fn router() -> Router<AppState> {
         .route("/logout", get(logout))
         .route("/dashboard", get(dashboard))
         .route("/devices", get(devices_page))
+        .route("/groups", get(groups_page))
+        .route("/applications", get(applications_page))
+        .route("/configurations", get(configurations_page))
+        .route("/push", get(push_page))
+        .route("/users", get(users_page))
 }
 
 // ----- Web-session extractor: cookie-or-redirect -------------------------
@@ -324,6 +329,318 @@ async fn devices_page(user: WebUser, State(state): State<AppState>) -> Result<Re
     }))
 }
 
+// ----- groups ------------------------------------------------------------
+
+#[derive(Template)]
+#[template(path = "groups.html")]
+struct GroupsTemplate {
+    user_login: String,
+    total: i64,
+    groups: Vec<GroupRow>,
+}
+
+struct GroupRow {
+    name: String,
+    description: String,
+    member_count: i64,
+    created_at: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct GroupRowRaw {
+    name: String,
+    description: Option<String>,
+    member_count: i64,
+    created_at: String,
+}
+
+async fn groups_page(user: WebUser, State(state): State<AppState>) -> Result<Response, ApiError> {
+    let rows: Vec<GroupRowRaw> = sqlx::query_as::<_, GroupRowRaw>(
+        "SELECT g.name, g.description, \
+                (SELECT COUNT(*) FROM device_groups dg WHERE dg.group_id = g.id) AS member_count, \
+                g.created_at \
+         FROM groups g WHERE g.customer_id = ? ORDER BY g.name LIMIT 200",
+    )
+    .bind(user.customer_id)
+    .fetch_all(&state.db)
+    .await?;
+    let total: i64 = scalar(
+        &state,
+        user.customer_id,
+        "SELECT COUNT(*) FROM groups WHERE customer_id = ?",
+    )
+    .await?;
+    let groups = rows
+        .into_iter()
+        .map(|r| GroupRow {
+            name: r.name,
+            description: r.description.unwrap_or_else(|| "—".into()),
+            member_count: r.member_count,
+            created_at: fmt_ts(&r.created_at),
+        })
+        .collect();
+    Ok(render(GroupsTemplate {
+        user_login: user.login,
+        total,
+        groups,
+    }))
+}
+
+// ----- applications ------------------------------------------------------
+
+#[derive(Template)]
+#[template(path = "applications.html")]
+struct AppsTemplate {
+    user_login: String,
+    total: i64,
+    apps: Vec<AppRow>,
+}
+
+struct AppRow {
+    package_name: String,
+    display_name: String,
+    kind: String,
+    version_count: i64,
+    latest_version: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct AppRowRaw {
+    package_name: String,
+    display_name: Option<String>,
+    kind: String,
+    version_count: i64,
+    latest_version: Option<String>,
+}
+
+async fn applications_page(
+    user: WebUser,
+    State(state): State<AppState>,
+) -> Result<Response, ApiError> {
+    let rows: Vec<AppRowRaw> = sqlx::query_as::<_, AppRowRaw>(
+        "SELECT a.package_name, a.display_name, a.kind, \
+                (SELECT COUNT(*) FROM application_versions v WHERE v.application_id = a.id) AS version_count, \
+                (SELECT v.version_name FROM application_versions v WHERE v.application_id = a.id ORDER BY v.version_code DESC LIMIT 1) AS latest_version \
+         FROM applications a WHERE a.customer_id = ? ORDER BY a.package_name LIMIT 200",
+    )
+    .bind(user.customer_id)
+    .fetch_all(&state.db)
+    .await?;
+    let total: i64 = scalar(
+        &state,
+        user.customer_id,
+        "SELECT COUNT(*) FROM applications WHERE customer_id = ?",
+    )
+    .await?;
+    let apps = rows
+        .into_iter()
+        .map(|r| AppRow {
+            package_name: r.package_name,
+            display_name: r.display_name.unwrap_or_else(|| "—".into()),
+            kind: r.kind,
+            version_count: r.version_count,
+            latest_version: r.latest_version.unwrap_or_else(|| "—".into()),
+        })
+        .collect();
+    Ok(render(AppsTemplate {
+        user_login: user.login,
+        total,
+        apps,
+    }))
+}
+
+// ----- configurations ----------------------------------------------------
+
+#[derive(Template)]
+#[template(path = "configurations.html")]
+struct ConfigsTemplate {
+    user_login: String,
+    total: i64,
+    configs: Vec<ConfigRow>,
+}
+
+struct ConfigRow {
+    name: String,
+    description: String,
+    kiosk_package: String,
+    is_active: bool,
+    updated_at: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct ConfigRowRaw {
+    name: String,
+    description: Option<String>,
+    kiosk_package: Option<String>,
+    is_active: bool,
+    updated_at: String,
+}
+
+async fn configurations_page(
+    user: WebUser,
+    State(state): State<AppState>,
+) -> Result<Response, ApiError> {
+    let rows: Vec<ConfigRowRaw> = sqlx::query_as::<_, ConfigRowRaw>(
+        "SELECT name, description, kiosk_package, is_active, updated_at \
+         FROM configurations WHERE customer_id = ? ORDER BY name LIMIT 200",
+    )
+    .bind(user.customer_id)
+    .fetch_all(&state.db)
+    .await?;
+    let total: i64 = scalar(
+        &state,
+        user.customer_id,
+        "SELECT COUNT(*) FROM configurations WHERE customer_id = ?",
+    )
+    .await?;
+    let configs = rows
+        .into_iter()
+        .map(|r| ConfigRow {
+            name: r.name,
+            description: r.description.unwrap_or_else(|| "—".into()),
+            kiosk_package: r.kiosk_package.unwrap_or_else(|| "—".into()),
+            is_active: r.is_active,
+            updated_at: fmt_ts(&r.updated_at),
+        })
+        .collect();
+    Ok(render(ConfigsTemplate {
+        user_login: user.login,
+        total,
+        configs,
+    }))
+}
+
+// ----- push messages -----------------------------------------------------
+
+#[derive(Template)]
+#[template(path = "push.html")]
+struct PushTemplate {
+    user_login: String,
+    pending: i64,
+    sent_24h: i64,
+    messages: Vec<PushRow>,
+}
+
+struct PushRow {
+    created_at: String,
+    device_serial: String,
+    command: String,
+    status: String,
+    delivered_at: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct PushRowRaw {
+    created_at: String,
+    device_serial: String,
+    command: String,
+    status: String,
+    delivered_at: Option<String>,
+}
+
+async fn push_page(user: WebUser, State(state): State<AppState>) -> Result<Response, ApiError> {
+    let rows: Vec<PushRowRaw> = sqlx::query_as::<_, PushRowRaw>(
+        "SELECT p.created_at, d.serial AS device_serial, p.command, p.status, p.delivered_at \
+         FROM push_messages p \
+         JOIN devices d ON d.id = p.device_id \
+         WHERE p.customer_id = ? \
+         ORDER BY p.id DESC LIMIT 100",
+    )
+    .bind(user.customer_id)
+    .fetch_all(&state.db)
+    .await?;
+    let pending = scalar(
+        &state,
+        user.customer_id,
+        "SELECT COUNT(*) FROM push_messages WHERE customer_id = ? AND status = 'pending'",
+    )
+    .await?;
+    let sent_24h = scalar(
+        &state,
+        user.customer_id,
+        "SELECT COUNT(*) FROM push_messages WHERE customer_id = ? AND status IN ('sent','delivered') AND created_at >= datetime('now', '-1 day')",
+    )
+    .await?;
+    let messages = rows
+        .into_iter()
+        .map(|r| PushRow {
+            created_at: fmt_ts(&r.created_at),
+            device_serial: r.device_serial,
+            command: r.command,
+            status: r.status,
+            delivered_at: r.delivered_at.as_deref().map(fmt_ts).unwrap_or_else(|| "—".into()),
+        })
+        .collect();
+    Ok(render(PushTemplate {
+        user_login: user.login,
+        pending,
+        sent_24h,
+        messages,
+    }))
+}
+
+// ----- users -------------------------------------------------------------
+
+#[derive(Template)]
+#[template(path = "users.html")]
+struct UsersTemplate {
+    user_login: String,
+    total: i64,
+    users: Vec<UserRow>,
+}
+
+struct UserRow {
+    login: String,
+    email: String,
+    role_name: String,
+    is_active: bool,
+    must_change_password: bool,
+    last_login_at: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct UserRowRaw {
+    login: String,
+    email: Option<String>,
+    role_name: String,
+    is_active: bool,
+    must_change_password: bool,
+    last_login_at: Option<String>,
+}
+
+async fn users_page(user: WebUser, State(state): State<AppState>) -> Result<Response, ApiError> {
+    let rows: Vec<UserRowRaw> = sqlx::query_as::<_, UserRowRaw>(
+        "SELECT u.login, u.email, r.name AS role_name, u.is_active, u.must_change_password, u.last_login_at \
+         FROM users u JOIN user_roles r ON r.id = u.role_id \
+         WHERE u.customer_id = ? ORDER BY u.login LIMIT 200",
+    )
+    .bind(user.customer_id)
+    .fetch_all(&state.db)
+    .await?;
+    let total = scalar(
+        &state,
+        user.customer_id,
+        "SELECT COUNT(*) FROM users WHERE customer_id = ?",
+    )
+    .await?;
+    let users = rows
+        .into_iter()
+        .map(|r| UserRow {
+            login: r.login,
+            email: r.email.unwrap_or_else(|| "—".into()),
+            role_name: r.role_name,
+            is_active: r.is_active,
+            must_change_password: r.must_change_password,
+            last_login_at: r.last_login_at.as_deref().map(fmt_ts).unwrap_or_else(|| "—".into()),
+        })
+        .collect();
+    Ok(render(UsersTemplate {
+        user_login: user.login,
+        total,
+        users,
+    }))
+}
+
 // ----- helpers -----------------------------------------------------------
 
 async fn scalar(state: &AppState, customer_id: i64, sql: &str) -> Result<i64, ApiError> {
@@ -331,6 +648,15 @@ async fn scalar(state: &AppState, customer_id: i64, sql: &str) -> Result<i64, Ap
         .bind(customer_id)
         .fetch_one(&state.db)
         .await?)
+}
+
+/// Best-effort prettifier for the SQLite `datetime('now')` TEXT format
+/// (`YYYY-MM-DD HH:MM:SS`). Anything we can't parse passes through verbatim
+/// so the UI never crashes on a stale row.
+fn fmt_ts(s: &str) -> String {
+    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|_| s.to_string())
 }
 
 fn render<T: Template>(t: T) -> Response {

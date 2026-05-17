@@ -16,3 +16,6 @@ Thumbs.db
 
 # OS / build artifacts
 *.log
+
+# Local scratch — host configs, deploy logs, staged binaries
+.tmp/

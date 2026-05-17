@@ -107,6 +107,70 @@ async fn devices_page_renders_table() {
 }
 
 #[tokio::test]
+async fn groups_page_renders() {
+    let app = TestApp::start().await;
+    let cookie = web_login_cookie(&app).await;
+    let (status, html) = raw_get(&app.url("/groups"), Some(&format!("outpost_session={cookie}"))).await;
+    assert_eq!(status, 200);
+    assert!(html.contains("Groups"));
+    assert!(html.contains("0 total") || html.contains("total"));
+}
+
+#[tokio::test]
+async fn applications_page_renders() {
+    let app = TestApp::start().await;
+    let cookie = web_login_cookie(&app).await;
+    let (status, html) = raw_get(&app.url("/applications"), Some(&format!("outpost_session={cookie}"))).await;
+    assert_eq!(status, 200);
+    assert!(html.contains("Applications"));
+}
+
+#[tokio::test]
+async fn configurations_page_renders() {
+    let app = TestApp::start().await;
+    let cookie = web_login_cookie(&app).await;
+    let (status, html) = raw_get(&app.url("/configurations"), Some(&format!("outpost_session={cookie}"))).await;
+    assert_eq!(status, 200);
+    assert!(html.contains("Configurations"));
+}
+
+#[tokio::test]
+async fn push_page_renders() {
+    let app = TestApp::start().await;
+    let cookie = web_login_cookie(&app).await;
+    let (status, html) = raw_get(&app.url("/push"), Some(&format!("outpost_session={cookie}"))).await;
+    assert_eq!(status, 200);
+    assert!(html.contains("Push messages"));
+}
+
+#[tokio::test]
+async fn users_page_renders_with_seed_admin() {
+    let app = TestApp::start().await;
+    let cookie = web_login_cookie(&app).await;
+    let (status, html) = raw_get(&app.url("/users"), Some(&format!("outpost_session={cookie}"))).await;
+    assert_eq!(status, 200);
+    assert!(html.contains("Users"));
+    // The seed admin must show up.
+    assert!(html.contains("admin"));
+}
+
+#[tokio::test]
+async fn new_pages_redirect_to_login_without_cookie() {
+    let app = TestApp::start().await;
+    for path in ["/groups", "/applications", "/configurations", "/push", "/users"] {
+        let (status, _body) = raw_get(&app.url(path), None).await;
+        assert_eq!(status, 303, "{path} must redirect when unauthenticated");
+    }
+}
+
+async fn web_login_cookie(app: &TestApp) -> String {
+    let (status, raw_resp) =
+        raw_post_form(&app.url("/login"), "login=admin&password=AdminTestPass%21").await;
+    assert_eq!(status, 303);
+    extract_set_cookie_value(&raw_resp, "outpost_session").unwrap()
+}
+
+#[tokio::test]
 async fn cookie_session_works_for_api_endpoints_too() {
     let app = TestApp::start().await;
     // Log in via web POST; reuse the cookie on /api/v1/auth/me — the API

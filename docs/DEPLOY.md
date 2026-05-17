@@ -1,51 +1,59 @@
 # Outpost MDM — Deployment Guide
 
-Production-target: **Ubuntu 24.04 droplet, 1 vCPU / 512 MB RAM** (e.g. `mdm.secondf8n.tech`).
+Production target: **Ubuntu 24.04 droplet, 1 vCPU / 512 MB RAM** (e.g. `mdm.secondf8n.tech`).
 
-## TL;DR
+Production runs the server as a single static musl ELF supervised by **systemd**, in front of an **nginx** TLS reverse proxy. There is no container runtime in production — the binary is cross-compiled on the maintainer's workstation and `scp`'d to the host. This keeps RSS well under 100 MB on the 512 MB box and removes a layer of operational surface (docker daemon, volume permissions, image-tag drift).
+
+---
+
+## TL;DR (first-time deploy)
 
 ```bash
-ssh -i ~/.ssh/awscalifornia ubuntu@mdm.secondf8n.tech
-sudo apt update && sudo apt install -y docker.io docker-compose-plugin nginx certbot python3-certbot-nginx
+# On the droplet, as root:
+apt update && apt install -y nginx certbot python3-certbot-nginx sqlite3
 
-# pull the latest image from GHCR
-docker pull ghcr.io/daphate/outpost-mdm-rs:latest
+useradd --system --home /var/lib/outpost --shell /usr/sbin/nologin outpost
+mkdir -p /var/lib/outpost/files /etc/outpost
+chown -R outpost:outpost /var/lib/outpost && chmod 750 /var/lib/outpost
+chown root:outpost /etc/outpost && chmod 750 /etc/outpost
 
-# create the production .env
-sudo mkdir -p /opt/outpost && cd /opt/outpost
-sudo tee .env >/dev/null <<EOF
-JWT_SECRET=$(openssl rand -base64 48)
+# Production env — APP_SECRET must be a strong random 32+ byte value.
+cat > /etc/outpost/env <<EOF
+APP_SECRET=$(openssl rand -base64 48)
 RUST_LOG=info
+SECURE_COOKIES=true
+SESSION_TTL_SECS=86400
 EOF
-sudo chmod 600 .env
+chown root:outpost /etc/outpost/env && chmod 640 /etc/outpost/env
 
-# write a compose file (or copy from this repo's docker-compose.yml)
-sudo tee docker-compose.yml >/dev/null <<'EOF'
-services:
-  outpost-server:
-    image: ghcr.io/daphate/outpost-mdm-rs:latest
-    ports: ["127.0.0.1:8080:8080"]
-    env_file: .env
-    environment:
-      BIND_ADDR: 0.0.0.0:8080
-      DB_PATH: /var/lib/outpost/outpost.db
-      APP_FILES_DIR: /var/lib/outpost/files
-    volumes: ["outpost-data:/var/lib/outpost"]
-    restart: unless-stopped
-volumes: { outpost-data: {} }
-EOF
+# systemd unit (copy deploy/outpost-server.service from the repo)
+cp /tmp/outpost-server.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable outpost-server
 
-sudo docker compose up -d
-sudo docker compose logs -f | head -40  # capture BOOTSTRAP admin password (one-shot)
+# nginx site (see "nginx reverse proxy" section below)
+# certbot TLS
+certbot --nginx -d mdm.secondf8n.tech --agree-tos --email <your-email> --redirect
 
-# TLS terminator
-sudo certbot --nginx -d mdm.secondf8n.tech
-# /etc/nginx/sites-available/default proxies to 127.0.0.1:8080
+# First binary deploy from the dev workstation:
+# (on Windows host) F:\projects\outpost-mdm-rs> .\deploy\deploy.ps1
 ```
+
+On the **dev workstation** (Windows here, but works equivalently from Linux/macOS), one-time setup:
+
+```powershell
+rustup target add x86_64-unknown-linux-musl
+# Download Zig 0.13.0 to a stable path, e.g. F:\tools\zig-0.13.0\
+cargo install --locked cargo-zigbuild
+```
+
+After that, every deploy is `.\deploy\deploy.ps1` — the script cross-compiles, scp's the binary, atomically swaps `/usr/local/bin/outpost-server`, and `systemctl restart`s.
+
+---
 
 ## Capture the bootstrap admin password
 
-On first boot, `outpost-server` detects the seed admin row whose `password_hash IS NULL` and prints a one-shot password to stderr:
+On first boot, `outpost-server` detects the seed admin row whose `password_hash IS NULL` and prints a one-shot password to stderr (which systemd forwards to the journal):
 
 ```
 ==============================================================
@@ -57,25 +65,104 @@ On first boot, `outpost-server` detects the seed admin row whose `password_hash 
 ==============================================================
 ```
 
-Copy it from `docker compose logs` and store securely. The server marks `must_change_password = 1`, so the first login at the API forces a password change.
+Grab it:
 
-## Required environment variables
+```bash
+sudo journalctl -u outpost-server | grep -A 4 BOOTSTRAP
+```
+
+The server marks `must_change_password = 1`, so first login forces a password change.
+
+---
+
+## Required environment variables (`/etc/outpost/env`)
 
 | Var | Default | Required | Description |
 |-----|---------|----------|-------------|
-| `APP_SECRET`         | — | **yes** | ≥32 bytes, used for HMAC-SHA256 signing of download URLs. Generate with `openssl rand -base64 48`. Legacy alias: `JWT_SECRET` (deprecated, removed in v0.3.0). |
-| `BIND_ADDR`          | `0.0.0.0:8080` | no | Listen socket. |
-| `DB_PATH`            | `/var/lib/outpost/outpost.db` | no | SQLite file path. |
-| `APP_FILES_DIR`      | `/var/lib/outpost/files` | no | Storage root for uploaded APKs / models. |
+| `APP_SECRET`         | — | **yes** | ≥32 bytes; HMAC-SHA256 secret for signed download URLs **and** session cookie binding. Rotating invalidates all sessions. Generate: `openssl rand -base64 48`. Legacy alias: `JWT_SECRET` (deprecated). |
+| `BIND_ADDR`          | `127.0.0.1:8080` (set by unit) | no | Loopback only — nginx terminates TLS and proxies. |
+| `DB_PATH`            | `/var/lib/outpost/outpost.db` (set by unit) | no | SQLite file path. |
+| `APP_FILES_DIR`      | `/var/lib/outpost/files` (set by unit) | no | Storage root for uploaded APKs / models. |
 | `RUST_LOG`           | `info` | no | `tracing_subscriber::EnvFilter` directive. |
-| `SESSION_TTL_SECS`   | `86400` | no | User session lifetime (24 h default). Devices use a fixed 90-day TTL. Legacy alias: `JWT_TTL_SECS`. |
-| `MAX_BODY_BYTES`     | `209715200` (200 MiB) | no | Request body cap; oversized → 413. |
-| `REQUEST_TIMEOUT_SECS` | `120` | no | Per-request wall-clock timeout; exceeding → 503. |
-| `SECURE_COOKIES`     | `true` | no | Set the `Secure` flag on the `outpost_session` cookie. Disable only for local HTTP development. |
+| `SESSION_TTL_SECS`   | `86400` | no | User session lifetime (24 h). Devices use a fixed 90-day TTL. |
+| `MAX_BODY_BYTES`     | `209715200` (200 MiB) | no | Request body cap → 413 on overflow. |
+| `REQUEST_TIMEOUT_SECS` | `120` | no | Per-request wall-clock timeout → 503. |
+| `SECURE_COOKIES`     | `true` | no | `Secure` flag on the `outpost_session` cookie. Disable only for plain-HTTP local dev. |
 
-The server **refuses to start** if `APP_SECRET` (or its legacy alias `JWT_SECRET`) is missing or shorter than 32 bytes.
+The server **refuses to start** if `APP_SECRET` is missing or shorter than 32 bytes.
 
-## nginx reverse proxy snippet
+---
+
+## systemd unit (`/etc/systemd/system/outpost-server.service`)
+
+The canonical unit is checked in at [`deploy/outpost-server.service`](../deploy/outpost-server.service). Key properties:
+
+- `User=outpost`, `Group=outpost` — unprivileged.
+- `EnvironmentFile=/etc/outpost/env` — secrets never touch the unit file or the repo.
+- `BIND_ADDR=127.0.0.1:8080` — accessible only via nginx.
+- `Restart=on-failure`, `RestartSec=5s`, `StartLimitBurst=5/60s` — auto-restart on crash but bail out of a tight loop.
+- `ReadWritePaths=/var/lib/outpost` — strict filesystem confinement; everything else is read-only.
+- `MemoryMax=256M` — hard ceiling to keep the OOM killer pointed at this process if it leaks, not at sshd/nginx.
+- `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `SystemCallFilter=@system-service`, `CapabilityBoundingSet=` — defence in depth, mirrors the hardening that the Chainguard runtime image used to provide automatically.
+
+Operate it like any other systemd unit:
+
+```bash
+sudo systemctl status outpost-server
+sudo systemctl restart outpost-server
+sudo journalctl -u outpost-server -f
+sudo journalctl -u outpost-server -o json | jq '.MESSAGE'  # structured logs
+```
+
+---
+
+## Build & deploy from the workstation
+
+### One-time setup
+
+```powershell
+# Cross-compile target
+rustup target add x86_64-unknown-linux-musl
+
+# Zig (cargo-zigbuild needs it as the C/musl linker)
+# Download zig-windows-x86_64-0.13.0.zip from https://ziglang.org/download/
+# Extract to F:\tools\zig-0.13.0\  (or update deploy.ps1's $env:Path)
+
+cargo install --locked cargo-zigbuild
+```
+
+### Every deploy
+
+```powershell
+F:\projects\outpost-mdm-rs> .\deploy\deploy.ps1
+```
+
+The script:
+
+1. Reads the short git SHA.
+2. Runs `cargo zigbuild --release --target x86_64-unknown-linux-musl --bin outpost-server`.
+3. `scp`s the binary to `/tmp/outpost-server.new` on the host.
+4. `sudo install -m 0755`s it as `/usr/local/bin/outpost-server.<sha>`.
+5. Atomically swaps `/usr/local/bin/outpost-server` (a symlink) to point at the new copy.
+6. `sudo systemctl restart outpost-server`.
+7. Polls `https://mdm.secondf8n.tech/healthz` for up to 20 s.
+8. Prunes old `outpost-server.<sha>` copies, keeping the most recent 3.
+
+### Rollback
+
+```bash
+# On the host:
+ls -t /usr/local/bin/outpost-server.* | head
+# Pick the previous one and re-point the symlink:
+sudo ln -sfn /usr/local/bin/outpost-server.<previous-sha> /usr/local/bin/outpost-server
+sudo systemctl restart outpost-server
+```
+
+---
+
+## nginx reverse proxy
+
+The canonical site config is checked in at [`.tmp/mdm.secondf8n.tech.nginx`](../.tmp/mdm.secondf8n.tech.nginx). Certbot rewrites parts of it to add TLS; the post-certbot version on the host is the source of truth.
 
 ```nginx
 server {
@@ -85,7 +172,8 @@ server {
     ssl_certificate     /etc/letsencrypt/live/mdm.secondf8n.tech/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/mdm.secondf8n.tech/privkey.pem;
 
-    client_max_body_size 200M;   # APK uploads
+    client_max_body_size 250M;             # APK + ML-model uploads
+    add_header X-Content-Type-Options nosniff always;
 
     location / {
         proxy_pass http://127.0.0.1:8080;
@@ -95,49 +183,63 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Request-Id      $request_id;
         proxy_http_version 1.1;
-        proxy_read_timeout 120s;   # long-poll friendly
+        proxy_read_timeout 120s;
+        proxy_buffering off;               # /api/v1/sync long-poll friendly
     }
+
+    location = /healthz { access_log off; proxy_pass http://127.0.0.1:8080; }
+    location = /readyz  { access_log off; proxy_pass http://127.0.0.1:8080; }
 }
 ```
 
+---
+
 ## Health probes
 
-- `GET /healthz` — process is up (does not touch the DB). 200 OK always when the binary is reachable.
-- `GET /readyz` — process AND DB are reachable. Runs `SELECT 1` against SQLite. 200 OK or 503 SERVICE_UNAVAILABLE.
+- `GET /healthz` — process is up (does not touch DB). 200 OK whenever the binary is reachable.
+- `GET /readyz` — process **and** DB are reachable. Runs `SELECT 1`. 200 OK or 503.
 
-Configure your orchestrator's liveness + readiness probes accordingly.
+systemd does not poll these — `Restart=on-failure` plus the journal are enough on a single-service box. If you front this with HAProxy/k8s in the future, point liveness at `/healthz` and readiness at `/readyz`.
+
+---
 
 ## Backups
 
-The single source of truth is the SQLite database at `$DB_PATH`. WAL mode is enabled, so the consistent-read snapshot pattern is:
+The only mutable state is `/var/lib/outpost/`. WAL mode is enabled, so use the SQLite `.backup` command (it's snapshot-consistent without blocking writers):
 
 ```bash
-sudo docker compose exec outpost-server sh -c 'sqlite3 /var/lib/outpost/outpost.db ".backup /var/lib/outpost/backup-$(date +%Y%m%d-%H%M%S).db"'
+sudo -u outpost sqlite3 /var/lib/outpost/outpost.db \
+  ".backup '/var/lib/outpost/backup-$(date +%Y%m%d-%H%M%S).db'"
 ```
 
-For continuous replication, deploy [Litestream](https://litestream.io/) alongside the server pointing at any S3-compatible target (Cloud.ru, R2, B2, etc.). Configuration is out of scope of this initial deploy doc.
+For off-host continuous replication, deploy [Litestream](https://litestream.io/) as a sibling systemd unit pointing at any S3-compatible target (Cloud.ru, R2, B2). Out of scope of this initial deploy doc; the schematic is one systemd unit + one YAML config.
+
+---
 
 ## Footprint
 
-Designed-target on a 1 vCPU / 512 MB droplet, alongside SQLite and nginx:
+Designed-target on a 1 vCPU / 512 MB droplet, alongside SQLite, nginx, and Ubuntu base:
 
-- Server process — ≤50 MB RSS under nominal load (measure with `docker stats outpost-server` post-deploy)
-- SQLite DB — proportional to fleet size; tens of MB for hundreds of devices
-- nginx + Ubuntu base — ~100-150 MB
+- `outpost-server` — ≤50 MB RSS under nominal load. Capped at 256 MB by `MemoryMax=` in the unit; the OOM killer reaps the server (not sshd or nginx) if a leak ever blows past it.
+- SQLite DB — proportional to fleet size; tens of MB for hundreds of devices.
+- nginx + Ubuntu base — ~100-150 MB.
 
-These are design targets, not measurements. Confirm with `docker stats` and `free -h` after deployment.
+Measure with `systemd-cgtop` (live) and `systemctl status outpost-server` (the `Memory:` line is the cgroup-reported RSS for the service).
+
+---
 
 ## Hardening checklist
 
-- [x] Static musl binary (Chainguard `static` image is glibc-free, no shell)
-- [x] Runs as `USER nonroot`
-- [x] All secrets via `.env` (mode `600`), never baked into the image
-- [x] Trivy scan in CI gates HIGH/CRITICAL CVEs
-- [x] `cargo audit` + `cargo deny check` in CI
-- [x] WAL mode + foreign keys enforced
-- [x] argon2id password hashing (no MD5 carryover from upstream)
-- [x] HMAC-signed download URLs (no anonymous public access)
-- [x] Multi-tenant scoping on every read/write
-- [ ] TLS via certbot/nginx (operator-installed, per droplet)
-- [ ] Off-host backups via Litestream (optional)
-- [ ] Log shipping (operator-installed, e.g. promtail → Loki)
+- [x] Static musl binary; no runtime libc / loader dependency.
+- [x] Runs as system user `outpost` (UID assigned by useradd), shell `/usr/sbin/nologin`.
+- [x] Secrets in `/etc/outpost/env` (root:outpost, mode 640), never in the binary or in the repo.
+- [x] systemd hardening: `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `SystemCallFilter=@system-service`, empty `CapabilityBoundingSet` and `AmbientCapabilities`.
+- [x] `MemoryMax=256M` caps RSS at the cgroup level.
+- [x] `cargo audit` + `cargo deny check` in CI.
+- [x] WAL mode + foreign keys enforced at connection open.
+- [x] argon2id password hashing.
+- [x] HMAC-signed download URLs (no anonymous public access).
+- [x] Multi-tenant scoping on every read/write.
+- [x] TLS via certbot/nginx, auto-renew armed.
+- [ ] Off-host backups via Litestream (optional).
+- [ ] Log shipping (optional, e.g. journalctl → Vector → Loki).

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block title %}Applications{% endblock %}
+
+{% block body %}
+{% include "_nav.html" %}
+
+<main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
+  <div class="flex items-center justify-between">
+    <h2 class="text-2xl font-bold">Applications</h2>
+    <span class="text-sm text-slate-500">{{ total }} total</span>
+  </div>
+
+  <div class="bg-white rounded-lg shadow-sm overflow-hidden">
+    <table class="min-w-full divide-y divide-slate-200">
+      <thead class="bg-slate-50">
+        <tr class="text-xs uppercase tracking-wide text-slate-500 text-left">
+          <th class="px-4 py-3">Package</th>
+          <th class="px-4 py-3">Name</th>
+          <th class="px-4 py-3">Kind</th>
+          <th class="px-4 py-3">Versions</th>
+          <th class="px-4 py-3">Latest</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-100">
+        {% for a in apps %}
+        <tr class="hover:bg-slate-50">
+          <td class="px-4 py-3 font-mono text-sm">{{ a.package_name }}</td>
+          <td class="px-4 py-3">{{ a.display_name }}</td>
+          <td class="px-4 py-3">
+            <span class="inline-block px-2 py-0.5 text-xs font-medium rounded bg-slate-100 text-slate-700">{{ a.kind }}</span>
+          </td>
+          <td class="px-4 py-3 text-sm">{{ a.version_count }}</td>
+          <td class="px-4 py-3 text-sm">{{ a.latest_version }}</td>
+        </tr>
+        {% endfor %}
+        {% if apps.is_empty() %}
+        <tr><td colspan="5" class="px-4 py-8 text-center text-slate-400">No applications uploaded yet.</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</main>
+{% endblock %}
