@@ -4,6 +4,33 @@ Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https:
 
 ## [Unreleased]
 
+### Phase 13 — Transport hardening: body size limit, request timeout, security headers
+
+**Added**
+- `Config::max_body_bytes` (env `MAX_BODY_BYTES`, default **200 MiB** — fits APK + ML-model uploads on the 1 vCPU droplet)
+- `Config::request_timeout_secs` (env `REQUEST_TIMEOUT_SECS`, default **120 s** — long enough for the largest upload on the constrained host)
+- `axum::extract::DefaultBodyLimit` layer enforcing `max_body_bytes`; oversized requests return 413
+- `tower_http::timeout::TimeoutLayer` enforcing `request_timeout_secs`; slow handlers cap out with 503
+- OWASP-style hardening response headers via `tower_http::set_header::SetResponseHeaderLayer::if_not_present`:
+  - `X-Content-Type-Options: nosniff`
+  - `X-Frame-Options: DENY`
+  - `Referrer-Policy: no-referrer`
+  - `Strict-Transport-Security: max-age=31536000; includeSubDomains`
+  - `X-Robots-Tag: noindex, nofollow`
+  - `Permissions-Policy: camera=(), microphone=(), geolocation=()`
+- `tower-http` features extended: `timeout`, `set-header`, `limit`
+- New unit test `app::tests::security_headers_are_set` (all 6 headers present on `/healthz`)
+- New `tests/security.rs` integration suite (2 tests): oversized body → 413; security headers reach the wire including `x-request-id`
+- Startup logs now emit `max_body_bytes` and `request_timeout_secs` so the deployed limits are auditable in tracing
+
+**Changed**
+- `AppState` carries `max_body_bytes` and `request_timeout_secs`
+- `AppState::new` signature gains the two new fields; `test_state()` populates them with sensible defaults
+- `main.rs` propagates them into `AppState`
+
+**Stats**
+- Test count: **96 passing, 0 failing** (was 92 at P12; +4 across unit + new security suite)
+
 ### Phase 12 — Comprehensive integration test coverage
 
 **Added**

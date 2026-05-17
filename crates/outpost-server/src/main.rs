@@ -18,6 +18,8 @@ async fn main() -> Result<()> {
         db_path = %cfg.db_path,
         app_files_dir = %cfg.app_files_dir.display(),
         log_level = %cfg.log_level,
+        max_body_bytes = cfg.max_body_bytes,
+        request_timeout_secs = cfg.request_timeout_secs,
         version = env!("CARGO_PKG_VERSION"),
         "outpost-mdm-rs starting",
     );
@@ -40,15 +42,14 @@ async fn main() -> Result<()> {
         cfg.jwt_secret,
         cfg.jwt_ttl_secs,
         cfg.app_files_dir,
+        cfg.max_body_bytes,
+        cfg.request_timeout_secs,
     );
-    // Spawn the push scheduler. Returns immediately; the task lives for
-    // the rest of the process lifetime and dies on tokio runtime shutdown.
     let _scheduler_handle = scheduler::spawn(pool);
 
     let listener = tokio::net::TcpListener::bind(&cfg.bind_addr)
         .await
         .with_context(|| format!("bind {}", cfg.bind_addr))?;
-
     let actual_addr = listener.local_addr().context("local_addr")?;
     tracing::info!(addr = %actual_addr, "listening");
 

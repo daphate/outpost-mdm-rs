@@ -14,6 +14,8 @@ pub struct AppState {
     pub jwt_secret: Arc<String>,
     pub jwt_ttl_secs: i64,
     pub app_files_dir: Arc<PathBuf>,
+    pub max_body_bytes: usize,
+    pub request_timeout_secs: u64,
 }
 
 impl AppState {
@@ -22,19 +24,22 @@ impl AppState {
         jwt_secret: String,
         jwt_ttl_secs: i64,
         app_files_dir: PathBuf,
+        max_body_bytes: usize,
+        request_timeout_secs: u64,
     ) -> Self {
         Self {
             db,
             jwt_secret: Arc::new(jwt_secret),
             jwt_ttl_secs,
             app_files_dir: Arc::new(app_files_dir),
+            max_body_bytes,
+            request_timeout_secs,
         }
     }
 }
 
-/// In-memory DB + per-test temp file dir + bootstrapped admin.
-/// Always available so out-of-crate integration tests can call without
-/// ceremony.
+/// In-memory DB + per-test temp file dir + bootstrapped admin. Always
+/// available so out-of-crate integration tests can call without ceremony.
 pub async fn test_state() -> AppState {
     let cfg = crate::config::Config::test_default();
     let pool = crate::db::open_pool(":memory:")
@@ -43,8 +48,14 @@ pub async fn test_state() -> AppState {
     crate::bootstrap::bootstrap_pending_passwords(&pool)
         .await
         .expect("bootstrap test admin");
-    let files_dir = make_test_dir();
-    AppState::new(pool, cfg.jwt_secret, cfg.jwt_ttl_secs, files_dir)
+    AppState::new(
+        pool,
+        cfg.jwt_secret,
+        cfg.jwt_ttl_secs,
+        make_test_dir(),
+        cfg.max_body_bytes,
+        cfg.request_timeout_secs,
+    )
 }
 
 fn make_test_dir() -> PathBuf {
