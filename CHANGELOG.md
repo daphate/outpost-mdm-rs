@@ -4,6 +4,27 @@ Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https:
 
 ## [Unreleased]
 
+### Phase 3 — Auth: JWT + argon2id + bootstrap
+
+**Added**
+- `outpost-server::auth` — argon2id password hashing (`hash_password`, `verify_password`), HS512 JWT (`issue_token`, `verify_token`, `Claims`), and a cryptographically-strong `generate_password` helper
+- `outpost-server::bootstrap::bootstrap_pending_passwords` — on every startup, scans for `users.password_hash IS NULL`, generates a 20-char random password, hashes it with argon2id, persists the hash, and prints the cleartext password to stderr exactly once
+- `outpost-server::error::ApiError` — unified HTTP error type with stable JSON code/message and `IntoResponse` impl
+- `outpost-server::auth_extract::AuthUser` extractor — verifies the Bearer token, checks the user is still active in the DB, and yields a typed identity
+- `outpost-server::routes::auth` module with `POST /api/v1/auth/login` and `GET /api/v1/auth/me`
+- `Config::jwt_secret` (required at startup, fail-fast if missing or shorter than 32 bytes) and `Config::jwt_ttl_secs` (default 24h)
+- 8 new unit tests in `auth::tests`: hash/verify round-trip, fresh salt per hash, JWT round-trip, tampered-signature reject, expired reject, password generator length/charset
+- 2 new unit tests in `bootstrap::tests`: bootstraps seed admin, idempotent
+- 1 new unit test in `app::tests`: `/api/v1/auth/me` without token → 401
+- 3 new integration tests in `outpost-server/tests/auth.rs`: full login → JWT → /me flow, wrong-password 401 with `invalid_credentials` code, invalid-token 401
+
+**Changed**
+- `AppState` now carries `Arc<String>` jwt secret and `i64` ttl
+- `state::test_state` now also runs bootstrap so tests have a usable admin account
+- `main.rs` runs bootstrap after migrations, before serving
+- `Config::from_env` returns `Result<Self>`; fails on missing or short `JWT_SECRET`
+- Workspace deps: added `jsonwebtoken 9`, `argon2 0.5`, `uuid 1` (v4 + serde features), `rand 0.8`
+
 ### Phase 2 — SQLite schema & migrations
 
 **Added**

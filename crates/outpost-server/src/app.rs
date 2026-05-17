@@ -4,6 +4,7 @@
 //! same router is used by `main.rs` for production and by integration
 //! tests via `tower::ServiceExt::oneshot`.
 
+use crate::routes;
 use crate::state::AppState;
 use axum::{
     Json, Router,
@@ -42,8 +43,7 @@ pub struct Ready {
     pub db: &'static str,
 }
 
-/// `/readyz` — readiness probe: confirms the database is reachable. Returns
-/// 200 on success, 503 on failure.
+/// `/readyz` — readiness probe: confirms the database is reachable.
 async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     match sqlx::query_scalar::<_, i32>("SELECT 1")
         .fetch_one(&state.db)
@@ -85,6 +85,7 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        .merge(routes::auth::router())
         .with_state(state)
         .layer(CompressionLayer::new())
         .layer(CorsLayer::permissive())
@@ -176,5 +177,20 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn me_without_token_returns_401() {
+        let response = app()
+            .await
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/auth/me")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }
