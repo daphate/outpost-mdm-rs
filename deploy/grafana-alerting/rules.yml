@@ -1,0 +1,164 @@
+apiVersion: 1
+
+# Outpost MDM alert rules — Grafana unified alerting, file provisioning.
+#
+# Edit cycle:
+#   1. tweak this file
+#   2. scp to /etc/grafana/provisioning/alerting/rules.yml
+#   3. `sudo systemctl reload grafana-server` (or POST /api/admin/provisioning/alerting/reload)
+#
+# Все правила висят в org 1, фолдер Outpost, evaluation interval 1 min.
+# Notifications сейчас идут на default contact point (`grafana-default-email`,
+# у которого SMTP не настроен → alerts видны только в Grafana UI).
+# Чтобы получать пуши в почту/Telegram — поправить SMTP / добавить webhook
+# через /etc/grafana/provisioning/alerting/contact-points.yml.
+
+groups:
+  - orgId: 1
+    name: outpost-fleet
+    folder: Outpost
+    interval: 1m
+    rules:
+
+      # ---------------- 1. устройство офлайн больше 24 часов ----------------
+      - uid: outpost-offline-24h
+        title: "Устройство офлайн больше суток"
+        condition: B
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: "Устройство serial={{ $labels.serial }} id={{ $labels.device_id }} не на связи {{ $values.A.Value }}с"
+          description: "Сверь со списком — может быть выключено / в коробке / удалено из проекта"
+        labels:
+          severity: warning
+          team: outpost
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: 'outpost_device_last_seen_seconds_ago > 86400'
+              instant: true
+              refId: A
+          - refId: B
+            relativeTimeRange: { from: 0, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              refId: B
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+                  operator: { type: and }
+                  query: { params: [] }
+                  reducer: { type: last, params: [] }
+                  type: query
+
+      # ---------------- 2. всплеск OTLP ошибок > 10 за 24 часа --------------
+      - uid: outpost-otlp-errors-high
+        title: "Всплеск ошибок в OTLP логах (>10/24ч)"
+        condition: B
+        for: 10m
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: "За последние 24ч устройства отправили {{ $values.A.Value }} ERROR-логов"
+          description: "Зайди в /telemetry или /devices/*/logs — что-то ломается на конкретном пайплайне"
+        labels:
+          severity: warning
+          team: outpost
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: 'outpost_otlp_errors_24h'
+              instant: true
+              refId: A
+          - refId: B
+            relativeTimeRange: { from: 0, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              refId: B
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [10] }
+                  operator: { type: and }
+                  query: { params: [] }
+                  reducer: { type: last, params: [] }
+                  type: query
+
+      # ---------------- 3. неудачи push'а ----------------------------------
+      - uid: outpost-push-failed
+        title: "Push-команды не доставляются"
+        condition: B
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: "{{ $values.A.Value }} push-сообщений в статусе failed"
+        labels:
+          severity: high
+          team: outpost
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: 'outpost_push_failed_total'
+              instant: true
+              refId: A
+          - refId: B
+            relativeTimeRange: { from: 0, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              refId: B
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+                  operator: { type: and }
+                  query: { params: [] }
+                  reducer: { type: last, params: [] }
+                  type: query
+
+      # ---------------- 4. низкий заряд (без учёта зарядки) ----------------
+      - uid: outpost-battery-low
+        title: "Низкий заряд батареи (<15%)"
+        condition: B
+        for: 15m
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: "Устройство serial={{ $labels.serial }} разрядилось до {{ $values.A.Value }}%"
+          description: "Если устройство в работе — связаться с оператором. Если в коробке — игнорировать"
+        labels:
+          severity: info
+          team: outpost
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: 'outpost_device_metric_latest{name="battery.pct"} < 15'
+              instant: true
+              refId: A
+          - refId: B
+            relativeTimeRange: { from: 0, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              refId: B
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+                  operator: { type: and }
+                  query: { params: [] }
+                  reducer: { type: last, params: [] }
+                  type: query

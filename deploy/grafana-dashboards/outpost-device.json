@@ -1,0 +1,173 @@
+{
+  "title": "Outpost — Device drill-down",
+  "uid": "outpost-device",
+  "tags": ["outpost", "device"],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "device",
+        "type": "query",
+        "label": "Серийный № устройства",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": { "query": "label_values(outpost_device_last_seen_seconds_ago, serial)", "refId": "Variable" },
+        "refresh": 2,
+        "sort": 1,
+        "current": { "selected": false, "text": "All", "value": "$__all" },
+        "includeAll": true,
+        "multi": false,
+        "options": []
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Когда последний раз был на связи",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        { "refId": "A", "expr": "outpost_device_last_seen_seconds_ago{serial=~\"$device\"}", "legendFormat": "{{serial}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "yellow", "value": 3600 },
+              { "color": "red",    "value": 86400 }
+            ]
+          }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["last"] }, "colorMode": "value", "graphMode": "area" }
+    },
+    {
+      "id": 2,
+      "title": "Батарея %",
+      "type": "gauge",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        { "refId": "A", "expr": "outpost_device_metric_latest{serial=~\"$device\", name=\"battery.pct\"}", "legendFormat": "{{serial}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0, "max": 100, "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",    "value": null },
+              { "color": "yellow", "value": 20 },
+              { "color": "green",  "value": 40 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Заряжается?",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
+      "targets": [
+        { "refId": "A", "expr": "outpost_device_metric_latest{serial=~\"$device\", name=\"battery.charging\"}", "legendFormat": "{{serial}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "нет", "color": "yellow" }, "1": { "text": "ДА", "color": "green" } } }
+          ]
+        }
+      },
+      "options": { "colorMode": "value", "graphMode": "none" }
+    },
+    {
+      "id": 4,
+      "title": "Сессия (сек)",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
+      "targets": [
+        { "refId": "A", "expr": "outpost_device_metric_latest{serial=~\"$device\", name=\"app.session_seconds\"}", "legendFormat": "{{serial}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "options": { "colorMode": "value", "graphMode": "area" }
+    },
+    {
+      "id": 5,
+      "title": "Свободная RAM",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 20, "y": 0, "w": 4, "h": 4 },
+      "targets": [
+        { "refId": "A", "expr": "outpost_device_metric_latest{serial=~\"$device\", name=\"ram.available_mb\"}", "legendFormat": "{{serial}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "MiB",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",    "value": null },
+              { "color": "yellow", "value": 500 },
+              { "color": "green",  "value": 1500 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Батарея % во времени",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "outpost_device_metric_latest{serial=~\"$device\", name=\"battery.pct\"}", "legendFormat": "{{serial}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 } }
+    },
+    {
+      "id": 7,
+      "title": "Время отклика inference (ms) по operation",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "outpost_device_metric_latest{serial=~\"$device\", name=\"ml.inference_ms\"}", "legendFormat": "{{serial}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms" } }
+    },
+    {
+      "id": 8,
+      "title": "Свободное хранилище (MiB)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 6 },
+      "targets": [
+        { "refId": "A", "expr": "outpost_device_metric_latest{serial=~\"$device\", name=\"storage.free_mb\"}", "legendFormat": "{{serial}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "MiB" } }
+    },
+    {
+      "id": 9,
+      "title": "Краши + ANR (cumulative)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 6 },
+      "targets": [
+        { "refId": "A", "expr": "outpost_device_metric_latest{serial=~\"$device\", name=\"app.crashes\"}",   "legendFormat": "{{serial}} crashes" },
+        { "refId": "B", "expr": "outpost_device_metric_latest{serial=~\"$device\", name=\"app.anr_count\"}", "legendFormat": "{{serial}} ANR" }
+      ]
+    }
+  ]
+}
