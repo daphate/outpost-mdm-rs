@@ -56,6 +56,16 @@ See [`docs/DEPLOY.md`](docs/DEPLOY.md) for the production deploy guide
 (Ubuntu droplet + nginx + certbot, sizing, env vars, backups,
 hardening checklist).
 
+## Documentation
+
+| Doc | What's in it |
+| --- | --- |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Module map, request lifecycle, persistence, auth model, push pipeline |
+| [`docs/DEPLOY.md`](docs/DEPLOY.md)             | Production deploy runbook (Ubuntu droplet + nginx + certbot, env vars, backups) |
+| [`CHANGELOG.md`](CHANGELOG.md)                 | Per-phase narrative of what changed and why |
+| [`SECURITY.md`](SECURITY.md)                   | Vulnerability disclosure policy + cryptographic posture |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md)           | Dev setup, coding conventions, PR checklist |
+
 ## License
 
 Apache License 2.0. See `LICENSE` for full text.

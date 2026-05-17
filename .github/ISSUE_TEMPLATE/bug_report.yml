@@ -1,0 +1,55 @@
+name: Bug report
+description: Something is broken in the server.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Security issues:** don't file them here — see [SECURITY.md](https://github.com/daphate/outpost-mdm-rs/blob/main/SECURITY.md).
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit / image tag
+      description: Output of `git rev-parse HEAD` or the `ghcr.io/daphate/outpost-mdm-rs:sha-...` tag in use.
+      placeholder: "e1cabf9"
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproducer
+      description: A minimal `curl` / shell sequence that exercises the bug.
+      render: bash
+      placeholder: |
+        curl -X POST http://localhost:8080/api/v1/auth/login \
+          -H 'Content-Type: application/json' \
+          -d '{"login": "admin", "password": "..."}'
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include response status, body, and the relevant server log line (with `x-request-id`).
+    validations:
+      required: true
+
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: |
+        Output of `uname -a`, Docker version, host RAM/CPU. If running natively, include `rustc --version`.
+      render: text
+    validations:
+      required: false
