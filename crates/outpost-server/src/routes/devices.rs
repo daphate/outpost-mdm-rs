@@ -288,6 +288,13 @@ pub struct ConfigUpdateResponse {
     pub command_id: i64,
 }
 
+/// Минимальный versionCode клиента который понимает `update-config` command.
+/// Rc42 b37 = 178 (см. MDM-DEVICE-CONTROL-CONTRACT.md §4 «Migration & backward
+/// compatibility»). Старые клиенты не имеют SyncCommandDispatcher и не смогут
+/// обработать команду — admin'у возвращаем 400 чтобы не плодить мёртвые
+/// push_messages.
+const MIN_VERSION_CODE_FOR_UPDATE_CONFIG: i64 = 178;
+
 async fn post_config(
     user: AuthUser,
     State(state): State<AppState>,
@@ -295,16 +302,31 @@ async fn post_config(
     Json(req): Json<ConfigUpdateRequest>,
 ) -> Result<(axum::http::StatusCode, Json<ConfigUpdateResponse>), ApiError> {
     require_permission(&state.db, user.role_id, "devices.write").await?;
-    // Verify device exists в этом customer-scope.
-    let exists: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM devices WHERE id = ? AND customer_id = ?",
+    // Verify device exists в этом customer-scope + проверяем app_version_code.
+    let row: Option<(Option<i64>,)> = sqlx::query_as(
+        "SELECT app_version_code FROM devices WHERE id = ? AND customer_id = ?",
     )
     .bind(id)
     .bind(user.customer_id)
     .fetch_optional(&state.db)
     .await?;
-    if exists.is_none() {
+    let Some((app_version_code,)) = row else {
         return Err(ApiError::NotFound);
+    };
+    // Backward-compat gate: устройство ещё не дотягивает до b37+ → не сможет
+    // обработать update-config. Возвращаем 400 чтобы admin понимал.
+    match app_version_code {
+        None => {
+            return Err(ApiError::BadRequest(
+                "device has not reported app_version_code yet; нужно дождаться первого /sync с rc42 b37+ клиентом".into(),
+            ));
+        }
+        Some(v) if v < MIN_VERSION_CODE_FOR_UPDATE_CONFIG => {
+            return Err(ApiError::BadRequest(format!(
+                "device on app_version_code={v}, requires >= {MIN_VERSION_CODE_FOR_UPDATE_CONFIG} (rc42 b37+) for update-config support"
+            )));
+        }
+        Some(_) => {}
     }
     // payload — JSON object, e.g. {"preferred_llm": "qwen2-vl-2b-instruct-q4_k_m.gguf"}.
     // Не валидируем ключи здесь — клиент в SyncCommandDispatcher знает

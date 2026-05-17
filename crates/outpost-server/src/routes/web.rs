@@ -36,6 +36,10 @@ pub fn router() -> Router<AppState> {
             get(device_enroll_view).post(device_enroll_post),
         )
         .route("/devices/{id}/enroll/file", get(device_enroll_download))
+        // v0.13 (Settings Sync §1.4): admin-form для отправки update-config
+        // push'а. Парсит form-data `payload` как JSON object, INSERT'ит в
+        // push_messages. JSON API эквивалент — `POST /api/v1/devices/{id}/config`.
+        .route("/devices/{id}/config-form", post(device_config_form))
         .route(
             "/devices/{id}/push",
             get(device_push_view).post(device_push_post),
@@ -2207,6 +2211,17 @@ struct DeviceEditTemplate {
     /// Что сейчас сообщает устройство — для UI «есть отставание / на target».
     current_app_version_name: Option<String>,
     current_app_version_code: Option<i64>,
+    /// v0.13 (Settings Sync §1): snapshot ModelPreferences с устройства,
+    /// pretty-printed JSON для UI viewer'а. Если устройство ещё не reportил
+    /// b37+ — пустая строка.
+    current_state_pretty: String,
+    /// Monotonic счётчик; 0 если устройство ещё не reportil.
+    current_state_version: i64,
+    /// Когда был последний state-snapshot reporting. None если ещё не было.
+    current_state_seen_at: Option<String>,
+    /// Текстовое сообщение для admin'а под формой update-config: причина
+    /// почему форма disabled (старый клиент / нет state).
+    update_config_blocker: Option<String>,
     flash: Option<String>,
     error: Option<String>,
 }
@@ -2245,16 +2260,27 @@ async fn render_device_edit(
     flash: Option<String>,
     error: Option<String>,
 ) -> Result<Response, ApiError> {
-    let row: Option<(String, Option<String>, bool, Option<i64>, Option<i64>, Option<String>, Option<i64>)> =
-        sqlx::query_as(
-            "SELECT serial, display_name, is_active, configuration_id, pinned_version_id, \
-                    app_version, app_version_code \
-             FROM devices WHERE id = ? AND customer_id = ?",
-        )
-        .bind(id)
-        .bind(user.customer_id)
-        .fetch_optional(&state.db)
-        .await?;
+    let row: Option<(
+        String,
+        Option<String>,
+        bool,
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+        Option<i64>,
+        String,
+        i64,
+        Option<String>,
+    )> = sqlx::query_as(
+        "SELECT serial, display_name, is_active, configuration_id, pinned_version_id, \
+                app_version, app_version_code, \
+                current_state_json, current_state_version, current_state_seen_at \
+         FROM devices WHERE id = ? AND customer_id = ?",
+    )
+    .bind(id)
+    .bind(user.customer_id)
+    .fetch_optional(&state.db)
+    .await?;
     let Some((
         serial,
         display_name,
@@ -2263,9 +2289,33 @@ async fn render_device_edit(
         pinned_version_id,
         current_app_version_name,
         current_app_version_code,
+        current_state_json_raw,
+        current_state_version,
+        current_state_seen_at,
     )) = row
     else {
         return Err(ApiError::NotFound);
+    };
+    // Pretty-print state JSON для UI; пустая строка если ещё ничего не reportilось.
+    let current_state_pretty = if current_state_version > 0 {
+        serde_json::from_str::<serde_json::Value>(&current_state_json_raw)
+            .ok()
+            .and_then(|v| serde_json::to_string_pretty(&v).ok())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    // Backward-compat gate: update-config работает с rc42 b37+ (versionCode >= 178).
+    const MIN_VC: i64 = 178;
+    let update_config_blocker = match current_app_version_code {
+        None => Some(
+            "устройство ещё не reportilo app_version_code — обновится при первом /sync"
+                .to_string(),
+        ),
+        Some(v) if v < MIN_VC => Some(format!(
+            "устройство на app_version_code={v}; нужно >= {MIN_VC} (rc42 b37+) для update-config"
+        )),
+        _ => None,
     };
     let configurations: Vec<ConfigOption> = sqlx::query_as::<_, ConfigOption>(
         "SELECT id, name FROM configurations WHERE customer_id = ? ORDER BY name LIMIT 500",
@@ -2317,6 +2367,10 @@ async fn render_device_edit(
         pinned_version_id,
         current_app_version_name,
         current_app_version_code,
+        current_state_pretty,
+        current_state_version,
+        current_state_seen_at,
+        update_config_blocker,
         flash,
         error,
     });
@@ -2422,6 +2476,89 @@ async fn device_edit_post(
         &format!("/devices/{id}/edit"),
         "Device updated.",
     ))
+}
+
+/// v0.13: web-форма для admin-инициированного `update-config` push'а.
+/// Принимает form-data `payload` где значение — pretty-JSON object, парсит,
+/// и создаёт push_message с command='update-config'. После — flash + redirect
+/// обратно на /devices/{id}/edit.
+async fn device_config_form(
+    user: WebUser,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    body: axum::body::Bytes,
+) -> Response {
+    let form = parse_form(&body);
+    let payload_raw = form.first("payload").unwrap_or("").trim();
+    if payload_raw.is_empty() {
+        return redirect_with_flash(
+            &format!("/devices/{id}/edit"),
+            "Пустой payload — нужно ввести JSON object.",
+        );
+    }
+    let parsed: serde_json::Value = match serde_json::from_str(payload_raw) {
+        Ok(v) => v,
+        Err(e) => {
+            return redirect_with_flash(
+                &format!("/devices/{id}/edit"),
+                &format!("Не JSON: {e}"),
+            );
+        }
+    };
+    if !parsed.is_object() {
+        return redirect_with_flash(
+            &format!("/devices/{id}/edit"),
+            "payload должен быть JSON object (например {\"preferred_llm\": \"...\"}).",
+        );
+    }
+    // Verify device + version gate.
+    let row: Option<(Option<i64>,)> = sqlx::query_as(
+        "SELECT app_version_code FROM devices WHERE id = ? AND customer_id = ?",
+    )
+    .bind(id)
+    .bind(user.customer_id)
+    .fetch_optional(&state.db)
+    .await
+    .unwrap_or(None);
+    let Some((av,)) = row else {
+        return redirect_with_flash(&format!("/devices/{id}/edit"), "Устройство не найдено.");
+    };
+    const MIN_VC: i64 = 178;
+    match av {
+        None => {
+            return redirect_with_flash(
+                &format!("/devices/{id}/edit"),
+                "Устройство ещё не reportilo app_version_code — дождись первого /sync.",
+            );
+        }
+        Some(v) if v < MIN_VC => {
+            return redirect_with_flash(
+                &format!("/devices/{id}/edit"),
+                &format!("Старый клиент (versionCode={v}); нужен >= {MIN_VC} (rc42 b37+)."),
+            );
+        }
+        _ => {}
+    }
+    let canonical = serde_json::to_string(&parsed).unwrap_or_else(|_| "{}".to_string());
+    let res = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO push_messages (customer_id, device_id, command, payload_json, status) \
+         VALUES (?, ?, 'update-config', ?, 'pending') RETURNING id",
+    )
+    .bind(user.customer_id)
+    .bind(id)
+    .bind(&canonical)
+    .fetch_one(&state.db)
+    .await;
+    match res {
+        Ok(cmd_id) => redirect_with_flash(
+            &format!("/devices/{id}/edit"),
+            &format!("update-config поставлен в очередь (command_id={cmd_id}); устройство применит на ≤30мин"),
+        ),
+        Err(e) => {
+            tracing::error!(error = %e, "device_config_form insert failed");
+            redirect_with_flash(&format!("/devices/{id}/edit"), "DB error при создании push_message.")
+        }
+    }
 }
 
 /// Minimal multi-valued x-www-form-urlencoded parser. axum's `Form`

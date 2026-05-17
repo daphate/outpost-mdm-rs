@@ -91,6 +91,24 @@ pub struct EnrollRequest {
     pub enrollment_secret: String,
     pub os_version: Option<String>,
     pub app_version: Option<String>,
+    /// v0.14 (MDM-DEVICE-CONTROL-CONTRACT §2.4): client'ский ECDH P-256
+    /// public key — 65 байт SEC1 uncompressed point, генерится клиентом
+    /// в Android Keystore (`KeystoreWrapper.getOrGenerateDeviceKekKeyPair()`).
+    /// Server хранит в `device_keys`, использует для per-device encrypt-for-recipient.
+    /// Если отсутствует — устройство не сможет получать encrypted-distribution
+    /// файлы (но enroll проходит).
+    pub device_pubkey: Option<DevicePubkey>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DevicePubkey {
+    /// `"ECDH-P256"` для v1; в будущем может быть `"X25519"`.
+    pub alg: String,
+    /// 65 байт SEC1 uncompressed (`0x04 || X(32) || Y(32)`), base64url-encoded
+    /// в JSON wire-format. Парсим decode'ом ниже.
+    pub der: String,
+    /// `sha256(der)[0..8]` hex — детерминированный fingerprint.
+    pub key_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -99,6 +117,10 @@ pub struct EnrollResponse {
     pub expires_in: i64,
     pub device_id: i64,
     pub customer_id: i64,
+    /// v0.14: подтверждаем что pubkey сохранён в device_keys. `false` если
+    /// клиент не прислал pubkey (legacy) или прислал invalid bytes.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub device_pubkey_acknowledged: bool,
 }
 
 async fn enroll(
@@ -142,12 +164,88 @@ async fn enroll(
     )
     .await
     .map_err(|_| ApiError::Internal)?;
+
+    // v0.14: store device_pubkey for per-device encrypted distribution.
+    // Server-side validation: decode base64, check length, compute and
+    // verify key_id (if client прислал wrong key_id — игнорируем pubkey,
+    // не считаем enroll'ом провалом).
+    let pubkey_acknowledged = if let Some(pk) = req.device_pubkey {
+        match store_device_pubkey(&state.db, req.device_id, &pk).await {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::warn!(
+                    device_id = req.device_id,
+                    alg = %pk.alg,
+                    error = %e,
+                    "device_pubkey reject — enroll still succeeds"
+                );
+                false
+            }
+        }
+    } else {
+        false
+    };
+
     Ok(Json(EnrollResponse {
         device_token: token,
         expires_in: DEVICE_TOKEN_TTL_SECS,
         device_id: req.device_id,
         customer_id,
+        device_pubkey_acknowledged: pubkey_acknowledged,
     }))
+}
+
+/// Декодирует и сохраняет client ECDH pubkey в `device_keys`. Возвращает
+/// `Ok(())` если запись успешно вставлена или уже существовала (по UNIQUE
+/// constraint). Возвращает `Err` если: алгоритм неизвестен, base64 invalid,
+/// длина не SEC1-uncompressed, или key_id mismatch'ит computed sha256.
+async fn store_device_pubkey(
+    pool: &sqlx::SqlitePool,
+    device_id: i64,
+    pk: &DevicePubkey,
+) -> anyhow::Result<()> {
+    use base64::Engine;
+    if pk.alg != "ECDH-P256" {
+        return Err(anyhow::anyhow!("unknown alg: {}", pk.alg));
+    }
+    let der_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&pk.der)
+        .or_else(|_| base64::engine::general_purpose::STANDARD.decode(&pk.der))
+        .map_err(|e| anyhow::anyhow!("base64 decode: {e}"))?;
+    if der_bytes.len() != crate::distribution::SEC1_UNCOMPRESSED_LEN {
+        return Err(anyhow::anyhow!(
+            "pubkey not {}-byte SEC1 uncompressed (got {})",
+            crate::distribution::SEC1_UNCOMPRESSED_LEN,
+            der_bytes.len(),
+        ));
+    }
+    // Smoke-check: pubkey должен быть валидной точкой на P-256 curve.
+    let _ = p256::PublicKey::from_sec1_bytes(&der_bytes)
+        .map_err(|e| anyhow::anyhow!("invalid P-256 point: {e}"))?;
+    // Verify key_id matches.
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(&der_bytes);
+    let expected_id: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    if expected_id != pk.key_id.to_ascii_lowercase() {
+        return Err(anyhow::anyhow!(
+            "key_id mismatch: server-computed {expected_id}, client sent {}",
+            pk.key_id
+        ));
+    }
+    // UPSERT — на повторный enroll device'а с тем же pubkey просто игнорим
+    // повторный INSERT через ON CONFLICT.
+    sqlx::query(
+        "INSERT INTO device_keys (device_id, alg, pubkey_der, key_id) \
+         VALUES (?, ?, ?, ?) \
+         ON CONFLICT(device_id, key_id) DO NOTHING",
+    )
+    .bind(device_id)
+    .bind(&pk.alg)
+    .bind(&der_bytes)
+    .bind(&expected_id)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 // ----------------- device: sync ------------------------------------------

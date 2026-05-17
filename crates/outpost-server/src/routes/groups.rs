@@ -29,6 +29,12 @@ pub fn router() -> Router<AppState> {
             "/api/v1/groups/{id}/devices/{device_id}",
             axum::routing::delete(remove_device),
         )
+        // v0.13: MDM-DEVICE-CONTROL-CONTRACT §1.4 «POST /api/v1/groups/{id}/config»
+        // — fan-out update-config push_message на каждый device в группе.
+        .route(
+            "/api/v1/groups/{id}/config",
+            axum::routing::post(post_group_config),
+        )
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -271,4 +277,91 @@ async fn remove_device(
         return Err(ApiError::NotFound);
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ----- v0.13 (MDM-DEVICE-CONTROL-CONTRACT §1.4) ------------------------------
+
+/// rc42 b37+ minimum. Совпадает с константой в `routes/devices.rs`.
+const MIN_VERSION_CODE_FOR_UPDATE_CONFIG: i64 = 178;
+
+#[derive(Debug, Deserialize)]
+pub struct GroupConfigRequest {
+    /// JSON object — ModelPreferences patch. См. MDM-DEVICE-CONTROL-CONTRACT §1.3.
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GroupConfigResponse {
+    pub device_count: i64,
+    pub eligible_count: i64,
+    pub skipped_old_clients: i64,
+    pub command_ids: Vec<i64>,
+}
+
+/// Fan-out `update-config` push_message на все устройства группы. Устройства
+/// с `app_version_code < 178` (или без known versionCode) пропускаются —
+/// учитываются в `skipped_old_clients`. Возвращаемый `command_ids` — IDs тех
+/// push_messages которые реально созданы.
+async fn post_group_config(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(group_id): Path<i64>,
+    Json(req): Json<GroupConfigRequest>,
+) -> Result<(StatusCode, Json<GroupConfigResponse>), ApiError> {
+    require_permission(&state.db, user.role_id, "devices.write").await?;
+    let owns: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM groups WHERE id = ? AND customer_id = ?",
+    )
+    .bind(group_id)
+    .bind(user.customer_id)
+    .fetch_optional(&state.db)
+    .await?;
+    if owns.is_none() {
+        return Err(ApiError::NotFound);
+    }
+    let payload_json = serde_json::to_string(&req.payload).map_err(|e| {
+        ApiError::BadRequest(format!("payload not serializable: {e}"))
+    })?;
+    // Берём все устройства группы + их app_version_code.
+    let devices: Vec<(i64, Option<i64>)> = sqlx::query_as(
+        "SELECT d.id, d.app_version_code \
+         FROM devices d \
+         JOIN device_groups dg ON dg.device_id = d.id \
+         WHERE dg.group_id = ? AND d.customer_id = ?",
+    )
+    .bind(group_id)
+    .bind(user.customer_id)
+    .fetch_all(&state.db)
+    .await?;
+    let device_count = devices.len() as i64;
+    let mut command_ids = Vec::new();
+    let mut skipped_old = 0i64;
+    for (dev_id, av_code) in &devices {
+        match *av_code {
+            Some(v) if v >= MIN_VERSION_CODE_FOR_UPDATE_CONFIG => {
+                let cmd_id: i64 = sqlx::query_scalar(
+                    "INSERT INTO push_messages (customer_id, device_id, command, payload_json, status) \
+                     VALUES (?, ?, 'update-config', ?, 'pending') \
+                     RETURNING id",
+                )
+                .bind(user.customer_id)
+                .bind(dev_id)
+                .bind(&payload_json)
+                .fetch_one(&state.db)
+                .await?;
+                command_ids.push(cmd_id);
+            }
+            _ => skipped_old += 1,
+        }
+    }
+    let eligible_count = command_ids.len() as i64;
+    Ok((
+        StatusCode::CREATED,
+        Json(GroupConfigResponse {
+            device_count,
+            eligible_count,
+            skipped_old_clients: skipped_old,
+            command_ids,
+        }),
+    ))
 }
