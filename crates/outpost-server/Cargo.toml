@@ -26,6 +26,10 @@ serde_json.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+sqlx.workspace = true
+chrono.workspace = true
+outpost-core = { path = "../outpost-core" }
+outpost-migrations = { path = "../outpost-migrations" }
 
 [dev-dependencies]
 tower.workspace = true

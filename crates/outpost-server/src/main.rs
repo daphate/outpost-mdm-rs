@@ -1,11 +1,7 @@
 //! Outpost MDM server binary entry point.
-//!
-//! Reads configuration from the environment, wires structured tracing,
-//! builds the application router, and serves it on the configured bind
-//! address with graceful shutdown.
 
 use anyhow::{Context, Result};
-use outpost_server::{app, config::Config, shutdown};
+use outpost_server::{app, config::Config, db, shutdown, state::AppState};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -25,6 +21,9 @@ async fn main() -> Result<()> {
         "outpost-mdm-rs starting",
     );
 
+    let pool = db::open_pool(&cfg.db_path).await.context("open db pool")?;
+    let state = AppState::new(pool);
+
     let listener = tokio::net::TcpListener::bind(&cfg.bind_addr)
         .await
         .with_context(|| format!("bind {}", cfg.bind_addr))?;
@@ -32,7 +31,7 @@ async fn main() -> Result<()> {
     let actual_addr = listener.local_addr().context("local_addr")?;
     tracing::info!(addr = %actual_addr, "listening");
 
-    axum::serve(listener, app::build_router())
+    axum::serve(listener, app::build_router(state))
         .with_graceful_shutdown(shutdown::signal())
         .await
         .context("axum::serve")?;
