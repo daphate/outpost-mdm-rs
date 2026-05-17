@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+
+{% block title %}Edit application {{ package_name }}{% endblock %}
+
+{% block body %}
+{% include "_nav.html" %}
+
+<main class="max-w-3xl mx-auto px-4 py-6 space-y-6">
+  <div>
+    <a href="/applications" class="text-sm text-slate-500 hover:text-slate-900">← back to applications</a>
+    <h2 class="text-2xl font-bold mt-2">Edit application</h2>
+    <p class="text-sm text-slate-500">Package: <code class="font-mono">{{ package_name }}</code> · ID: {{ app_id }}</p>
+  </div>
+
+  {% if let Some(msg) = flash %}
+    <div class="bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm px-4 py-2 rounded">{{ msg }}</div>
+  {% endif %}
+
+  <form method="POST" action="/applications/{{ app_id }}/edit" class="bg-white rounded-lg shadow-sm p-4 space-y-3">
+    <label class="block">
+      <span class="text-xs uppercase tracking-wide text-slate-500">Display name</span>
+      <input name="display_name" value="{{ display_name }}" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+    </label>
+    <label class="block">
+      <span class="text-xs uppercase tracking-wide text-slate-500">Description</span>
+      <textarea name="description" rows="3" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">{{ description }}</textarea>
+    </label>
+    <label class="block">
+      <span class="text-xs uppercase tracking-wide text-slate-500">Kind</span>
+      <select name="kind" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+        {% for k in kind_options %}
+          <option value="{{ k.0 }}" {% if k.1 %}selected{% endif %}>{{ k.0 }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <div class="flex items-center justify-between pt-2">
+      <a href="/applications/{{ app_id }}/versions" class="text-sm text-blue-600 hover:text-blue-800">Manage versions →</a>
+      <div class="flex items-center space-x-3">
+        <a href="/applications" class="text-sm text-slate-500 hover:text-slate-900">Cancel</a>
+        <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded">Save</button>
+      </div>
+    </div>
+    {% if let Some(e) = error %}
+      <p class="text-red-600 text-sm">{{ e }}</p>
+    {% endif %}
+  </form>
+
+  <form method="POST" action="/applications/{{ app_id }}/delete" onsubmit="return confirm('Delete application {{ package_name }} and ALL its versions? This is irreversible.')" class="bg-white rounded-lg shadow-sm p-4 flex items-center justify-between">
+    <div>
+      <p class="font-medium text-red-800">Danger zone</p>
+      <p class="text-sm text-slate-500">Deletes all uploaded versions but keeps the file blobs (recover via /files).</p>
+    </div>
+    <button class="bg-red-600 hover:bg-red-700 text-white text-sm font-medium px-4 py-2 rounded">Delete application</button>
+  </form>
+</main>
+{% endblock %}

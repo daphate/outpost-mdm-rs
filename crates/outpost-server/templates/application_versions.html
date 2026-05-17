@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+
+{% block title %}Versions of {{ package_name }}{% endblock %}
+
+{% block body %}
+{% include "_nav.html" %}
+
+<main class="max-w-5xl mx-auto px-4 py-6 space-y-6">
+  <div>
+    <a href="/applications" class="text-sm text-slate-500 hover:text-slate-900">← back to applications</a>
+    <h2 class="text-2xl font-bold mt-2">Versions of {{ package_name }}</h2>
+    <p class="text-sm text-slate-500"><a href="/applications/{{ app_id }}/edit" class="text-blue-600 hover:text-blue-800">Edit application</a></p>
+  </div>
+
+  {% if let Some(msg) = flash %}
+    <div class="bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm px-4 py-2 rounded">{{ msg }}</div>
+  {% endif %}
+
+  <details class="bg-white rounded-lg shadow-sm p-4" {% if create_error.is_some() %}open{% endif %}>
+    <summary class="cursor-pointer font-medium text-slate-700">+ Add new version</summary>
+    <form method="POST" action="/applications/{{ app_id }}/versions" enctype="multipart/form-data" class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
+      <label class="block">
+        <span class="text-xs uppercase tracking-wide text-slate-500">Version code</span>
+        <input name="version_code" type="number" min="1" required class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+      </label>
+      <label class="block">
+        <span class="text-xs uppercase tracking-wide text-slate-500">Version name</span>
+        <input name="version_name" required placeholder="0.1.0" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+      </label>
+      <label class="block">
+        <span class="text-xs uppercase tracking-wide text-slate-500">File</span>
+        <input name="file" type="file" required class="mt-1 w-full text-sm">
+      </label>
+      <label class="block md:col-span-3">
+        <span class="text-xs uppercase tracking-wide text-slate-500">Notes (optional)</span>
+        <input name="notes" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+      </label>
+      <div class="md:col-span-3 flex items-center justify-between">
+        <p class="text-xs text-slate-500">SHA-256 computed server-side. Max 200 MiB.</p>
+        <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded">Upload version</button>
+      </div>
+      {% if let Some(e) = create_error %}
+        <p class="md:col-span-3 text-red-600 text-sm">{{ e }}</p>
+      {% endif %}
+    </form>
+  </details>
+
+  <div class="bg-white rounded-lg shadow-sm overflow-hidden">
+    <table class="min-w-full divide-y divide-slate-200">
+      <thead class="bg-slate-50">
+        <tr class="text-xs uppercase tracking-wide text-slate-500 text-left">
+          <th class="px-4 py-3">Code</th>
+          <th class="px-4 py-3">Name</th>
+          <th class="px-4 py-3">Size</th>
+          <th class="px-4 py-3">SHA-256</th>
+          <th class="px-4 py-3">Uploaded</th>
+          <th class="px-4 py-3 text-right">Actions</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-100">
+        {% for v in versions %}
+        <tr class="hover:bg-slate-50">
+          <td class="px-4 py-3 text-sm">{{ v.version_code }}</td>
+          <td class="px-4 py-3 font-medium">{{ v.version_name }}</td>
+          <td class="px-4 py-3 text-sm">{{ v.file_size }}</td>
+          <td class="px-4 py-3 font-mono text-xs">{{ v.sha256_short }}…</td>
+          <td class="px-4 py-3 text-sm text-slate-500">{{ v.uploaded_at }}</td>
+          <td class="px-4 py-3 text-right text-sm">
+            <form method="POST" action="/applications/{{ app_id }}/versions/{{ v.id }}/delete" onsubmit="return confirm('Delete version {{ v.version_name }}?')" class="inline">
+              <button class="text-red-600 hover:text-red-800">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+        {% if versions.is_empty() %}
+        <tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">No versions yet.</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</main>
+{% endblock %}

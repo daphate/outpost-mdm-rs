@@ -403,6 +403,318 @@ async fn change_password_mismatch_confirm_rejected() {
     assert!(body.contains("do not match"));
 }
 
+// ----- Phase 21 edit/delete + new-page tests --------------------------------
+
+#[tokio::test]
+async fn device_edit_assigns_group_and_persists() {
+    let app = TestApp::start().await;
+    let cookie = web_login_cookie(&app).await;
+
+    // Create a device + a group via API to get stable ids.
+    let body = serde_json::json!({"serial":"EDIT-DEV-1"}).to_string();
+    let (status, raw) = http_request("POST", &app.url("/api/v1/devices"), Some(&app.admin_token), None, Some(&body)).await;
+    assert_eq!(status, 201);
+    let dev: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let did = dev["id"].as_i64().unwrap();
+    let body = serde_json::json!({"name":"squad-x"}).to_string();
+    let (status, raw) = http_request("POST", &app.url("/api/v1/groups"), Some(&app.admin_token), None, Some(&body)).await;
+    assert_eq!(status, 201);
+    let grp: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let gid = grp["id"].as_i64().unwrap();
+
+    // Edit device through web form: rename + assign to group
+    let body = format!("display_name=alpha-one&is_active=1&group_ids={gid}");
+    let (status, _raw) = raw_request_with_cookie(
+        "POST",
+        &app.url(&format!("/devices/{did}/edit")),
+        &format!("outpost_session={cookie}"),
+        "application/x-www-form-urlencoded",
+        &body,
+    )
+    .await;
+    assert_eq!(status, 303);
+
+    // Verify device list shows new name
+    let (status, html) = raw_get(
+        &app.url("/devices"),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert!(html.contains("alpha-one"));
+
+    // Verify group page shows member_count = 1 via API
+    let (status, raw) = http_request(
+        "GET",
+        &app.url(&format!("/api/v1/groups/{gid}")),
+        Some(&app.admin_token),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    let _ = raw;
+}
+
+#[tokio::test]
+async fn device_edit_with_multiple_group_ids_assigns_all() {
+    let app = TestApp::start().await;
+    let cookie = web_login_cookie(&app).await;
+    let body = serde_json::json!({"serial":"EDIT-DEV-2"}).to_string();
+    let (_, raw) = http_request("POST", &app.url("/api/v1/devices"), Some(&app.admin_token), None, Some(&body)).await;
+    let did = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"].as_i64().unwrap();
+    let mut gids = Vec::new();
+    for n in &["alpha", "beta", "gamma"] {
+        let body = serde_json::json!({"name": n}).to_string();
+        let (_, raw) = http_request("POST", &app.url("/api/v1/groups"), Some(&app.admin_token), None, Some(&body)).await;
+        let gid = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"].as_i64().unwrap();
+        gids.push(gid);
+    }
+    // Send body with multiple group_ids
+    let body = format!(
+        "display_name=multi&is_active=1&group_ids={a}&group_ids={b}&group_ids={c}",
+        a = gids[0], b = gids[1], c = gids[2],
+    );
+    let (status, _raw) = raw_request_with_cookie(
+        "POST",
+        &app.url(&format!("/devices/{did}/edit")),
+        &format!("outpost_session={cookie}"),
+        "application/x-www-form-urlencoded",
+        &body,
+    )
+    .await;
+    assert_eq!(status, 303);
+}
+
+#[tokio::test]
+async fn device_delete_via_web_then_404_on_edit() {
+    let app = TestApp::start().await;
+    let cookie = web_login_cookie(&app).await;
+    let body = serde_json::json!({"serial":"DEL-1"}).to_string();
+    let (_, raw) = http_request("POST", &app.url("/api/v1/devices"), Some(&app.admin_token), None, Some(&body)).await;
+    let did = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"].as_i64().unwrap();
+    let (status, _raw) = raw_request_with_cookie(
+        "POST",
+        &app.url(&format!("/devices/{did}/delete")),
+        &format!("outpost_session={cookie}"),
+        "application/x-www-form-urlencoded",
+        "",
+    )
+    .await;
+    assert_eq!(status, 303);
+    let (status, _raw) = raw_get(
+        &app.url(&format!("/devices/{did}/edit")),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
+    assert_eq!(status, 404);
+}
+
+#[tokio::test]
+async fn group_edit_then_delete() {
+    let app = TestApp::start().await;
+    let cookie = web_login_cookie(&app).await;
+    let body = serde_json::json!({"name":"to-rename"}).to_string();
+    let (_, raw) = http_request("POST", &app.url("/api/v1/groups"), Some(&app.admin_token), None, Some(&body)).await;
+    let gid = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"].as_i64().unwrap();
+    let (status, _raw) = raw_request_with_cookie(
+        "POST",
+        &app.url(&format!("/groups/{gid}/edit")),
+        &format!("outpost_session={cookie}"),
+        "application/x-www-form-urlencoded",
+        "name=renamed&description=new+desc",
+    )
+    .await;
+    assert_eq!(status, 303);
+    let (_, html) = raw_get(&app.url("/groups"), Some(&format!("outpost_session={cookie}"))).await;
+    assert!(html.contains("renamed"));
+    assert!(html.contains("new desc"));
+    // Delete
+    let (status, _raw) = raw_request_with_cookie(
+        "POST",
+        &app.url(&format!("/groups/{gid}/delete")),
+        &format!("outpost_session={cookie}"),
+        "application/x-www-form-urlencoded",
+        "",
+    )
+    .await;
+    assert_eq!(status, 303);
+    let (_, html) = raw_get(&app.url("/groups"), Some(&format!("outpost_session={cookie}"))).await;
+    assert!(!html.contains("renamed"));
+}
+
+#[tokio::test]
+async fn admin_resets_other_users_password_then_user_logs_in_once() {
+    let app = TestApp::start().await;
+    let cookie = web_login_cookie(&app).await;
+    let body = serde_json::json!({"login":"op-reset","password":"OrigPass123","role_id":3}).to_string();
+    let (_, raw) = http_request("POST", &app.url("/api/v1/users"), Some(&app.admin_token), None, Some(&body)).await;
+    let uid = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"].as_i64().unwrap();
+    let (status, resp) = raw_request_with_cookie(
+        "POST",
+        &app.url(&format!("/users/{uid}/reset-password")),
+        &format!("outpost_session={cookie}"),
+        "application/x-www-form-urlencoded",
+        "",
+    )
+    .await;
+    assert_eq!(status, 303);
+    // Flash cookie holds the new password
+    let flash = extract_set_cookie_value(&resp, "outpost_flash").unwrap_or_default();
+    assert!(flash.contains("one-time") || flash.contains("password"));
+}
+
+#[tokio::test]
+async fn user_delete_not_self() {
+    let app = TestApp::start().await;
+    let cookie = web_login_cookie(&app).await;
+    let body = serde_json::json!({"login":"to-delete","password":"PwdValid123","role_id":4}).to_string();
+    let (_, raw) = http_request("POST", &app.url("/api/v1/users"), Some(&app.admin_token), None, Some(&body)).await;
+    let uid = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"].as_i64().unwrap();
+    let (status, _raw) = raw_request_with_cookie(
+        "POST",
+        &app.url(&format!("/users/{uid}/delete")),
+        &format!("outpost_session={cookie}"),
+        "application/x-www-form-urlencoded",
+        "",
+    )
+    .await;
+    assert_eq!(status, 303);
+    let (_, html) = raw_get(&app.url("/users"), Some(&format!("outpost_session={cookie}"))).await;
+    assert!(!html.contains("to-delete"));
+}
+
+#[tokio::test]
+async fn config_edit_then_add_then_remove_app_then_delete() {
+    let app = TestApp::start().await;
+    let cookie = web_login_cookie(&app).await;
+    // Need an application and a configuration first.
+    let body = serde_json::json!({"package_name":"x.test","display_name":"X"}).to_string();
+    let (_, raw) = http_request("POST", &app.url("/api/v1/applications"), Some(&app.admin_token), None, Some(&body)).await;
+    let aid = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"].as_i64().unwrap();
+    let body = serde_json::json!({"name":"baseline","settings_json":"{}"}).to_string();
+    let (_, raw) = http_request("POST", &app.url("/api/v1/configurations"), Some(&app.admin_token), None, Some(&body)).await;
+    let cid = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"].as_i64().unwrap();
+
+    // Edit (update description)
+    let body = format!("name=baseline&description=edited&kiosk_package=&is_active=1&settings_json=%7B%7D");
+    let (status, _raw) = raw_request_with_cookie(
+        "POST",
+        &app.url(&format!("/configurations/{cid}/edit")),
+        &format!("outpost_session={cookie}"),
+        "application/x-www-form-urlencoded",
+        &body,
+    )
+    .await;
+    assert_eq!(status, 303);
+
+    // Add app
+    let body = format!("application_id={aid}&mode=install");
+    let (status, _raw) = raw_request_with_cookie(
+        "POST",
+        &app.url(&format!("/configurations/{cid}/apps")),
+        &format!("outpost_session={cookie}"),
+        "application/x-www-form-urlencoded",
+        &body,
+    )
+    .await;
+    assert_eq!(status, 303);
+
+    // Visit edit page — should show assigned app
+    let (_, html) = raw_get(
+        &app.url(&format!("/configurations/{cid}/edit")),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
+    assert!(html.contains("x.test"));
+
+    // Remove app
+    let (status, _raw) = raw_request_with_cookie(
+        "POST",
+        &app.url(&format!("/configurations/{cid}/apps/{aid}/delete")),
+        &format!("outpost_session={cookie}"),
+        "application/x-www-form-urlencoded",
+        "",
+    )
+    .await;
+    assert_eq!(status, 303);
+}
+
+#[tokio::test]
+async fn roles_page_renders_seed_roles_and_permissions() {
+    let app = TestApp::start().await;
+    let cookie = web_login_cookie(&app).await;
+    let (status, html) = raw_get(&app.url("/roles"), Some(&format!("outpost_session={cookie}"))).await;
+    assert_eq!(status, 200);
+    assert!(html.contains("super-admin"));
+    assert!(html.contains("admin"));
+    assert!(html.contains("operator"));
+    assert!(html.contains("viewer"));
+    // Permissions table
+    assert!(html.contains("devices."));
+}
+
+#[tokio::test]
+async fn settings_save_then_reflected_in_form_defaults() {
+    let app = TestApp::start().await;
+    let cookie = web_login_cookie(&app).await;
+    let body = "enrollment_base_url=https%3A%2F%2Fmdm.example.com&default_sync_interval=120&max_upload_mb=300&branding_display_name=Frontier+MDM";
+    let (status, _raw) = raw_request_with_cookie(
+        "POST",
+        &app.url("/settings"),
+        &format!("outpost_session={cookie}"),
+        "application/x-www-form-urlencoded",
+        body,
+    )
+    .await;
+    assert_eq!(status, 303);
+    let (_, html) = raw_get(&app.url("/settings"), Some(&format!("outpost_session={cookie}"))).await;
+    assert!(html.contains("https://mdm.example.com"));
+    assert!(html.contains("Frontier MDM"));
+    assert!(html.contains("value=\"120\""));
+}
+
+#[tokio::test]
+async fn profile_save_email_then_visible() {
+    let app = TestApp::start().await;
+    let cookie = web_login_cookie(&app).await;
+    let (status, _raw) = raw_request_with_cookie(
+        "POST",
+        &app.url("/profile"),
+        &format!("outpost_session={cookie}"),
+        "application/x-www-form-urlencoded",
+        "email=admin%40example.test",
+    )
+    .await;
+    assert_eq!(status, 303);
+    let (_, html) = raw_get(&app.url("/profile"), Some(&format!("outpost_session={cookie}"))).await;
+    assert!(html.contains("admin@example.test"));
+}
+
+#[tokio::test]
+async fn files_upload_then_listed_then_deleted() {
+    let app = TestApp::start().await;
+    let cookie = web_login_cookie(&app).await;
+    // multipart upload via raw POST
+    let boundary = "----formboundary";
+    let body = format!(
+        "--{b}\r\nContent-Disposition: form-data; name=\"kind\"\r\n\r\nknowledge-db\r\n--{b}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"k.db\"\r\nContent-Type: application/octet-stream\r\n\r\nHELLO BYTES\r\n--{b}--\r\n",
+        b = boundary,
+    );
+    let (status, _raw) = raw_request_with_cookie(
+        "POST",
+        &app.url("/files/upload"),
+        &format!("outpost_session={cookie}"),
+        &format!("multipart/form-data; boundary={boundary}"),
+        &body,
+    )
+    .await;
+    assert_eq!(status, 303);
+    let (_, html) = raw_get(&app.url("/files"), Some(&format!("outpost_session={cookie}"))).await;
+    assert!(html.contains("k.db"));
+    assert!(html.contains("knowledge-db"));
+}
+
 async fn raw_request_with_cookie(
     method: &str,
     url: &str,

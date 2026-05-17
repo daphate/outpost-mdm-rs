@@ -4,6 +4,70 @@ Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https:
 
 ## [Unreleased]
 
+### Phase 21 — Edit / delete + Headwind feature parity (files, roles, settings, profile)
+
+**Why:** v0.4.0 closed creation but every list page was a one-way street —
+no rename, no reassignment, no deletion, no group/configuration linking.
+Headwind's UI exposes the full per-resource edit modal. Bringing parity.
+
+**Added — schema**
+- Migration `0011_devices_configuration.sql`: adds `configuration_id`
+  pointer on `devices` (so each device can claim its active configuration),
+  plus `description`, `custom1`, `custom2`, `phone` free-form fields
+  that Headwind operators rely on.
+
+**Added — pages (10 new)**
+- `/devices/{id}/edit` (rename, set configuration, toggle active, assign
+  to multiple groups via checkbox list) + `/devices/{id}/delete`
+- `/groups/{id}/edit` (rename, edit description) + `/groups/{id}/delete`
+- `/applications/{id}/edit` (rename, kind, description) + `/delete`
+- `/applications/{id}/versions` (list + upload-new-version multipart
+  form) + per-version `/delete`
+- `/configurations/{id}/edit` (full edit incl. settings_json) +
+  `/delete` + `/apps` (assign apps with install/show/remove mode) +
+  `/apps/{app_id}/delete` (unassign)
+- `/users/{id}/delete` (with self-protection) +
+  `/users/{id}/reset-password` (admin mints a 16-char one-time, flash
+  message displays it once, `must_change_password` flag set on user)
+- `/files` — generic uploaded-files browser independent of application
+  versions, with kind tagging (apk / llm-model / mmproj / whisper / tts /
+  knowledge-db / mbtiles / config / generic / icon), multipart upload,
+  per-row delete
+- `/roles` — read-only role + permission inventory across seed roles
+  (super-admin, admin, operator, viewer) with permission set per role
+  and current user count
+- `/settings` — server-wide settings UI: enrollment_base_url,
+  default_sync_interval, max_upload_mb, branding_display_name; raw
+  key/value table for everything else. Upserts via single transaction.
+- `/profile` — current-user self-edit (email); links to existing
+  `/me/password` for password change
+
+**Added — infrastructure**
+- Manual multi-value form parser (`parse_form` + `ParsedForm`) since
+  axum's `serde_urlencoded`-backed `Form` extractor rejects `Vec<_>` —
+  needed for the multi-checkbox group assignment on device edit.
+- `format_size()` helper for human-readable byte counts (KiB / MiB /
+  GiB).
+- `_nav.html` reshuffled: 10 top-level links including new Files,
+  Roles, Settings; user login chip links to /profile.
+
+**Tests**
+- 11 new web integration tests; suite now totals **141 passing**, up
+  from 130 at v0.4.0.
+- Coverage adds: device edit (single + multi-group assignment + delete
+  + 404-after-delete), group edit + rename + delete, admin password
+  reset (verifies flash cookie carries the new one-time), user delete
+  with self-protection, configuration edit + app-assignment lifecycle,
+  /roles renders seed roles with permission badges, /settings round-trip
+  (save → re-render with new defaults), /profile email round-trip,
+  /files multipart upload + delete.
+
+**Deployed** to `mdm.secondf8n.tech` as `preview-21`; verified
+end-to-end in browser (Chrome tabs open). Migration 0011 ran cleanly
+against the existing prod DB (had to force `cargo` to recompile the
+migrations crate after adding the SQL file — Rust's incremental build
+doesn't watch the `migrations/` directory).
+
 ### Phase 20 — Full admin UI: create-forms + enrollment QR + push scheduling + password change
 
 **Why:** v0.3.0 added read-only HTMX pages for all resources, but every

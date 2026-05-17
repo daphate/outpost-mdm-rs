@@ -43,6 +43,7 @@
           <th class="px-4 py-3">Description</th>
           <th class="px-4 py-3">Members</th>
           <th class="px-4 py-3">Created</th>
+          <th class="px-4 py-3 text-right">Actions</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-slate-100">
@@ -52,10 +53,13 @@
           <td class="px-4 py-3 text-sm text-slate-600">{{ g.description }}</td>
           <td class="px-4 py-3 text-sm">{{ g.member_count }}</td>
           <td class="px-4 py-3 text-sm text-slate-500">{{ g.created_at }}</td>
+          <td class="px-4 py-3 text-right text-sm">
+            <a href="/groups/{{ g.id }}/edit" class="text-slate-600 hover:text-slate-900">Edit</a>
+          </td>
         </tr>
         {% endfor %}
         {% if groups.is_empty() %}
-        <tr><td colspan="4" class="px-4 py-8 text-center text-slate-400">No groups yet.</td></tr>
+        <tr><td colspan="5" class="px-4 py-8 text-center text-slate-400">No groups yet.</td></tr>
         {% endif %}
       </tbody>
     </table>

@@ -70,6 +70,7 @@
           <th class="px-4 py-3">Kind</th>
           <th class="px-4 py-3">Versions</th>
           <th class="px-4 py-3">Latest</th>
+          <th class="px-4 py-3 text-right">Actions</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-slate-100">
@@ -82,10 +83,14 @@
           </td>
           <td class="px-4 py-3 text-sm">{{ a.version_count }}</td>
           <td class="px-4 py-3 text-sm">{{ a.latest_version }}</td>
+          <td class="px-4 py-3 text-right text-sm space-x-3">
+            <a href="/applications/{{ a.id }}/versions" class="text-blue-600 hover:text-blue-800">Versions</a>
+            <a href="/applications/{{ a.id }}/edit" class="text-slate-600 hover:text-slate-900">Edit</a>
+          </td>
         </tr>
         {% endfor %}
         {% if apps.is_empty() %}
-        <tr><td colspan="5" class="px-4 py-8 text-center text-slate-400">No applications uploaded yet.</td></tr>
+        <tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">No applications uploaded yet.</td></tr>
         {% endif %}
       </tbody>
     </table>

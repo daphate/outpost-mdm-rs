@@ -52,6 +52,7 @@
           <th class="px-4 py-3">Kiosk app</th>
           <th class="px-4 py-3">Status</th>
           <th class="px-4 py-3">Updated</th>
+          <th class="px-4 py-3 text-right">Actions</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-slate-100">
@@ -68,10 +69,13 @@
             {% endif %}
           </td>
           <td class="px-4 py-3 text-sm text-slate-500">{{ c.updated_at }}</td>
+          <td class="px-4 py-3 text-right text-sm">
+            <a href="/configurations/{{ c.id }}/edit" class="text-slate-600 hover:text-slate-900">Edit</a>
+          </td>
         </tr>
         {% endfor %}
         {% if configs.is_empty() %}
-        <tr><td colspan="5" class="px-4 py-8 text-center text-slate-400">No configurations defined yet.</td></tr>
+        <tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">No configurations defined yet.</td></tr>
         {% endif %}
       </tbody>
     </table>
