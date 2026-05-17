@@ -16,10 +16,16 @@ async fn main() -> Result<()> {
     tracing::info!(
         bind_addr = %cfg.bind_addr,
         db_path = %cfg.db_path,
+        app_files_dir = %cfg.app_files_dir.display(),
         log_level = %cfg.log_level,
         version = env!("CARGO_PKG_VERSION"),
         "outpost-mdm-rs starting",
     );
+
+    // Ensure the files directory exists before serving.
+    tokio::fs::create_dir_all(&cfg.app_files_dir)
+        .await
+        .with_context(|| format!("create app_files_dir {}", cfg.app_files_dir.display()))?;
 
     let pool = db::open_pool(&cfg.db_path).await.context("open db pool")?;
     let bootstrapped = bootstrap::bootstrap_pending_passwords(&pool)
@@ -29,7 +35,7 @@ async fn main() -> Result<()> {
         tracing::warn!(count = bootstrapped, "bootstrapped initial passwords");
     }
 
-    let state = AppState::new(pool, cfg.jwt_secret, cfg.jwt_ttl_secs);
+    let state = AppState::new(pool, cfg.jwt_secret, cfg.jwt_ttl_secs, cfg.app_files_dir);
 
     let listener = tokio::net::TcpListener::bind(&cfg.bind_addr)
         .await

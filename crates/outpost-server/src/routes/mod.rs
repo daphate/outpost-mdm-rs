@@ -8,6 +8,7 @@ pub mod applications;
 pub mod auth;
 pub mod configurations;
 pub mod devices;
+pub mod files;
 pub mod groups;
 pub mod push;
 pub mod settings;
@@ -29,5 +30,6 @@ pub fn api_v1(state: AppState) -> Router {
         .merge(settings::router())
         .merge(stats::router())
         .merge(push::router())
+        .merge(files::router())
         .with_state(state)
 }

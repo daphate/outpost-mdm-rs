@@ -4,6 +4,24 @@ Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https:
 
 ## [Unreleased]
 
+### Phase 5 — File uploads + HMAC-signed download URLs
+
+**Added**
+- `outpost-server::storage` — content-addressed disk writer (`write_bytes`) with sha256 fan-out (`aa/bb/aabb…ext`); `resolve_under_root` path-traversal guard
+- `outpost-server::signed_url` — HMAC-SHA256 signed tokens for public downloads, format `v1.{file_id}.{expires}.{nonce}.{hex_tag}`; constant-time verification via `subtle`
+- `outpost-server::routes::files` — admin endpoints (`GET /api/v1/files`, `POST /api/v1/files/upload` multipart, `GET /api/v1/files/{id}`, `DELETE /api/v1/files/{id}`, `GET /api/v1/files/{id}/signed-url`) plus **public** `GET /files/signed/{token}` that requires no Authorization header
+- `Config::app_files_dir` (env var `APP_FILES_DIR`, default `/var/lib/outpost/files`)
+- 3 new unit tests in `storage::tests` (round-trip, content-address determinism, traversal block)
+- 5 new unit tests in `signed_url::tests` (round-trip, wrong key, expired, tampered file_id, garbage)
+- 2 new integration tests in `tests/files.rs` (full upload → signed URL → public download flow with tamper rejection; auth-required upload)
+
+**Changed**
+- `AppState` carries `Arc<PathBuf>` for the files directory
+- `main.rs` creates `app_files_dir` on disk before serving
+- Workspace deps added: `hmac 0.12`, `sha2 0.10`, `subtle 2`, `hex 0.4`
+- `outpost-server` enables `axum` feature `multipart`
+- Dev-deps: `tempfile 3`
+
 ### Phase 4 — Core CRUD endpoints
 
 **Added**
