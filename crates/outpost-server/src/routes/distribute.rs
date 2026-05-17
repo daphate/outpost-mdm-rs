@@ -77,6 +77,55 @@ pub enum DistributeTarget {
     CustomerFleet,
 }
 
+/// Untyped variant — used by web form handler в `routes/web.rs` для
+/// translation `serde_json::Value` (built from form data) в typed request.
+/// Avoids duplicating logic между JSON и form route'ами.
+#[derive(Debug, Deserialize)]
+pub struct DistributeRequestRaw {
+    pub target: serde_json::Value,
+    pub filename: String,
+    pub kind: String,
+    pub expires_at: Option<String>,
+    pub notes: Option<String>,
+}
+
+/// Минимальный actor-snapshot для разделяемого core-handler'а.
+/// Web (WebUser) и JSON (AuthUser) handler'ы заполняют этот struct и
+/// передают в [`do_distribute_file`]. Это позволяет не дублировать 200+
+/// строк encrypt-pipeline'а между двумя entry-point'ами.
+#[derive(Debug, Clone, Copy)]
+pub struct DistributeActor {
+    pub user_id: i64,
+    pub customer_id: i64,
+    pub role_id: i64,
+}
+
+impl From<&crate::routes::web::WebUser> for DistributeActor {
+    fn from(u: &crate::routes::web::WebUser) -> Self {
+        Self {
+            user_id: u.id,
+            customer_id: u.customer_id,
+            role_id: u.role_id,
+        }
+    }
+}
+
+impl From<crate::routes::web::WebUser> for DistributeActor {
+    fn from(u: crate::routes::web::WebUser) -> Self {
+        Self::from(&u)
+    }
+}
+
+impl From<&crate::auth_extract::AuthUser> for DistributeActor {
+    fn from(u: &crate::auth_extract::AuthUser) -> Self {
+        Self {
+            user_id: u.id,
+            customer_id: u.customer_id,
+            role_id: u.role_id,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct DistributeResponse {
     pub recipient_count: i64,
@@ -102,7 +151,50 @@ async fn distribute_file(
     Path(file_id): Path<i64>,
     Json(req): Json<DistributeRequest>,
 ) -> Result<(StatusCode, Json<DistributeResponse>), ApiError> {
-    require_permission(&state.db, user.role_id, "files.write").await?;
+    let actor: DistributeActor = (&user).into();
+    let raw = DistributeRequestRaw {
+        target: serde_json::to_value(&req.target).unwrap_or(serde_json::Value::Null),
+        filename: req.filename,
+        kind: req.kind,
+        expires_at: req.expires_at,
+        notes: req.notes,
+    };
+    let resp = do_distribute_file(&state, &actor, file_id, raw).await?;
+    Ok((StatusCode::ACCEPTED, Json(resp)))
+}
+
+// Re-export DistributeTarget Serialize чтобы to_value работало.
+impl serde::Serialize for DistributeTarget {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut m = s.serialize_map(Some(2))?;
+        match self {
+            DistributeTarget::Device { id } => {
+                m.serialize_entry("type", "device")?;
+                m.serialize_entry("id", id)?;
+            }
+            DistributeTarget::Group { id } => {
+                m.serialize_entry("type", "group")?;
+                m.serialize_entry("id", id)?;
+            }
+            DistributeTarget::CustomerFleet => {
+                m.serialize_entry("type", "customer_fleet")?;
+            }
+        }
+        m.end()
+    }
+}
+
+/// Shared core. Web и JSON handler'ы оба вызывают этот fn — отличие только
+/// в источнике user identity (WebUser vs AuthUser) и в shape входа
+/// (JSON typed vs form-encoded translated в `serde_json::Value`).
+pub async fn do_distribute_file(
+    state: &AppState,
+    actor: &DistributeActor,
+    file_id: i64,
+    req: DistributeRequestRaw,
+) -> Result<DistributeResponse, ApiError> {
+    require_permission(&state.db, actor.role_id, "files.write").await?;
 
     if !ALLOWED_KINDS.contains(&req.kind.as_str()) {
         return Err(ApiError::BadRequest(format!(
@@ -114,6 +206,10 @@ async fn distribute_file(
     if req.filename.trim().is_empty() {
         return Err(ApiError::BadRequest("filename is required".into()));
     }
+    // Распарсить target из generic JSON value.
+    let target: DistributeTarget = serde_json::from_value(req.target.clone()).map_err(|e| {
+        ApiError::BadRequest(format!("invalid target: {e}"))
+    })?;
 
     // 1. Загрузить uploaded_files row + plaintext bytes.
     let file_row: Option<(String, String)> = sqlx::query_as(
@@ -121,7 +217,7 @@ async fn distribute_file(
          WHERE id = ? AND customer_id = ?",
     )
     .bind(file_id)
-    .bind(user.customer_id)
+    .bind(actor.customer_id)
     .fetch_optional(&state.db)
     .await?;
     let Some((file_path, _orig_name)) = file_row else {
@@ -137,7 +233,7 @@ async fn distribute_file(
     }
 
     // 2. Resolve recipients (device_id, pubkey_der_bytes, key_id, version_code).
-    let recipients = resolve_recipients(&state, user.customer_id, &req.target).await?;
+    let recipients = resolve_recipients(state, actor.customer_id, &target).await?;
     let recipient_count = recipients.total as i64;
     if recipient_count == 0 {
         return Err(ApiError::BadRequest("no devices in target".into()));
@@ -209,7 +305,7 @@ async fn distribute_file(
              VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              RETURNING id",
         )
-        .bind(user.customer_id)
+        .bind(actor.customer_id)
         .bind(file_id)
         .bind(&req.filename)
         .bind(&req.kind)
@@ -263,7 +359,7 @@ async fn distribute_file(
             "INSERT INTO push_messages (customer_id, device_id, command, payload_json, status) \
              VALUES (?, ?, 'fetch-encrypted-file', ?, 'pending') RETURNING id",
         )
-        .bind(user.customer_id)
+        .bind(actor.customer_id)
         .bind(r.device_id)
         .bind(&payload_json)
         .fetch_one(&mut *tx)
@@ -285,7 +381,7 @@ async fn distribute_file(
     let eligible_count = command_ids.len() as i64;
 
     tracing::info!(
-        actor_user = user.id,
+        actor_user = actor.user_id,
         file_id,
         kind = %req.kind,
         recipient_count,
@@ -296,19 +392,16 @@ async fn distribute_file(
         "encrypted distribution"
     );
 
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(DistributeResponse {
-            recipient_count,
-            eligible_count,
-            skipped_no_pubkey,
-            skipped_old_clients: skipped_old,
-            command_ids,
-            distribution_ids,
-            ciphertext_size: blob.ciphertext.len() as i64,
-            plaintext_size: plaintext.len() as i64,
-        }),
-    ))
+    Ok(DistributeResponse {
+        recipient_count,
+        eligible_count,
+        skipped_no_pubkey,
+        skipped_old_clients: skipped_old,
+        command_ids,
+        distribution_ids,
+        ciphertext_size: blob.ciphertext.len() as i64,
+        plaintext_size: plaintext.len() as i64,
+    })
 }
 
 #[derive(Debug)]

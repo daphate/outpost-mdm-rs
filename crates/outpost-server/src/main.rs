@@ -4,8 +4,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use outpost_server::{
-    apk_watcher, app, bootstrap, config::Config, db, rollout_monitor, scheduler, shutdown,
-    state::AppState,
+    apk_watcher, app, bootstrap, config::Config, db, distribute_gc, rollout_monitor, scheduler,
+    shutdown, state::AppState,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -70,7 +70,11 @@ async fn main() -> Result<()> {
     // v0.12 Tier-2: rollout monitor. Каждые 60 секунд проходит по
     // `application_rollouts` с phase='canary' — auto-promote по
     // canary_until_at, auto-rollback по crash-rate gate (5% по умолчанию).
-    let _rollout_monitor_handle = rollout_monitor::spawn(pool);
+    let _rollout_monitor_handle = rollout_monitor::spawn(pool.clone());
+    // v0.15 §2 (MDM-DEVICE-CONTROL-CONTRACT): GC encrypted-distribution blob'ов.
+    // Раз в сутки (default) purgе rows где expires_at + 7d < now() + удаляет
+    // файлы с диска если ни одной active row на тот же sha256 не осталось.
+    let _distribute_gc_handle = distribute_gc::spawn(pool, state.app_files_dir.clone());
 
     let listener = tokio::net::TcpListener::bind(&cfg.bind_addr)
         .await

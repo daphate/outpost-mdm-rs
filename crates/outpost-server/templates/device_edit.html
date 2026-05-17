@@ -124,10 +124,65 @@
     </form>
   </section>
 
+  <!-- v0.15 §3: sensitive admin commands -->
+  <section class="bg-white rounded-lg shadow-sm p-4 space-y-4">
+    <h3 class="font-medium">Push-команды устройству (§3)</h3>
+    {% if let Some(blocker) = update_config_blocker %}
+      <p class="text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded px-2 py-1">⚠ {{ blocker }} — кнопки ниже работают только с rc42 b37+ клиентами.</p>
+    {% endif %}
+
+    <details class="border border-slate-200 rounded p-3 bg-slate-50">
+      <summary class="cursor-pointer text-sm text-slate-700">rotate-cloudru-creds</summary>
+      <form method="POST" action="/devices/{{ device_id }}/rotate-cloudru-creds-form" class="grid grid-cols-1 md:grid-cols-3 gap-2 mt-3"
+            onsubmit="return confirm('Push новые Cloud.ru creds устройству? Заменит текущий override.')">
+        <input name="tenant_id" placeholder="tenant_id (UUID)" class="rounded border-slate-300 px-2 py-1 text-sm font-mono">
+        <input name="key_id" placeholder="key_id (hex)" class="rounded border-slate-300 px-2 py-1 text-sm font-mono">
+        <input name="secret" placeholder="secret (hex)" class="rounded border-slate-300 px-2 py-1 text-sm font-mono" type="password">
+        <p class="md:col-span-2 text-xs text-slate-500">Хотя бы одно поле обязательно. Партиал-ротация (только secret) поддерживается. Поле передаётся в client'ский ModelPreferences.setCloudruCreds через push command.</p>
+        <button class="md:col-span-1 bg-slate-700 hover:bg-slate-900 disabled:bg-slate-300 text-white text-sm px-3 py-1.5 rounded"
+                {% if update_config_blocker.is_some() %}disabled{% endif %}>
+          Push rotate-cloudru-creds
+        </button>
+      </form>
+    </details>
+
+    <details class="border border-amber-300 rounded p-3 bg-amber-50">
+      <summary class="cursor-pointer text-sm text-amber-900 font-medium">revoke-enrollment (soft)</summary>
+      <form method="POST" action="/devices/{{ device_id }}/revoke-enrollment-form" class="space-y-2 mt-3"
+            onsubmit="return confirm('Послать команду revoke-enrollment? Клиент очистит локальный device_token + state и попросит re-enroll.')">
+        <input name="reason" placeholder="Причина (опционально, для audit log)" class="w-full rounded border-slate-300 px-2 py-1 text-sm">
+        <p class="text-xs text-amber-900">Soft revoke: client применяет на ближайшем /sync. Текущий device_token остаётся валидным пока клиент не уберёт его сам. Для hard revoke (немедленный 401 на всех endpoint'ах) используй «Удалить устройство» ниже.</p>
+        <button class="bg-amber-600 hover:bg-amber-700 disabled:bg-slate-300 text-white text-sm px-3 py-1.5 rounded"
+                {% if update_config_blocker.is_some() %}disabled{% endif %}>
+          Push revoke-enrollment
+        </button>
+      </form>
+    </details>
+
+    <details class="border border-red-300 rounded p-3 bg-red-50">
+      <summary class="cursor-pointer text-sm text-red-900 font-medium">remote-wipe</summary>
+      <form method="POST" action="/devices/{{ device_id }}/remote-wipe-form" class="space-y-2 mt-3"
+            onsubmit="return confirm('REMOTE WIPE — клиент сотрёт ModelPreferences, knowledge.db, модели, encrypted-distribution cache. ОТМЕНИТЬ НЕЛЬЗЯ.\n\nПродолжить?')">
+        <label class="block text-sm">
+          <span class="text-xs uppercase tracking-wide text-red-900">Scope</span>
+          <select name="scope" class="mt-1 w-full rounded border-red-300 px-2 py-1 text-sm">
+            <option value="app-data" selected>app-data (recommended, sideload-friendly)</option>
+            <option value="factory-reset">factory-reset (нужен Device-Owner DPM; иначе fallback на app-data)</option>
+          </select>
+        </label>
+        <input name="reason" placeholder="Причина для audit log (обязательна для wipe)" required class="w-full rounded border-red-300 px-2 py-1 text-sm">
+        <button class="bg-red-700 hover:bg-red-900 disabled:bg-slate-300 text-white text-sm font-medium px-3 py-1.5 rounded"
+                {% if update_config_blocker.is_some() %}disabled{% endif %}>
+          Push remote-wipe
+        </button>
+      </form>
+    </details>
+  </section>
+
   <form method="POST" action="/devices/{{ device_id }}/delete" onsubmit="return confirm('Удалить устройство {{ serial }}? Это необратимо.')" class="bg-white rounded-lg shadow-sm p-4 flex items-center justify-between">
     <div>
-      <p class="font-medium text-red-800">Опасная зона</p>
-      <p class="text-sm text-slate-500">Удаление устройства сотрёт историю синхронизации, ожидающие push-команды и запись регистрации.</p>
+      <p class="font-medium text-red-800">Опасная зона — hard revoke</p>
+      <p class="text-sm text-slate-500">Удаление устройства сотрёт историю синхронизации, ожидающие push-команды и запись регистрации. Все /sync /v1/logs /v1/metrics /v1/traces с этого token'а сразу будут давать 401.</p>
     </div>
     <button class="bg-red-600 hover:bg-red-700 text-white text-sm font-medium px-4 py-2 rounded">Удалить устройство</button>
   </form>

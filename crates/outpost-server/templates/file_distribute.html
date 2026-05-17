@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+
+{% block title %}Распространить файл {{ original_name }}{% endblock %}
+
+{% block body %}
+{% include "_nav.html" %}
+
+<main class="max-w-3xl mx-auto px-4 py-6 space-y-6">
+  <div>
+    <a href="/files" class="text-sm text-slate-500 hover:text-slate-900">← к списку файлов</a>
+    <h2 class="text-2xl font-bold mt-2">Распространить файл</h2>
+    <p class="text-sm text-slate-500">
+      <code class="font-mono">{{ original_name }}</code> · {{ size_human }} · sha-256 <code class="font-mono text-xs">{{ sha256_short }}…</code>
+    </p>
+  </div>
+
+  {% if let Some(msg) = flash %}
+    <div class="bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm px-4 py-2 rounded">{{ msg }}</div>
+  {% endif %}
+  {% if let Some(e) = error %}
+    <div class="bg-red-50 border border-red-200 text-red-800 text-sm px-4 py-2 rounded">{{ e }}</div>
+  {% endif %}
+
+  <section class="bg-amber-50 border border-amber-200 text-amber-900 text-sm rounded-lg p-4 space-y-2">
+    <p class="font-medium">Как работает encrypted distribution</p>
+    <ul class="list-disc list-inside text-xs space-y-1">
+      <li>Файл шифруется AES-256-GCM один раз, под случайным DEK.</li>
+      <li>Для каждого получателя DEK wrap'ится через ECDH(eph_priv, recipient_pubkey) → HKDF → AES-GCM. Один blob, N оберток.</li>
+      <li>Только устройства с reported pubkey'ем (после enroll'а rc42 b37+) могут получить — остальные пропускаются.</li>
+      <li>Push-команда `fetch-encrypted-file` уходит через /sync (≤30 мин), клиент скачивает ciphertext, декодит, install'ит по target storage.</li>
+    </ul>
+  </section>
+
+  <form method="POST" action="/files/{{ file_id }}/distribute-form" class="bg-white rounded-lg shadow-sm p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+    <fieldset class="md:col-span-2 border border-slate-200 rounded p-3 space-y-2">
+      <legend class="text-xs uppercase tracking-wide text-slate-500 px-1">Кому распространить</legend>
+      <label class="flex items-center text-sm">
+        <input type="radio" name="target_type" value="device" class="mr-2" required>
+        <span>Одно устройство</span>
+        <select name="target_device_id" class="ml-3 rounded border-slate-300 px-2 py-1 text-sm" required disabled>
+          <option value="">— выбрать —</option>
+          {% for d in devices %}
+            <option value="{{ d.id }}">{{ d.serial }}{% if let Some(n) = d.display_name %} · {{ n }}{% endif %}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="flex items-center text-sm">
+        <input type="radio" name="target_type" value="group" class="mr-2">
+        <span>Группа</span>
+        <select name="target_group_id" class="ml-3 rounded border-slate-300 px-2 py-1 text-sm" disabled>
+          <option value="">— выбрать —</option>
+          {% for g in groups %}
+            <option value="{{ g.id }}">{{ g.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="flex items-center text-sm">
+        <input type="radio" name="target_type" value="customer_fleet" class="mr-2">
+        <span>Все устройства клиента (fleet-wide)</span>
+      </label>
+    </fieldset>
+
+    <label class="block">
+      <span class="text-xs uppercase tracking-wide text-slate-500">Тип контента</span>
+      <select name="kind" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm" required>
+        <option value="pdf">pdf (открывается в PdfRenderer)</option>
+        <option value="zim">zim (ZIM-оффлайн-вики)</option>
+        <option value="knowledge_db_chunk">knowledge_db_chunk (merge в RAG)</option>
+        <option value="model_gguf">model_gguf (LLM/VLM модель)</option>
+        <option value="arbitrary_blob" selected>arbitrary_blob (raw файл)</option>
+      </select>
+    </label>
+
+    <label class="block">
+      <span class="text-xs uppercase tracking-wide text-slate-500">Имя файла на устройстве</span>
+      <input name="filename" value="{{ original_name }}" required class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm font-mono">
+    </label>
+
+    <label class="block md:col-span-2">
+      <span class="text-xs uppercase tracking-wide text-slate-500">Истекает (ISO 8601 UTC, опционально)</span>
+      <input name="expires_at" placeholder="2026-08-15 00:00:00" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm font-mono">
+      <p class="text-xs text-slate-500 mt-1">После этой даты GC удалит ciphertext blob и push-команду. Пусто = бессрочно.</p>
+    </label>
+
+    <div class="md:col-span-2 flex items-center justify-end">
+      <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded">
+        Зашифровать и поставить в очередь
+      </button>
+    </div>
+  </form>
+
+  <script>
+    // Простая логика: radio изменяет какой select enabled.
+    document.querySelectorAll('input[name="target_type"]').forEach(r => {
+      r.addEventListener('change', () => {
+        document.querySelector('select[name="target_device_id"]').disabled = r.value !== 'device';
+        document.querySelector('select[name="target_group_id"]').disabled = r.value !== 'group';
+      });
+    });
+  </script>
+</main>
+{% endblock %}

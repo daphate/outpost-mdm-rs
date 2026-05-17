@@ -65,6 +65,7 @@
           <td class="px-4 py-3 font-mono text-xs">{{ f.sha256_short }}…</td>
           <td class="px-4 py-3 text-sm text-slate-500">{{ f.uploaded_at }}</td>
           <td class="px-4 py-3 text-right text-sm">
+            <a href="/files/{{ f.id }}/distribute" class="text-blue-600 hover:text-blue-800 mr-3">Распространить →</a>
             <form method="POST" action="/files/{{ f.id }}/delete" onsubmit="return confirm('Удалить файл {{ f.original_name }}? Версии приложений, ссылающиеся на него, перестанут работать.')" class="inline">
               <button class="text-red-600 hover:text-red-800">Удалить</button>
             </form>

@@ -108,6 +108,29 @@ pub fn router() -> Router<AppState> {
         .route("/files", get(files_page))
         .route("/files/upload", post(files_upload))
         .route("/files/{id}/delete", post(files_delete))
+        // v0.15 (MDM-DEVICE-CONTROL-CONTRACT §2): admin web UI для encrypted
+        // distribution. GET — форма target picker, POST — translate в JSON
+        // API + редирект назад в /files c flash.
+        .route(
+            "/files/{id}/distribute",
+            get(file_distribute_view).post(file_distribute_form),
+        )
+        // POST из form (alias action чтоб не путать с GET).
+        .route("/files/{id}/distribute-form", post(file_distribute_form))
+        // v0.15 (MDM-DEVICE-CONTROL-CONTRACT §3): destructive admin commands
+        // через web form'ы (alternative к JSON API в routes/devices.rs).
+        .route(
+            "/devices/{id}/rotate-cloudru-creds-form",
+            post(device_rotate_cloudru_creds_form),
+        )
+        .route(
+            "/devices/{id}/revoke-enrollment-form",
+            post(device_revoke_enrollment_form),
+        )
+        .route(
+            "/devices/{id}/remote-wipe-form",
+            post(device_remote_wipe_form),
+        )
         // Server-wide settings
         .route("/settings", get(settings_page).post(settings_save))
         .route("/settings/language", post(settings_language))
@@ -2558,6 +2581,302 @@ async fn device_config_form(
             tracing::error!(error = %e, "device_config_form insert failed");
             redirect_with_flash(&format!("/devices/{id}/edit"), "DB error при создании push_message.")
         }
+    }
+}
+
+// ----- v0.15 (MDM-DEVICE-CONTROL-CONTRACT §2/§3) admin Web UI handlers ------
+
+#[derive(Template)]
+#[template(path = "file_distribute.html")]
+struct FileDistributeTemplate {
+    user_login: String,
+    file_id: i64,
+    original_name: String,
+    size_human: String,
+    sha256_short: String,
+    devices: Vec<DistributeDeviceOption>,
+    groups: Vec<GroupOption>,
+    flash: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct DistributeDeviceOption {
+    id: i64,
+    serial: String,
+    display_name: Option<String>,
+}
+
+async fn file_distribute_view(
+    user: WebUser,
+    State(state): State<AppState>,
+    Path(file_id): Path<i64>,
+    flash: FlashCookie,
+) -> Result<Response, ApiError> {
+    render_file_distribute(&user, &state, file_id, flash.0, None).await
+}
+
+async fn render_file_distribute(
+    user: &WebUser,
+    state: &AppState,
+    file_id: i64,
+    flash: Option<String>,
+    error: Option<String>,
+) -> Result<Response, ApiError> {
+    let row: Option<(String, i64, String)> = sqlx::query_as(
+        "SELECT original_name, file_size_bytes, sha256 \
+         FROM uploaded_files WHERE id = ? AND customer_id = ?",
+    )
+    .bind(file_id)
+    .bind(user.customer_id)
+    .fetch_optional(&state.db)
+    .await?;
+    let Some((original_name, size, sha)) = row else {
+        return Err(ApiError::NotFound);
+    };
+    let devices: Vec<DistributeDeviceOption> = sqlx::query_as(
+        "SELECT id, serial, display_name FROM devices \
+         WHERE customer_id = ? AND is_active = 1 \
+         ORDER BY serial LIMIT 500",
+    )
+    .bind(user.customer_id)
+    .fetch_all(&state.db)
+    .await?;
+    let groups: Vec<GroupOption> = sqlx::query_as(
+        "SELECT id, name FROM groups WHERE customer_id = ? ORDER BY name LIMIT 200",
+    )
+    .bind(user.customer_id)
+    .fetch_all(&state.db)
+    .await?;
+    let mut resp = render(FileDistributeTemplate {
+        user_login: user.login.clone(),
+        file_id,
+        original_name,
+        size_human: format_size(size),
+        sha256_short: sha.chars().take(16).collect(),
+        devices,
+        groups,
+        flash,
+        error,
+    });
+    clear_flash_cookie(&mut resp);
+    Ok(resp)
+}
+
+/// POST form-data → JSON API call. Возвращает редирект на /files c flash.
+async fn file_distribute_form(
+    user: WebUser,
+    State(state): State<AppState>,
+    Path(file_id): Path<i64>,
+    body: axum::body::Bytes,
+) -> Response {
+    let form = parse_form(&body);
+    let target_type = form.first("target_type").unwrap_or("");
+    let kind = form.first("kind").unwrap_or("arbitrary_blob").to_string();
+    let filename = form.first("filename").unwrap_or("").trim().to_string();
+    let expires_at = form
+        .first("expires_at")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    if filename.is_empty() {
+        return redirect_with_flash(
+            &format!("/files/{file_id}/distribute"),
+            "filename обязателен.",
+        );
+    }
+
+    let target_json = match target_type {
+        "device" => {
+            let Some(dev_id) = form.first("target_device_id").and_then(|s| s.parse::<i64>().ok())
+            else {
+                return redirect_with_flash(
+                    &format!("/files/{file_id}/distribute"),
+                    "Не выбрано устройство.",
+                );
+            };
+            serde_json::json!({"type": "device", "id": dev_id})
+        }
+        "group" => {
+            let Some(g_id) = form.first("target_group_id").and_then(|s| s.parse::<i64>().ok())
+            else {
+                return redirect_with_flash(
+                    &format!("/files/{file_id}/distribute"),
+                    "Не выбрана группа.",
+                );
+            };
+            serde_json::json!({"type": "group", "id": g_id})
+        }
+        "customer_fleet" => serde_json::json!({"type": "customer_fleet"}),
+        _ => {
+            return redirect_with_flash(
+                &format!("/files/{file_id}/distribute"),
+                "Не выбран target_type.",
+            );
+        }
+    };
+
+    // Вызываем internal helper distribute logic. Чтобы не дублировать
+    // 200 строк, экспортируем `do_distribute_file` из routes/distribute.rs.
+    let req = crate::routes::distribute::DistributeRequestRaw {
+        target: target_json,
+        filename,
+        kind,
+        expires_at,
+        notes: None,
+    };
+    match crate::routes::distribute::do_distribute_file(&state, &user.into(), file_id, req).await {
+        Ok(resp) => redirect_with_flash(
+            "/files",
+            &format!(
+                "Зашифровано и поставлено в очередь: {} получателей, {} команд (skipped: {} без pubkey, {} legacy)",
+                resp.eligible_count,
+                resp.command_ids.len(),
+                resp.skipped_no_pubkey,
+                resp.skipped_old_clients,
+            ),
+        ),
+        Err(ApiError::BadRequest(msg)) => redirect_with_flash(
+            &format!("/files/{file_id}/distribute"),
+            &format!("Ошибка: {msg}"),
+        ),
+        Err(ApiError::NotFound) => redirect_with_flash("/files", "Файл не найден."),
+        Err(e) => {
+            tracing::error!(error = ?e, "distribute form failed");
+            redirect_with_flash(
+                &format!("/files/{file_id}/distribute"),
+                "Внутренняя ошибка сервера.",
+            )
+        }
+    }
+}
+
+// ----- §3 device-command form handlers --------------------------------------
+
+async fn device_rotate_cloudru_creds_form(
+    user: WebUser,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    body: axum::body::Bytes,
+) -> Response {
+    let form = parse_form(&body);
+    let tenant_id = form.first("tenant_id").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let key_id = form.first("key_id").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let secret = form.first("secret").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    if tenant_id.is_none() && key_id.is_none() && secret.is_none() {
+        return redirect_with_flash(
+            &format!("/devices/{id}/edit"),
+            "Хотя бы одно поле tenant_id/key_id/secret обязательно.",
+        );
+    }
+    let payload = serde_json::json!({
+        "tenant_id": tenant_id,
+        "key_id": key_id,
+        "secret": secret,
+    });
+    queue_device_command_form(&state, &user, id, "rotate-cloudru-creds", payload).await
+}
+
+async fn device_revoke_enrollment_form(
+    user: WebUser,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    body: axum::body::Bytes,
+) -> Response {
+    let form = parse_form(&body);
+    let reason = form
+        .first("reason")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "admin-initiated".to_string());
+    let payload = serde_json::json!({"reason": reason});
+    queue_device_command_form(&state, &user, id, "revoke-enrollment", payload).await
+}
+
+async fn device_remote_wipe_form(
+    user: WebUser,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    body: axum::body::Bytes,
+) -> Response {
+    let form = parse_form(&body);
+    let scope = form
+        .first("scope")
+        .map(|s| s.trim().to_string())
+        .filter(|s| s == "app-data" || s == "factory-reset")
+        .unwrap_or_else(|| "app-data".to_string());
+    let reason = form
+        .first("reason")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "admin-initiated".to_string());
+    let payload = serde_json::json!({"scope": scope, "reason": reason});
+    queue_device_command_form(&state, &user, id, "remote-wipe", payload).await
+}
+
+async fn queue_device_command_form(
+    state: &AppState,
+    user: &WebUser,
+    device_id: i64,
+    command: &str,
+    payload: serde_json::Value,
+) -> Response {
+    let row: Option<(Option<i64>,)> = sqlx::query_as(
+        "SELECT app_version_code FROM devices WHERE id = ? AND customer_id = ?",
+    )
+    .bind(device_id)
+    .bind(user.customer_id)
+    .fetch_optional(&state.db)
+    .await
+    .unwrap_or(None);
+    let Some((av,)) = row else {
+        return redirect_with_flash(&format!("/devices/{device_id}/edit"), "Устройство не найдено.");
+    };
+    const MIN_VC: i64 = 178;
+    match av {
+        None => {
+            return redirect_with_flash(
+                &format!("/devices/{device_id}/edit"),
+                "Устройство ещё не reportilo app_version_code.",
+            );
+        }
+        Some(v) if v < MIN_VC => {
+            return redirect_with_flash(
+                &format!("/devices/{device_id}/edit"),
+                &format!("Старый клиент (versionCode={v}); нужен >= {MIN_VC}."),
+            );
+        }
+        _ => {}
+    }
+    let payload_json = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
+    let res = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO push_messages (customer_id, device_id, command, payload_json, status) \
+         VALUES (?, ?, ?, ?, 'pending') RETURNING id",
+    )
+    .bind(user.customer_id)
+    .bind(device_id)
+    .bind(command)
+    .bind(&payload_json)
+    .fetch_one(&state.db)
+    .await;
+    match res {
+        Ok(cmd_id) => {
+            tracing::warn!(
+                actor_user = user.id,
+                target_device = device_id,
+                command = %command,
+                cmd_id,
+                "admin issued device command via web form"
+            );
+            redirect_with_flash(
+                &format!("/devices/{device_id}/edit"),
+                &format!("{command} поставлен в очередь (command_id={cmd_id})"),
+            )
+        }
+        Err(_) => redirect_with_flash(
+            &format!("/devices/{device_id}/edit"),
+            "DB error при создании push_message.",
+        ),
     }
 }
 

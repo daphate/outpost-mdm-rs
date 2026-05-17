@@ -8,6 +8,7 @@ pub mod bootstrap;
 pub mod client_ip;
 pub mod config;
 pub mod db;
+pub mod distribute_gc;
 pub mod distribution;
 pub mod error;
 pub mod i18n;

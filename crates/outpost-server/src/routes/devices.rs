@@ -24,6 +24,21 @@ pub fn router() -> Router<AppState> {
         // v0.13 (MDM-DEVICE-CONTROL-CONTRACT §1.4):
         .route("/api/v1/devices/{id}/state", get(get_state))
         .route("/api/v1/devices/{id}/config", axum::routing::post(post_config))
+        // v0.15 (MDM-DEVICE-CONTROL-CONTRACT §3): дестрактивные / sensitive
+        // command'ы. Все три — push_message based; client'ский
+        // SyncCommandDispatcher handles caps по command type.
+        .route(
+            "/api/v1/devices/{id}/rotate-cloudru-creds",
+            axum::routing::post(post_rotate_cloudru_creds),
+        )
+        .route(
+            "/api/v1/devices/{id}/revoke-enrollment",
+            axum::routing::post(post_revoke_enrollment),
+        )
+        .route(
+            "/api/v1/devices/{id}/remote-wipe",
+            axum::routing::post(post_remote_wipe),
+        )
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -348,4 +363,225 @@ async fn post_config(
         axum::http::StatusCode::CREATED,
         Json(ConfigUpdateResponse { command_id: cmd_id }),
     ))
+}
+
+// ----- v0.15 (MDM-DEVICE-CONTROL-CONTRACT §3) -------------------------------
+
+/// `rotate-cloudru-creds` payload — same shape что client'ский
+/// `MdmEnrollClient.Result.Success` использует для rotation.
+/// Поля nullable: можно отправить partial rotation (только key_id+secret),
+/// но обычно admin шлёт все три.
+#[derive(Debug, Deserialize)]
+pub struct RotateCloudruCredsRequest {
+    pub tenant_id: Option<String>,
+    pub key_id: Option<String>,
+    pub secret: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PushCommandResponse {
+    pub command_id: i64,
+}
+
+/// `POST /api/v1/devices/{id}/rotate-cloudru-creds` — push новые S3-creds
+/// устройству. Тот же gate version_code >= 178. Payload форматирован так,
+/// что client `SyncCommandDispatcher` его сразу скармливает
+/// `ModelPreferences.setCloudruCreds(...)` + `CloudRuSigner.setOverride(...)`.
+async fn post_rotate_cloudru_creds(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<RotateCloudruCredsRequest>,
+) -> Result<(axum::http::StatusCode, Json<PushCommandResponse>), ApiError> {
+    require_permission(&state.db, user.role_id, "devices.write").await?;
+    let av = verify_device_and_get_version(&state, user.customer_id, id).await?;
+    require_b37_or_newer(av)?;
+    if req.tenant_id.is_none() && req.key_id.is_none() && req.secret.is_none() {
+        return Err(ApiError::BadRequest(
+            "хотя бы одно из tenant_id/key_id/secret обязательно".into(),
+        ));
+    }
+    let payload = serde_json::json!({
+        "tenant_id": req.tenant_id,
+        "key_id": req.key_id,
+        "secret": req.secret,
+    });
+    let cmd_id = insert_push_command(
+        &state.db,
+        user.customer_id,
+        id,
+        "rotate-cloudru-creds",
+        &payload,
+    )
+    .await?;
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(PushCommandResponse { command_id: cmd_id }),
+    ))
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct RevokeEnrollmentRequest {
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// `POST /api/v1/devices/{id}/revoke-enrollment` — soft revoke. Создаём
+/// push command — client применяет: clear telemetry token, clear device
+/// state, redirect в EnrollScreen. Сессия НЕ revoked immediately потому что
+/// client должен сначала дотянуться до /sync чтобы получить command.
+/// Session expires естественно через 90 дней TTL либо при ручном
+/// `DELETE /api/v1/devices/{id}`.
+///
+/// Если admin хочет hard revoke (немедленный 401 на всех endpoint'ах) —
+/// `DELETE /api/v1/devices/{id}` это уже делает.
+async fn post_revoke_enrollment(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<RevokeEnrollmentRequest>,
+) -> Result<(axum::http::StatusCode, Json<PushCommandResponse>), ApiError> {
+    require_permission(&state.db, user.role_id, "devices.write").await?;
+    let av = verify_device_and_get_version(&state, user.customer_id, id).await?;
+    require_b37_or_newer(av)?;
+    let payload = serde_json::json!({
+        "reason": req.reason.unwrap_or_else(|| "admin-initiated".into()),
+    });
+    let cmd_id = insert_push_command(
+        &state.db,
+        user.customer_id,
+        id,
+        "revoke-enrollment",
+        &payload,
+    )
+    .await?;
+    tracing::warn!(
+        actor_user = user.id,
+        target_device = id,
+        command_id = cmd_id,
+        "admin issued revoke-enrollment"
+    );
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(PushCommandResponse { command_id: cmd_id }),
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemoteWipeRequest {
+    /// `"app-data"` (default) — clear ModelPreferences, knowledge.db,
+    /// models, encrypted-distribution cache, OTLP buffer. Device остаётся
+    /// enrolled (token валиден), просто без assets.
+    /// `"factory-reset"` — для Device-Owner устройств, делает full DPM wipe.
+    /// На sideload без DPM такой scope клиент логирует error и применяет
+    /// app-data fallback.
+    #[serde(default = "default_wipe_scope")]
+    pub scope: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+fn default_wipe_scope() -> String {
+    "app-data".to_string()
+}
+
+/// `POST /api/v1/devices/{id}/remote-wipe` — destructive. Создаёт
+/// push command, **дополнительно** revoke'ит current device session
+/// чтобы устройство не могло после wipe заново /sync'аться со старым
+/// token'ом (это была бы аномалия — wiped device без cert по идее не
+/// enrolled). Admin отвечает за follow-up: либо устройство ушло из проекта
+/// (тогда `DELETE /devices/{id}` после ack'а), либо нужен re-enroll.
+async fn post_remote_wipe(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<RemoteWipeRequest>,
+) -> Result<(axum::http::StatusCode, Json<PushCommandResponse>), ApiError> {
+    require_permission(&state.db, user.role_id, "devices.write").await?;
+    let av = verify_device_and_get_version(&state, user.customer_id, id).await?;
+    require_b37_or_newer(av)?;
+    if !matches!(req.scope.as_str(), "app-data" | "factory-reset") {
+        return Err(ApiError::BadRequest(format!(
+            "unknown scope '{}'; allowed: app-data, factory-reset",
+            req.scope
+        )));
+    }
+    let payload = serde_json::json!({
+        "scope": req.scope,
+        "reason": req.reason.unwrap_or_else(|| "admin-initiated".into()),
+    });
+    let cmd_id = insert_push_command(
+        &state.db,
+        user.customer_id,
+        id,
+        "remote-wipe",
+        &payload,
+    )
+    .await?;
+    tracing::warn!(
+        actor_user = user.id,
+        target_device = id,
+        scope = %req.scope,
+        command_id = cmd_id,
+        "admin issued remote-wipe"
+    );
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(PushCommandResponse { command_id: cmd_id }),
+    ))
+}
+
+// ----- shared helpers for §3 ------------------------------------------------
+
+async fn verify_device_and_get_version(
+    state: &AppState,
+    customer_id: i64,
+    device_id: i64,
+) -> Result<Option<i64>, ApiError> {
+    let row: Option<(Option<i64>,)> = sqlx::query_as(
+        "SELECT app_version_code FROM devices WHERE id = ? AND customer_id = ?",
+    )
+    .bind(device_id)
+    .bind(customer_id)
+    .fetch_optional(&state.db)
+    .await?;
+    let Some((av,)) = row else {
+        return Err(ApiError::NotFound);
+    };
+    Ok(av)
+}
+
+fn require_b37_or_newer(app_version_code: Option<i64>) -> Result<(), ApiError> {
+    match app_version_code {
+        None => Err(ApiError::BadRequest(
+            "device has not reported app_version_code yet — wait for first /sync".into(),
+        )),
+        Some(v) if v < MIN_VERSION_CODE_FOR_UPDATE_CONFIG => Err(ApiError::BadRequest(format!(
+            "device on app_version_code={v}, requires >= {MIN_VERSION_CODE_FOR_UPDATE_CONFIG} (rc42 b37+)"
+        ))),
+        Some(_) => Ok(()),
+    }
+}
+
+async fn insert_push_command(
+    pool: &sqlx::SqlitePool,
+    customer_id: i64,
+    device_id: i64,
+    command: &str,
+    payload: &serde_json::Value,
+) -> Result<i64, ApiError> {
+    let payload_json = serde_json::to_string(payload).map_err(|e| {
+        ApiError::BadRequest(format!("payload not serializable: {e}"))
+    })?;
+    let cmd_id: i64 = sqlx::query_scalar(
+        "INSERT INTO push_messages (customer_id, device_id, command, payload_json, status) \
+         VALUES (?, ?, ?, ?, 'pending') RETURNING id",
+    )
+    .bind(customer_id)
+    .bind(device_id)
+    .bind(command)
+    .bind(&payload_json)
+    .fetch_one(pool)
+    .await?;
+    Ok(cmd_id)
 }
