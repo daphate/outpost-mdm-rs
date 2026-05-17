@@ -127,7 +127,10 @@ async fn enrollment_then_sync_round_trip() {
     let commands = v["commands"].as_array().unwrap();
     assert_eq!(commands.len(), 1);
     assert_eq!(commands[0]["command"], "reboot");
-    let push_id = commands[0]["id"].as_i64().unwrap();
+    // v0.13: SyncCommand.id is a String on the wire (forward-compat with
+    // UUID-based client ids). DB column остаётся INTEGER PK; сериализуется
+    // через `id.to_string()` в routes::enrollment::sync.
+    let push_id = commands[0]["id"].as_str().unwrap().to_string();
 
     // 7. Device acks on a later sync; the push transitions to 'delivered'.
     let body = http_request(
