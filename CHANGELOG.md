@@ -4,6 +4,25 @@ Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https:
 
 ## [Unreleased]
 
+### Phase 12 — Comprehensive integration test coverage
+
+**Added**
+- `tests/common/mod.rs` — shared `TestApp` test harness (boots in-memory pool + bootstrapped admin + real TCP listener, abort on drop), plus `http_get` / `http_json` / `http_request` / `build_multipart` helpers
+- `TestApp::token_for_role` — convenience for tests that need a non-admin token (operator/viewer)
+- 7 new integration test files covering every CRUD resource:
+  - `tests/applications.rs` (4 tests) — CRUD happy path, version lifecycle, duplicate package_name, viewer 403
+  - `tests/groups.rs` (5 tests) — CRUD, duplicate name, device membership add/list/remove, unknown device, missing group 404
+  - `tests/configurations.rs` (4 tests) — CRUD, invalid `settings_json` on create + update, application attachment lifecycle with duplicate-attach 400
+  - `tests/users.rs` (7 tests) — CRUD, duplicate login, weak password, unknown role, self-delete prevention, self-password-change without `users.write`, viewer cannot change others' password
+  - `tests/settings.rs` (6 tests) — list seeded, get specific, upsert, invalid JSON, unknown key 404, viewer read-only
+  - `tests/push.rs` (7 tests) — schedule create/cancel with status transitions, missing due_at+cron 400, multiple targets 400, invalid payload_json 400, empty command 400, message list empty
+  - `tests/enrollment.rs` (4 tests) — **full end-to-end device lifecycle:** admin creates → generates enrollment payload → device enrolls → admin schedules reboot → scheduler tick fans out → device syncs and receives → device acks → message delivered; wrong-secret 401; user token rejected for `/sync`; device token rejected for `/auth/me`
+
+**Stats**
+- Test count: **92 passing, 0 failing** (was 55 at P11)
+- New tests: 37 across 7 new files
+- Existing tests untouched (no churn)
+
 ### Phase 10 — Container hardening, deploy docs, CI security scans
 
 **Added**
