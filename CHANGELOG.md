@@ -4,6 +4,24 @@ Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https:
 
 ## [Unreleased]
 
+_Nothing yet — open a PR!_
+
+## [0.2.0] — 2026-05-17
+
+Second release. Two big changes since v0.1.0:
+
+1. **HTMX/Askama admin UI** (Phase 15) — browser sign-in / dashboard /
+   devices table, no npm or build pipeline, just Askama templates +
+   Tailwind via CDN + HTMX 2.0.4. Cookie session piggybacks on the
+   existing auth model.
+2. **JWT → opaque DB-backed sessions** (Phase 16) — instant revocation,
+   smaller wire footprint, zero JWT-library CVE surface. `jsonwebtoken`
+   crate removed entirely. New `POST /api/v1/auth/logout` endpoint.
+   Env var renamed `JWT_SECRET` → `APP_SECRET` (legacy alias accepted
+   for one release).
+
+Test count: 110 passing (was 96 at v0.1.0).
+
 ### Phase 16 — Replace JWT with opaque DB-backed sessions
 
 **Why:** JWT is stateless — revocation requires rotating the signing key
@@ -306,5 +324,6 @@ surface in the meantime.
 - README, `.editorconfig`, `.gitattributes` (LF), `.dockerignore`
 - Release profile tuned for size (`opt-level = "z"`, `lto = "fat"`, `strip = "symbols"`, `panic = "abort"`)
 
-[Unreleased]: https://github.com/daphate/outpost-mdm-rs/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/daphate/outpost-mdm-rs/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/daphate/outpost-mdm-rs/releases/tag/v0.2.0
 [0.1.0]: https://github.com/daphate/outpost-mdm-rs/releases/tag/v0.1.0
