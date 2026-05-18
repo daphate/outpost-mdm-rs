@@ -5,8 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <title>{% block title %}{% endblock %} — Outpost MDM</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/htmx.org@2.0.4" integrity="sha384-+UJxnSyZAGdRzvBJ22oCZuP69dGgY4FQfWpL40Edt6ZWZ3DCKMK1zQzlhmAOg0LZ" crossorigin="anonymous"></script>
+  <!-- v0.18: static assets вшиты в outpost-server binary через include_bytes! -->
+  <!-- (раньше тянули с cdn.tailwindcss.com + unpkg.com — viewing страницы admin -->
+  <!-- ломалось в любой сети без доступа к этим CDN, включая VPN'ы с медленными exit-nodes) -->
+  <script src="/static/tailwind.js"></script>
+  <script src="/static/htmx.min.js"></script>
 </head>
 <body class="bg-slate-50 text-slate-900 antialiased">
   {% block body %}{% endblock %}

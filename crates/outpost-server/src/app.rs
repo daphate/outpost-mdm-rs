@@ -7,7 +7,7 @@ use axum::{
     Json, Router,
     extract::State,
     http::{HeaderName, HeaderValue, StatusCode},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::get,
 };
 use serde::Serialize;
@@ -38,6 +38,47 @@ async fn healthz() -> Json<Health> {
 pub struct Ready {
     pub status: &'static str,
     pub db: &'static str,
+}
+
+/// v0.18: embedded admin Web UI assets.
+///
+/// Раньше `templates/base.html` тянул `cdn.tailwindcss.com` и
+/// `unpkg.com/htmx.org` напрямую — это `<script>` теги в `<head>` без
+/// `async`/`defer`, поэтому браузер блокировал рендер до их загрузки.
+/// В любой сети, где эти CDN недоступны или медленны (ТСПУ,
+/// корпоративный прокси, VPN с упавшим exit-node) — admin UI висел
+/// белым экраном до browser-timeout.
+///
+/// Теперь оба бандла лежат в `crates/outpost-server/static/` и
+/// вшиваются в release-binary через `include_bytes!`. Web UI работает
+/// в любой сетевой среде, без внешних зависимостей.
+///
+/// Версии (зафиксированы 2026-05-19, sha256 в commit message):
+/// - tailwind.js 3.4.16 (JIT-runtime, 451 KB)
+/// - htmx.min.js 2.0.4 (51 KB)
+const STATIC_TAILWIND_JS: &[u8] = include_bytes!("../static/tailwind.js");
+const STATIC_HTMX_JS: &[u8] = include_bytes!("../static/htmx.min.js");
+
+fn static_js_response(body: &'static [u8]) -> Response {
+    use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
+    (
+        [
+            (CONTENT_TYPE, "application/javascript; charset=utf-8"),
+            // Версия зашита в бинарь — content immutable до следующего
+            // outpost-server rebuild. 1 год — стандарт для versioned assets.
+            (CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+async fn serve_tailwind_js() -> Response {
+    static_js_response(STATIC_TAILWIND_JS)
+}
+
+async fn serve_htmx_js() -> Response {
+    static_js_response(STATIC_HTMX_JS)
 }
 
 async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
@@ -91,6 +132,10 @@ pub fn build_router(state: AppState) -> Router {
     let probes: Router = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        // v0.18: статика для admin Web UI (см. STATIC_TAILWIND_JS doc).
+        // Эти route'ы без State — статика без БД, по этому добавлены до .with_state().
+        .route("/static/tailwind.js", get(serve_tailwind_js))
+        .route("/static/htmx.min.js", get(serve_htmx_js))
         .with_state(state.clone());
 
     probes
@@ -222,6 +267,60 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn static_tailwind_js_served_with_correct_content_type() {
+        // v0.18: embedded admin UI assets — критично, потому что в base.html
+        // эти URLs стоят как `<script src=...>` без async/defer. Если route
+        // развалится — admin UI зависнет на белом экране (как было до v0.18).
+        let response = app()
+            .await
+            .oneshot(
+                Request::builder()
+                    .uri("/static/tailwind.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let ct = response
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(ct.starts_with("application/javascript"), "content-type was {ct}");
+        let cache = response
+            .headers()
+            .get("cache-control")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(cache.contains("immutable"), "cache-control was {cache}");
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        // Tailwind JIT-runtime от cdn.tailwindcss.com — несколько сотен KB.
+        // 200 KB — нижняя граница sanity-check'а на случай если файл побит.
+        assert!(bytes.len() > 200_000, "tailwind.js слишком маленький: {} байт", bytes.len());
+    }
+
+    #[tokio::test]
+    async fn static_htmx_js_served() {
+        let response = app()
+            .await
+            .oneshot(
+                Request::builder()
+                    .uri("/static/htmx.min.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        // htmx 2.0.x minified — около 50 KB.
+        assert!(bytes.len() > 30_000, "htmx.min.js слишком маленький: {} байт", bytes.len());
     }
 
     #[tokio::test]
