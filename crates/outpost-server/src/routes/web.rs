@@ -216,6 +216,23 @@ impl WebUser {
     }
 }
 
+/// v0.18.1: paths exempt from the `must_change_password` redirect.
+///
+/// A user with `must_change_password = 1` is herded to `/me/password`
+/// from every other page. These routes are the exceptions:
+///
+/// - `/me/password` — destination itself; redirecting it would loop.
+/// - `/logout` — let them sign out without forcing a change first.
+/// - `/static/*` — admin Web UI CSS/JS bundles (см. embedded assets в `app.rs`).
+///
+/// `/healthz`, `/readyz`, `/login`, and everything under `/api/` aren't
+/// in the picture: they don't run through the `WebUser` extractor at all.
+fn is_password_change_exempt_path(path: &str) -> bool {
+    path.starts_with("/me/password")
+        || path == "/logout"
+        || path.starts_with("/static/")
+}
+
 impl FromRequestParts<AppState> for WebUser {
     type Rejection = Redirect;
 
@@ -230,13 +247,26 @@ impl FromRequestParts<AppState> for WebUser {
         if s.kind != KIND_USER {
             return Err(Redirect::to("/login"));
         }
-        let active: Option<i64> = sqlx::query_scalar("SELECT is_active FROM users WHERE id = ?")
-            .bind(s.subject_id)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|_| Redirect::to("/login"))?;
-        if active != Some(1) {
+        let user_row: Option<(i64, i64)> = sqlx::query_as(
+            "SELECT is_active, COALESCE(must_change_password, 0) FROM users WHERE id = ?",
+        )
+        .bind(s.subject_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|_| Redirect::to("/login"))?;
+        let Some((active, must_change)) = user_row else {
             return Err(Redirect::to("/login"));
+        };
+        if active != 1 {
+            return Err(Redirect::to("/login"));
+        }
+
+        // v0.18.1: enforce password change for users who haven't rotated their
+        // bootstrap / admin-reset password yet. The check happens BEFORE the
+        // extractor returns Ok(WebUser) so handlers don't see authenticated
+        // sessions until they've completed the rotation.
+        if must_change != 0 && !is_password_change_exempt_path(parts.uri.path()) {
+            return Err(Redirect::to("/me/password"));
         }
 
         let is_super_admin: bool = sqlx::query_scalar::<_, i64>(
@@ -4737,6 +4767,12 @@ struct TelemetryOverviewTemplate {
     top_devices: Vec<TopDeviceRow>,
     recent_errors: Vec<RecentErrorRow>,
     top_metrics: Vec<TopMetricRow>,
+    /// v0.18.1: внешний URL Grafana (если admin Web UI и Grafana живут
+    /// на разных hostname'ах — например admin на public TLS, Grafana на
+    /// tailscale-only FQDN). Берётся из `settings.server.grafana_base_url`;
+    /// если ключ пустой/отсутствует, шаблон fallback'ится на относительный
+    /// `/grafana/` (backwards compat).
+    grafana_url: String,
 }
 
 struct TopDeviceRow {
@@ -4911,6 +4947,18 @@ async fn telemetry_overview(
         })
         .collect();
 
+    // v0.18.1: pull external Grafana URL from settings; relative fallback.
+    let grafana_url: String = sqlx::query_scalar(
+        "SELECT json_extract(value_json, '$') FROM settings WHERE key = 'server.grafana_base_url'",
+    )
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten()
+    .flatten()
+    .filter(|s: &String| !s.is_empty())
+    .unwrap_or_else(|| "/grafana/".to_string());
+
     Ok(render(TelemetryOverviewTemplate {
         user_login: user.login,
         active_devices,
@@ -4922,6 +4970,7 @@ async fn telemetry_overview(
         top_devices,
         recent_errors,
         top_metrics,
+        grafana_url,
     }))
 }
 
