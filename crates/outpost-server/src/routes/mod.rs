@@ -12,6 +12,7 @@ pub mod distribute;
 pub mod enrollment;
 pub mod files;
 pub mod groups;
+pub mod internal;
 pub mod otel;
 pub mod prom;
 pub mod push;
@@ -40,6 +41,8 @@ pub fn api_v1(state: AppState) -> Router {
         .merge(enrollment::router())
         .merge(otel::router())
         .merge(prom::router())
+        // v0.18.2: nginx auth_request endpoint (Grafana SSO via MDM cookie).
+        .merge(internal::router())
         .merge(web::router())
         .with_state(state)
 }
