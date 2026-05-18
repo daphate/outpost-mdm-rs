@@ -20,7 +20,7 @@
 //!
 //! ```ignore
 //! let presigner = CloudRuPresigner::new(tenant_id, key_id, secret);
-//! let url = presigner.presigned_get_url("apks/latest/app-debug.apk", 604_800);
+//! let url = presigner.presigned_get_url("apks/outpost-latest-debug.apk", 604_800);
 //! // url валиден 7 дней
 //! ```
 //!
@@ -95,6 +95,13 @@ impl CloudRuPresigner {
         self.host = host.into();
         self
     }
+
+    /// Read-only accessors. Used by /api/v1/enroll handler чтобы прокинуть
+    /// те же creds в device-side ModelPreferences через MDM override flow
+    /// (MDM-DEPLOY-CONTRACT §1.5). НЕ логировать — это secrets.
+    pub fn tenant_id(&self) -> &str { &self.tenant_id }
+    pub fn key_id(&self) -> &str { &self.key_id }
+    pub fn secret(&self) -> &str { &self.secret }
 
     /// Сгенерировать presigned GET URL для `key` (e.g. `apks/latest/app-debug.apk`).
     /// `expires_in_seconds` должен быть в `[1, 604800]`.

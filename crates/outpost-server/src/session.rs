@@ -171,6 +171,49 @@ pub async fn verify(token: &str, db: &SqlitePool) -> Result<Session, SessionErro
     session.ok_or(SessionError::Invalid)
 }
 
+/// v0.17 sliding refresh: extend the active session expiry for a subject
+/// (kind+subject_id) up to `full_ttl_secs` from now, but only if the remaining
+/// lifetime is less than `threshold_pct%` of full TTL.
+///
+/// Returns `Ok(true)` if any row was updated.
+///
+/// **Purpose: keep month-offline devices working without re-enroll.** While a
+/// device is *online* (each /sync call hits this code path), its session
+/// effectively never expires — bumped each time remaining < threshold%. Once
+/// the device stays offline longer than `full_ttl_secs` (default 90 days)
+/// without a single sync, the session lapses and a full re-enroll cycle
+/// (admin generates new payload + device scans QR) is required.
+///
+/// **Safety:** `WHERE revoked_at IS NULL AND expires_at > now()` guarantees
+/// we never resurrect revoked or already-expired sessions. If admin called
+/// `revoke-enrollment` or `DELETE /devices/{id}`, refresh is a no-op.
+pub async fn refresh_if_aging_for_subject(
+    db: &SqlitePool,
+    kind: &str,
+    subject_id: i64,
+    full_ttl_secs: i64,
+    threshold_pct: i64,
+) -> Result<bool, sqlx::Error> {
+    let aging_seconds = full_ttl_secs * threshold_pct / 100;
+    let modifier_now = format!("+{full_ttl_secs} seconds");
+    let modifier_aging = format!("+{aging_seconds} seconds");
+    let res = sqlx::query(
+        "UPDATE sessions \
+         SET expires_at = datetime('now', ?) \
+         WHERE kind = ? AND subject_id = ? \
+           AND revoked_at IS NULL \
+           AND expires_at > datetime('now') \
+           AND expires_at < datetime('now', ?)",
+    )
+    .bind(&modifier_now)
+    .bind(kind)
+    .bind(subject_id)
+    .bind(&modifier_aging)
+    .execute(db)
+    .await?;
+    Ok(res.rows_affected() > 0)
+}
+
 /// Revoke a session by its bearer token (sets `revoked_at` to now).
 /// Idempotent — revoking an already-revoked session is a no-op.
 pub async fn revoke(token: &str, db: &SqlitePool) -> Result<bool, sqlx::Error> {
@@ -336,5 +379,95 @@ mod tests {
         .unwrap();
         let deleted = cleanup(&pool, 30).await.unwrap();
         assert_eq!(deleted, 1);
+    }
+
+    #[tokio::test]
+    async fn refresh_aging_session_extends_expiry() {
+        let pool = db::open_pool(":memory:").await.unwrap();
+        // Создаём session со сроком всего 10 секунд при TTL 90 дней → aging
+        // (remaining 10s << 50% от 90 дней).
+        let _ = create_device_session(&pool, 7, 1, "DEV-007", 10)
+            .await
+            .unwrap();
+        let updated = refresh_if_aging_for_subject(
+            &pool,
+            KIND_DEVICE,
+            7,
+            /* full_ttl */ 90 * 24 * 3600,
+            /* threshold_pct */ 50,
+        )
+        .await
+        .unwrap();
+        assert!(updated, "aging session must be refreshed");
+        // После refresh — expires_at в far-future (90 дней).
+        let (remaining,): (i64,) = sqlx::query_as(
+            "SELECT CAST((julianday(expires_at) - julianday('now')) * 86400 AS INTEGER) \
+             FROM sessions WHERE kind = 'device' AND subject_id = 7",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        // ≥ 89 дней (даём 1 день запаса на test latency).
+        assert!(
+            remaining > 89 * 24 * 3600,
+            "expected ~90 days remaining, got {remaining} seconds"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_fresh_session_is_noop() {
+        let pool = db::open_pool(":memory:").await.unwrap();
+        // Свежая session — full TTL, remaining 100% → выше threshold → no-op.
+        let _ = create_device_session(&pool, 8, 1, "DEV-008", 90 * 24 * 3600)
+            .await
+            .unwrap();
+        let updated = refresh_if_aging_for_subject(
+            &pool,
+            KIND_DEVICE,
+            8,
+            90 * 24 * 3600,
+            50,
+        )
+        .await
+        .unwrap();
+        assert!(!updated, "fresh session must NOT be refreshed");
+    }
+
+    #[tokio::test]
+    async fn refresh_revoked_session_is_noop() {
+        let pool = db::open_pool(":memory:").await.unwrap();
+        let token = create_device_session(&pool, 9, 1, "DEV-009", 10)
+            .await
+            .unwrap();
+        revoke(&token, &pool).await.unwrap();
+        let updated = refresh_if_aging_for_subject(
+            &pool,
+            KIND_DEVICE,
+            9,
+            90 * 24 * 3600,
+            50,
+        )
+        .await
+        .unwrap();
+        assert!(!updated, "revoked session must NEVER be resurrected");
+    }
+
+    #[tokio::test]
+    async fn refresh_expired_session_is_noop() {
+        let pool = db::open_pool(":memory:").await.unwrap();
+        // -1 second TTL → already expired.
+        let _ = create_device_session(&pool, 10, 1, "DEV-010", -1)
+            .await
+            .unwrap();
+        let updated = refresh_if_aging_for_subject(
+            &pool,
+            KIND_DEVICE,
+            10,
+            90 * 24 * 3600,
+            50,
+        )
+        .await
+        .unwrap();
+        assert!(!updated, "expired session must NOT be refreshed — require full re-enroll");
     }
 }

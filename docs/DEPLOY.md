@@ -124,6 +124,20 @@ Creds должны быть **read-only**: scope только `GET object` / `HE
 
 Per-device персонализированные creds (план на будущее) — пока не реализованы. Сейчас один shared read-only ключ на весь fleet.
 
+**v0.17:** при `POST /api/v1/enroll` server **прокидывает** эти же creds в response — поле `cloudru_credentials: {tenant_id, key_id, secret}`. Android-клиент сохраняет их в `ModelPreferences.cloudruCreds` и подсовывает в `CloudRuSigner` через override-flow (см. `MDM-DEPLOY-CONTRACT §1.5`). Если CLOUDRU_* env'ы на сервере не заданы — поле отсутствует, клиент работает на встроенных в APK fallback-creds. Это безболезненный switch — оба варианта совместимы.
+
+### Long-polling `/api/v1/sync` (v0.17)
+
+Клиент (b39+ если AR Hud команда поддержит) может опционально передавать query-param `?wait_for_command_ms=30000` при `POST /api/v1/sync`. Если по результату обычного drain'а нет pending command'ов, server держит соединение до 30 секунд (либо до появления push'а), потом возвращает обычный response. Polling tick внутри loop'а — 2 секунды.
+
+Без параметра — старое immediate-return поведение (для legacy клиентов).
+
+`REQUEST_TIMEOUT_SECS` должен быть ≥ `LONG_POLL_MAX_MS / 1000` (по умолчанию 120 ≥ 30, OK). nginx `proxy_read_timeout` тоже должен быть достаточно большим — по умолчанию 60s, тоже OK.
+
+### Sliding session refresh (v0.17)
+
+При каждом `/api/v1/sync` server проверяет remaining TTL session'а; если < 50% (т.е. < 45 дней при 90-дневном TTL) — продлевает до полного 90-дневного TTL от now. Эффект: устройство online хотя бы раз в 45 дней → session **никогда** не истекает. Подробнее — `docs/OFFLINE-RESILIENCE.md`.
+
 ---
 
 ## systemd unit (`/etc/systemd/system/outpost-server.service`)

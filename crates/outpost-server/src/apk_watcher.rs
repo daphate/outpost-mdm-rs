@@ -1,10 +1,17 @@
 //! Outpost-Android APK upstream watcher.
 //!
 //! Poll-based discovery: каждые `apk.watch.interval_secs` (default 900s
-//! = 15 min) хитим upstream manifest (по умолчанию `apks/latest/version.txt`
-//! на публичном R2 mirror'е) и регистрируем новые сборки в
-//! `application_versions`. Без auto-push на устройства — admin сам решает
-//! когда катить.
+//! = 15 min) хитим upstream manifest (по умолчанию `apks/outpost-latest-debug.version.txt`
+//! на публичном R2 mirror'е — b44 schema 2026-05-18) и регистрируем
+//! новые сборки в `application_versions`. Без auto-push на устройства —
+//! admin сам решает когда катить.
+//!
+//! ## b44 schema fallback
+//!
+//! Если новая (b44) schema возвращает 404 на manifest URL — watcher
+//! автоматически делает второй запрос на legacy URL `apks/latest/version.txt`.
+//! Это позволяет переключить deployment'ы постепенно: AR Hud команда
+//! заливает APK по новой schema, старые ещё работают через legacy.
 //!
 //! ## Contract
 //!
@@ -54,10 +61,16 @@ const MIN_INTERVAL_SECS: u64 = 60;
 /// Hard ceiling — beyond this, watcher feels broken to operator.
 const MAX_INTERVAL_SECS: u64 = 3600;
 
-/// Default upstream URL. R2 anonymous mirror is the primary source; admin
-/// can override via `settings.apk.watch.url` to point at Cloud.ru / a
-/// custom CDN / `gh api repos/.../releases/latest` (with X-Github-Api-Version).
+/// Default upstream URL (b44 schema 2026-05-18). R2 anonymous mirror is the
+/// primary source; admin can override via `settings.apk.watch.url` to point
+/// at Cloud.ru / a custom CDN / `gh api repos/.../releases/latest`.
 pub const DEFAULT_UPSTREAM_URL: &str =
+    "https://pub-ef0219f0ecf84d0e8e44497adfe9ceb0.r2.dev/apks/outpost-latest-debug.version.txt";
+
+/// Legacy upstream URL fallback (pre-b44 schema). При 404 на новый URL
+/// watcher retry'ит на старый, чтобы оба deployment'а сосуществовали
+/// пока AR Hud команда переключается на новую schema.
+pub const LEGACY_UPSTREAM_URL: &str =
     "https://pub-ef0219f0ecf84d0e8e44497adfe9ceb0.r2.dev/apks/latest/version.txt";
 
 /// Default Android package name for the watched application.
@@ -130,25 +143,36 @@ async fn read_customer_id(pool: &SqlitePool) -> i64 {
 /// One pass of the watcher loop. Idempotent: re-running with the same upstream
 /// state is a no-op (dedupe by `application_id + sha256`).
 async fn tick_once(pool: &SqlitePool) -> Result<()> {
-    let url = read_upstream_url(pool).await;
+    let primary_url = read_upstream_url(pool).await;
     let pkg = read_package_name(pool).await;
     let customer_id = read_customer_id(pool).await;
-    tracing::debug!(url = %url, pkg = %pkg, "apk watcher: poll upstream");
+    tracing::debug!(url = %primary_url, pkg = %pkg, "apk watcher: poll upstream");
 
-    let body = reqwest::Client::builder()
+    let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
-        .context("build reqwest client")?
-        .get(&url)
-        .header("User-Agent", concat!("outpost-mdm-rs/", env!("CARGO_PKG_VERSION")))
-        .send()
-        .await
-        .with_context(|| format!("GET {url}"))?
-        .error_for_status()
-        .with_context(|| format!("non-2xx from {url}"))?
-        .text()
-        .await
-        .context("read body")?;
+        .context("build reqwest client")?;
+
+    // b44 schema: пробуем сначала новый URL, при 404 fallback на legacy.
+    // Это позволяет server'у и AR Hud-builder'у переключиться независимо.
+    let (effective_url, body) = match fetch_manifest(&client, &primary_url).await {
+        Ok(b) => (primary_url.clone(), b),
+        Err(e) if is_404(&e) && primary_url != LEGACY_UPSTREAM_URL => {
+            tracing::info!(
+                primary = %primary_url,
+                legacy = LEGACY_UPSTREAM_URL,
+                "apk watcher: primary URL 404, fallback to legacy schema"
+            );
+            let b = fetch_manifest(&client, LEGACY_UPSTREAM_URL)
+                .await
+                .with_context(|| format!(
+                    "both primary ({primary_url}) and legacy ({LEGACY_UPSTREAM_URL}) failed"
+                ))?;
+            (LEGACY_UPSTREAM_URL.to_string(), b)
+        }
+        Err(e) => return Err(e),
+    };
+    let url = effective_url;
 
     let manifest = parse_version_txt(&body)
         .with_context(|| format!("parse version.txt from {url}"))?;
@@ -223,6 +247,31 @@ async fn tick_once(pool: &SqlitePool) -> Result<()> {
     Ok(())
 }
 
+/// HTTP GET текстового manifest'а; возвращает body string или anyhow Err
+/// (с context'ом про status code). `is_404` ниже определяет worth fallback'а.
+async fn fetch_manifest(client: &reqwest::Client, url: &str) -> Result<String> {
+    let resp = client
+        .get(url)
+        .header("User-Agent", concat!("outpost-mdm-rs/", env!("CARGO_PKG_VERSION")))
+        .send()
+        .await
+        .with_context(|| format!("GET {url}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(anyhow!("non-2xx ({status}) from {url}"));
+    }
+    resp.text().await.context("read body")
+}
+
+/// Грубая проверка «это 404». reqwest::Error не даёт удобного API для status,
+/// поэтому ловим в строке anyhow context'а. Достаточно для control-flow:
+/// false-positive (другой 4xx) тоже триггернёт fallback — это safe,
+/// результат legacy URL либо успешен, либо тоже fail, итог тот же.
+fn is_404(err: &anyhow::Error) -> bool {
+    let s = format!("{err:#}");
+    s.contains("404") || s.contains("Not Found")
+}
+
 async fn upsert_application(pool: &SqlitePool, customer_id: i64, package: &str) -> Result<i64> {
     if let Some(id) = sqlx::query_scalar::<_, i64>(
         "SELECT id FROM applications WHERE customer_id = ? AND package_name = ?",
@@ -260,18 +309,28 @@ pub struct UpstreamManifest {
 
 impl UpstreamManifest {
     /// Derive the canonical APK download URL relative to the manifest URL.
-    /// Convention from `tools/upload_apk.py`: APK lives at
-    /// `apks/<tag>/app-debug.apk` next to `apks/latest/version.txt`.
+    ///
+    /// Поддерживает обе схемы конвенции `tools/upload_apk.py`:
+    ///   - **b44 (current)**: `apks/outpost-latest-debug.version.txt` →
+    ///     `apks/outpost-<tag>-debug.apk` (и pointer `apks/outpost-latest-debug.apk`
+    ///     указывает на latest).
+    ///   - **Legacy (pre-b44)**: `apks/latest/version.txt` →
+    ///     `apks/<tag>/app-debug.apk`.
+    ///
+    /// Detection — по NEEDLE-substring'у в manifest_url; первый match выигрывает.
     pub fn upstream_blob_url(&self, manifest_url: &str) -> String {
-        // Strip "/apks/latest/version.txt" → bucket root, then append
-        // "/apks/<tag>/app-debug.apk". If the manifest URL doesn't match
-        // the convention, just append next to it.
-        const NEEDLE: &str = "/apks/latest/version.txt";
-        if let Some(idx) = manifest_url.rfind(NEEDLE) {
+        const NEW_NEEDLE: &str = "/apks/outpost-latest-debug.version.txt";
+        const LEGACY_NEEDLE: &str = "/apks/latest/version.txt";
+
+        if let Some(idx) = manifest_url.rfind(NEW_NEEDLE) {
+            let base = &manifest_url[..idx];
+            return format!("{base}/apks/outpost-{tag}-debug.apk", base = base, tag = self.tag);
+        }
+        if let Some(idx) = manifest_url.rfind(LEGACY_NEEDLE) {
             let base = &manifest_url[..idx];
             return format!("{base}/apks/{tag}/app-debug.apk", base = base, tag = self.tag);
         }
-        // Best-effort fallback: same dir as manifest.
+        // Best-effort fallback: same dir as manifest, tag suffix.
         let dir = manifest_url.rsplit_once('/').map(|(d, _)| d).unwrap_or(manifest_url);
         format!("{dir}/{tag}-app-debug.apk", dir = dir, tag = self.tag)
     }
@@ -372,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn upstream_blob_url_derived() {
+    fn upstream_blob_url_derived_legacy_schema() {
         let m = UpstreamManifest {
             tag: "rc42-b33".into(),
             sha256: "x".into(),
@@ -385,5 +444,48 @@ mod tests {
             m.upstream_blob_url(url),
             "https://pub-ef0219.r2.dev/apks/rc42-b33/app-debug.apk"
         );
+    }
+
+    #[test]
+    fn upstream_blob_url_derived_new_b44_schema() {
+        let m = UpstreamManifest {
+            tag: "rc42-b44".into(),
+            sha256: "x".into(),
+            size_bytes: 0,
+            version_code: None,
+            version_name: None,
+        };
+        let url = "https://pub-ef0219.r2.dev/apks/outpost-latest-debug.version.txt";
+        assert_eq!(
+            m.upstream_blob_url(url),
+            "https://pub-ef0219.r2.dev/apks/outpost-rc42-b44-debug.apk"
+        );
+    }
+
+    #[test]
+    fn upstream_blob_url_fallback_for_unrecognized_path() {
+        let m = UpstreamManifest {
+            tag: "rc42-b44".into(),
+            sha256: "x".into(),
+            size_bytes: 0,
+            version_code: None,
+            version_name: None,
+        };
+        // Если URL не соответствует ни одной из двух конвенций — берём same-dir + tag-suffix.
+        let url = "https://custom.example.com/build-channel/manifest.txt";
+        assert_eq!(
+            m.upstream_blob_url(url),
+            "https://custom.example.com/build-channel/rc42-b44-app-debug.apk"
+        );
+    }
+
+    #[test]
+    fn is_404_detects_status() {
+        let e = anyhow!("non-2xx (404 Not Found) from https://example/x");
+        assert!(is_404(&e));
+        let e2 = anyhow!("non-2xx (503 Service Unavailable) from https://x");
+        assert!(!is_404(&e2));
+        let e3 = anyhow!("connection refused");
+        assert!(!is_404(&e3));
     }
 }

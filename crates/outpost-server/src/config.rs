@@ -34,7 +34,9 @@ pub struct Config {
     pub cloudru_secret: Option<String>,
     /// Cloud.ru bucket с APK / моделями. Default `outpost`.
     pub cloudru_bucket: String,
-    /// Object key для latest APK pointer. Default `apks/latest/app-debug.apk`.
+    /// Object key для latest APK pointer. Default `apks/outpost-latest-debug.apk`
+    /// (b44 schema, 2026-05-18). Legacy key `apks/latest/app-debug.apk` всё ещё
+    /// supported при ручном override через env CLOUDRU_APK_KEY.
     pub cloudru_apk_key: String,
 }
 
@@ -97,7 +99,7 @@ impl Config {
         let cloudru_bucket =
             env::var("CLOUDRU_BUCKET").unwrap_or_else(|_| "outpost".to_string());
         let cloudru_apk_key = env::var("CLOUDRU_APK_KEY")
-            .unwrap_or_else(|_| "apks/latest/app-debug.apk".to_string());
+            .unwrap_or_else(|_| "apks/outpost-latest-debug.apk".to_string());
 
         Ok(Self {
             bind_addr: env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string()),
@@ -135,7 +137,7 @@ impl Config {
             cloudru_key_id: None,
             cloudru_secret: None,
             cloudru_bucket: "outpost".to_string(),
-            cloudru_apk_key: "apks/latest/app-debug.apk".to_string(),
+            cloudru_apk_key: "apks/outpost-latest-debug.apk".to_string(),
         }
     }
 }

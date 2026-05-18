@@ -16,14 +16,28 @@ use crate::session;
 use crate::state::AppState;
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     routing::post,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 /// Long-lived device token TTL (90 days). Devices re-enroll if it expires.
 const DEVICE_TOKEN_TTL_SECS: i64 = 60 * 60 * 24 * 90;
+
+/// Long-poll hard upper-bound (v0.17 MDM-DEVICE-CONTROL-CONTRACT §1.5).
+/// Если client передаёт `wait_for_command_ms` больше — clamping. 30 секунд —
+/// разумный компромисс: достаточно для near-real-time push (admin тыкает
+/// «Применить», устройство получает за ≤30s), но не настолько долго чтобы
+/// держать TCP-соединение через NAT-таймауты (типично 60s+ NAT TTL).
+pub const LONG_POLL_MAX_MS: u64 = 30_000;
+
+/// Опрос pending-команд внутри long-poll loop'а. 2 секунды — достаточно
+/// отзывчиво (worst-case +2s после admin POST'а) и не нагружает SQLite
+/// сильнее чем background scheduler. Когда захотим sub-секунду — мигрируем
+/// на `tokio::sync::Notify` per-device без breaking-changes для wire.
+const LONG_POLL_TICK_MS: u64 = 2_000;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -121,6 +135,23 @@ pub struct EnrollResponse {
     /// клиент не прислал pubkey (legacy) или прислал invalid bytes.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub device_pubkey_acknowledged: bool,
+    /// v0.17 (MDM-DEPLOY-CONTRACT §1.5): опциональный read-only Cloud.ru
+    /// service-account, который клиент сохраняет в `ModelPreferences.cloudruCreds`
+    /// и применяет через `CloudRuSigner.setOverride()`. Server включает в
+    /// response только если CLOUDRU_TENANT_ID/KEY_ID/SECRET env'ы заданы.
+    /// Иначе поле отсутствует, и клиент работает на встроенном в APK fallback'е.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloudru_credentials: Option<CloudruCredentials>,
+}
+
+/// v0.17 wire-shape для cloudru creds в enroll response. Snake_case на
+/// проводе соответствует существующему контракту `ModelPreferences.setCloudruCreds(
+/// tenantId, keyId, secret)` в Android-клиенте (`CloudRuSigner.kt:50-55`).
+#[derive(Debug, Serialize)]
+pub struct CloudruCredentials {
+    pub tenant_id: String,
+    pub key_id: String,
+    pub secret: String,
 }
 
 async fn enroll(
@@ -186,12 +217,25 @@ async fn enroll(
         false
     };
 
+    // v0.17: пробрасываем server-side Cloud.ru read-only creds в response,
+    // если они сконфигурированы. Клиент сохранит их через MDM override flow
+    // и будет использовать для скачивания моделей/документов через signer.
+    // Per-device персонализированные creds — следующая итерация (см. roadmap).
+    let cloudru_credentials = state.cloudru_signer.as_ref().map(|signer| {
+        CloudruCredentials {
+            tenant_id: signer.tenant_id().to_string(),
+            key_id: signer.key_id().to_string(),
+            secret: signer.secret().to_string(),
+        }
+    });
+
     Ok(Json(EnrollResponse {
         device_token: token,
         expires_in: DEVICE_TOKEN_TTL_SECS,
         device_id: req.device_id,
         customer_id,
         device_pubkey_acknowledged: pubkey_acknowledged,
+        cloudru_credentials,
     }))
 }
 
@@ -312,6 +356,25 @@ struct SyncCommandRow {
     payload_json: String,
 }
 
+/// Прочитать pending push-команды для конкретного device, не меняя их state.
+/// Reused в обычном drain'е и в long-poll tick'е (без UPDATE — обновление
+/// `status='sent'` происходит **один раз** после того как long-poll либо
+/// собрал команды, либо deadline истёк).
+async fn fetch_pending_for_device(
+    pool: &sqlx::SqlitePool,
+    device_id: i64,
+) -> Result<Vec<SyncCommandRow>, ApiError> {
+    let rows = sqlx::query_as::<_, SyncCommandRow>(
+        "SELECT id, command, payload_json FROM push_messages \
+         WHERE device_id = ? AND status = 'pending' \
+         ORDER BY id ASC LIMIT 50",
+    )
+    .bind(device_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 /// v0.12 (Tier-2): описание APK-обновления, которое клиент должен скачать
 /// и установить через `PackageInstaller`. Включается в response **только**
 /// если выбранный target.version_code > device.app_version_code. Если
@@ -341,11 +404,44 @@ pub struct SyncResponse {
     pub update_available: Option<SyncUpdateAvailable>,
 }
 
+/// Query-string параметры для `/api/v1/sync`. v0.17: добавлен
+/// `wait_for_command_ms` для long-polling режима. Клиент опционально
+/// передаёт `?wait_for_command_ms=30000` — если по результату обычного
+/// drain'а нет pending commands, server держит соединение до этого
+/// timeout'а либо до появления push'а. Default = 0 (старое immediate-return
+/// поведение для legacy клиентов).
+#[derive(Debug, Deserialize, Default)]
+pub struct SyncQuery {
+    #[serde(default)]
+    pub wait_for_command_ms: Option<u64>,
+}
+
+/// Sliding refresh threshold: bump expiry если remaining < 50% of full TTL.
+/// При 90-дневном TTL это означает что каждый /sync который происходит во
+/// второй половине лimerock'и сессии продлевает её на ещё 90 дней.
+const SESSION_REFRESH_THRESHOLD_PCT: i64 = 50;
+
 async fn sync(
     device: AuthDevice,
     State(state): State<AppState>,
+    Query(q): Query<SyncQuery>,
     Json(req): Json<SyncRequest>,
 ) -> Result<Json<SyncResponse>, ApiError> {
+    // v0.17 sliding refresh: продлеваем активную device-session чтобы
+    // месяц+ offline scenarios «just work». См. KDoc refresh_if_aging_for_subject.
+    // Result игнорируем — false (нет refresh'а) это норма для свежих сессий.
+    if let Err(e) = session::refresh_if_aging_for_subject(
+        &state.db,
+        crate::session::KIND_DEVICE,
+        device.id,
+        DEVICE_TOKEN_TTL_SECS,
+        SESSION_REFRESH_THRESHOLD_PCT,
+    )
+    .await
+    {
+        tracing::warn!(device_id = device.id, error = %e, "session sliding refresh failed (non-fatal)");
+    }
+
     sqlx::query(
         "UPDATE devices SET \
             battery_pct      = COALESCE(?, battery_pct), \
@@ -441,15 +537,34 @@ async fn sync(
         .await?;
     }
 
-    // Drain pending commands; mark them sent atomically.
-    let raw_commands: Vec<SyncCommandRow> = sqlx::query_as::<_, SyncCommandRow>(
-        "SELECT id, command, payload_json FROM push_messages \
-         WHERE device_id = ? AND status = 'pending' \
-         ORDER BY id ASC LIMIT 50",
-    )
-    .bind(device.id)
-    .fetch_all(&state.db)
-    .await?;
+    // Drain pending commands.
+    let mut raw_commands: Vec<SyncCommandRow> =
+        fetch_pending_for_device(&state.db, device.id).await?;
+
+    // v0.17 long-polling: если client попросил подождать и pending пуст,
+    // poll'им каждые 2 сек до wait_ms (cap 30s) либо до появления push'а.
+    // Это даёт sub-30s latency для admin push'ей без перехода на FCM/WebSocket.
+    let wait_ms = q
+        .wait_for_command_ms
+        .unwrap_or(0)
+        .min(LONG_POLL_MAX_MS);
+    if raw_commands.is_empty() && wait_ms > 0 {
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(wait_ms);
+        loop {
+            // Sleep либо до tick, либо до deadline — что наступит раньше.
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let remaining = deadline.duration_since(now);
+            let tick = Duration::from_millis(LONG_POLL_TICK_MS).min(remaining);
+            tokio::time::sleep(tick).await;
+            raw_commands = fetch_pending_for_device(&state.db, device.id).await?;
+            if !raw_commands.is_empty() {
+                break;
+            }
+        }
+    }
 
     for c in &raw_commands {
         sqlx::query(
@@ -593,4 +708,51 @@ async fn pick_target_version(
     .fetch_optional(pool)
     .await?;
     Ok(canary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enroll_response_omits_cloudru_when_disabled() {
+        let resp = EnrollResponse {
+            device_token: "TKN".into(),
+            expires_in: DEVICE_TOKEN_TTL_SECS,
+            device_id: 1,
+            customer_id: 1,
+            device_pubkey_acknowledged: false,
+            cloudru_credentials: None,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        // skip_serializing_if = Option::is_none → ключа в JSON быть не должно.
+        assert!(
+            !json.contains("cloudru_credentials"),
+            "cloudru_credentials must be omitted when None, got: {json}"
+        );
+        // device_pubkey_acknowledged тоже skip'нется так как Not::not.
+        assert!(!json.contains("device_pubkey_acknowledged"), "got: {json}");
+    }
+
+    #[test]
+    fn enroll_response_includes_cloudru_when_enabled() {
+        let resp = EnrollResponse {
+            device_token: "TKN".into(),
+            expires_in: DEVICE_TOKEN_TTL_SECS,
+            device_id: 1,
+            customer_id: 1,
+            device_pubkey_acknowledged: true,
+            cloudru_credentials: Some(CloudruCredentials {
+                tenant_id: "tenant-uuid".into(),
+                key_id: "akid".into(),
+                secret: "secret-bytes".into(),
+            }),
+        };
+        let v: serde_json::Value = serde_json::to_value(&resp).unwrap();
+        let creds = &v["cloudru_credentials"];
+        assert_eq!(creds["tenant_id"], "tenant-uuid");
+        assert_eq!(creds["key_id"], "akid");
+        assert_eq!(creds["secret"], "secret-bytes");
+        assert_eq!(v["device_pubkey_acknowledged"], true);
+    }
 }
