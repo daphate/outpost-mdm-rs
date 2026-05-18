@@ -5138,14 +5138,19 @@ async fn device_telemetry_view(
     .fetch_all(&state.db)
     .await
     .unwrap_or_default();
+    // v0.18.3: per CLIENT-TELEMETRY-CONTRACT.md client now sends full prompts
+    // and full LLM responses in `body` (beta mode). Cap per record at 8 KB
+    // to keep the rendered HTML page bounded — anything longer is genuinely
+    // exceptional and gets the trailing "…" treatment. `attrs_json` is
+    // typically <500 байт, отдаём целиком чтобы admin видел все labels.
     let recent_logs: Vec<DeviceLogRow> = l_raw
         .into_iter()
         .map(|r| DeviceLogRow {
             ts: fmt_ts(&r.ts),
             severity_number: r.severity_number,
             severity_text: r.severity_text,
-            body: trim_to(&r.body, 200),
-            attrs_preview: trim_to(&r.attrs_json, 80),
+            body: trim_to(&r.body, 8192),
+            attrs_preview: r.attrs_json,
         })
         .collect();
 

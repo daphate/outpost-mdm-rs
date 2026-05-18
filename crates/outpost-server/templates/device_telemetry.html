@@ -132,8 +132,28 @@
               <span class="inline-block px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">{{ l.severity_text }}</span>
             {% endif %}
           </td>
-          <td class="px-4 py-2 text-xs">{{ l.body }}</td>
-          <td class="px-4 py-2 text-xs text-slate-500 font-mono break-all">{{ l.attrs_preview }}</td>
+          <td class="px-4 py-2 text-xs align-top max-w-2xl">
+            {% if l.body.len() > 200 %}
+            <details>
+              <summary class="cursor-pointer text-slate-700 hover:text-slate-900">
+                {{ l.body[..200] }}<span class="text-slate-400">… ({{ l.body.len() }} символов)</span>
+              </summary>
+              <pre class="mt-2 whitespace-pre-wrap break-words bg-slate-50 p-2 rounded text-slate-700 text-xs">{{ l.body }}</pre>
+            </details>
+            {% else %}
+            <span class="whitespace-pre-wrap break-words">{{ l.body }}</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-2 text-xs text-slate-500 font-mono align-top max-w-md">
+            {% if l.attrs_preview.len() > 100 %}
+            <details>
+              <summary class="cursor-pointer break-all">{{ l.attrs_preview[..100] }}<span class="text-slate-400">…</span></summary>
+              <pre class="mt-2 whitespace-pre-wrap break-words bg-slate-50 p-2 rounded text-xs">{{ l.attrs_preview }}</pre>
+            </details>
+            {% else %}
+            <span class="break-all">{{ l.attrs_preview }}</span>
+            {% endif %}
+          </td>
         </tr>
         {% endfor %}
         {% if recent_logs.is_empty() %}
