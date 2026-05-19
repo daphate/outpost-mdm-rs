@@ -34,7 +34,7 @@
     {% endif %}
   </form>
 
-  <form method="POST" action="/groups/{{ group_id }}/delete" onsubmit="return confirm('Удалить группу {{ name }}? Устройства этой группы потеряют назначение, сами устройства сохранятся.')" class="bg-white rounded-lg shadow-sm p-4 flex items-center justify-between">
+  <form method="POST" action="/groups/{{ group_id }}/delete" onsubmit="return confirm('Удалить группу {{ name }}? Устройства этой группы потеряют назначение, сами устройства сохранятся.')" class="bg-white rounded-lg shadow-sm p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
     <div>
       <p class="font-medium text-red-800">Опасная зона</p>
       <p class="text-sm text-slate-500">{{ member_count }} устройств(а) сейчас в этой группе.</p>

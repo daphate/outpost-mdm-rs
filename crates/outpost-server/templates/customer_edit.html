@@ -46,7 +46,7 @@
     {% endif %}
   </form>
 
-  <form method="POST" action="/customers/{{ customer_id }}/switch" class="bg-white rounded-lg shadow-sm p-4 flex items-center justify-between">
+  <form method="POST" action="/customers/{{ customer_id }}/switch" class="bg-white rounded-lg shadow-sm p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
     <div>
       <p class="font-medium">Переключиться на этот тенант</p>
       <p class="text-sm text-slate-500">Ваша сессия будет привязана к тенанту <code class="font-mono">{{ name }}</code> до конца сессии браузера. Чтобы вернуться — зайдите на /customers снова.</p>

@@ -36,7 +36,7 @@
   </div>
 
   <section class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-    <div class="bg-white rounded-lg shadow-sm overflow-hidden">
+    <div class="bg-white rounded-lg shadow-sm overflow-x-auto">
       <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
         <h3 class="font-medium">Последние сэмплы метрик</h3>
         <span class="text-xs text-slate-500">{{ latest_metrics.len() }} имён метрик</span>
@@ -66,7 +66,7 @@
       </table>
     </div>
 
-    <div class="bg-white rounded-lg shadow-sm overflow-hidden">
+    <div class="bg-white rounded-lg shadow-sm overflow-x-auto">
       <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
         <h3 class="font-medium">Последние span'ы</h3>
         <span class="text-xs text-slate-500">последние 20</span>
@@ -105,7 +105,7 @@
     </div>
   </section>
 
-  <section class="bg-white rounded-lg shadow-sm overflow-hidden">
+  <section class="bg-white rounded-lg shadow-sm overflow-x-auto">
     <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
       <h3 class="font-medium">Последние события логов</h3>
       <a href="/devices/{{ device_id }}/logs" class="text-xs text-blue-600 hover:underline">полный поток логов →</a>

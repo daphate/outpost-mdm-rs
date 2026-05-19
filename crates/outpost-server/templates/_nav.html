@@ -1,7 +1,19 @@
+{# v0.18.17: адаптивная nav.
+   - Mobile (<md, <768px): hamburger через native <details>, ссылки stacked
+     в одну колонку. Без JavaScript — <details>/<summary> работает в каждом
+     браузере, включая старые WebView.
+   - Desktop (md+, 768px+): горизонтальный bar с wrap'ом на ширине tablet
+     portrait. На большом экране всё в одной строке.
+
+   adminbar (логин + выйти) — всегда compact справа, на mobile тоже видна.
+#}
 <nav class="bg-white border-b border-slate-200">
-  <div class="max-w-7xl mx-auto px-4 py-3 flex justify-between items-center">
-    <div class="flex items-center space-x-5 text-sm">
-      <span class="text-lg font-semibold">Outpost MDM</span>
+  <div class="max-w-7xl mx-auto px-3 sm:px-4 py-2 sm:py-3 flex items-center justify-between gap-3">
+    <span class="text-base sm:text-lg font-semibold whitespace-nowrap">Outpost MDM</span>
+
+    {# Desktop nav — скрыта на mobile (<md). flex-wrap позволяет
+       ссылкам уходить в 2 ряда на узких planhsets. #}
+    <div class="hidden md:flex flex-wrap items-center gap-x-4 gap-y-1 text-sm flex-1 justify-center">
       <a href="/dashboard" class="text-slate-600 hover:text-slate-900">Сводка</a>
       <a href="/devices" class="text-slate-600 hover:text-slate-900">Устройства</a>
       <a href="/groups" class="text-slate-600 hover:text-slate-900">Группы</a>
@@ -15,9 +27,32 @@
       <a href="/customers" class="text-slate-600 hover:text-slate-900" title="Только для super-admin">Тенанты</a>
       <a href="/settings" class="text-slate-600 hover:text-slate-900">Настройки</a>
     </div>
-    <div class="flex items-center space-x-4 text-sm">
-      <a href="/profile" class="text-slate-500 hover:text-slate-900">{{ user_login }}</a>
+
+    {# Adminbar — всегда compact справа. #}
+    <div class="flex items-center gap-2 sm:gap-4 text-sm whitespace-nowrap">
+      <a href="/profile" class="text-slate-500 hover:text-slate-900 max-w-[8rem] truncate inline-block align-middle">{{ user_login }}</a>
       <a href="/logout" class="text-red-600 hover:text-red-700">Выйти</a>
     </div>
   </div>
+
+  {# Mobile hamburger — только <md. native <details> = открывается тапом,
+     закрывается тапом, без JS. summary[open] crashes on Safari old →
+     избегаем атрибута, используем родной toggle. #}
+  <details class="md:hidden border-t border-slate-200">
+    <summary class="cursor-pointer px-3 py-2 text-sm text-slate-700 select-none">☰ Меню</summary>
+    <div class="px-3 pb-3 flex flex-col gap-1 text-sm">
+      <a href="/dashboard" class="py-1.5 text-slate-600 hover:text-slate-900">Сводка</a>
+      <a href="/devices" class="py-1.5 text-slate-600 hover:text-slate-900">Устройства</a>
+      <a href="/groups" class="py-1.5 text-slate-600 hover:text-slate-900">Группы</a>
+      <a href="/applications" class="py-1.5 text-slate-600 hover:text-slate-900">Приложения</a>
+      <a href="/configurations" class="py-1.5 text-slate-600 hover:text-slate-900">Конфигурации</a>
+      <a href="/files" class="py-1.5 text-slate-600 hover:text-slate-900">Файлы</a>
+      <a href="/push" class="py-1.5 text-slate-600 hover:text-slate-900">Push</a>
+      <a href="/telemetry" class="py-1.5 text-slate-600 hover:text-slate-900">Телеметрия</a>
+      <a href="/users" class="py-1.5 text-slate-600 hover:text-slate-900">Пользователи</a>
+      <a href="/roles" class="py-1.5 text-slate-600 hover:text-slate-900">Роли</a>
+      <a href="/customers" class="py-1.5 text-slate-600 hover:text-slate-900">Тенанты</a>
+      <a href="/settings" class="py-1.5 text-slate-600 hover:text-slate-900">Настройки</a>
+    </div>
+  </details>
 </nav>

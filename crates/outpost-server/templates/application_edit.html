@@ -45,7 +45,7 @@
     {% endif %}
   </form>
 
-  <form method="POST" action="/applications/{{ app_id }}/delete" onsubmit="return confirm('Удалить приложение {{ package_name }} и ВСЕ его версии? Это необратимо.')" class="bg-white rounded-lg shadow-sm p-4 flex items-center justify-between">
+  <form method="POST" action="/applications/{{ app_id }}/delete" onsubmit="return confirm('Удалить приложение {{ package_name }} и ВСЕ его версии? Это необратимо.')" class="bg-white rounded-lg shadow-sm p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
     <div>
       <p class="font-medium text-red-800">Опасная зона</p>
       <p class="text-sm text-slate-500">Удалит все версии, но сохранит blob-файлы (восстановимы через /files).</p>

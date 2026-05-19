@@ -6,7 +6,7 @@
 {% include "_nav.html" %}
 
 <main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
-  <div class="flex items-center justify-between">
+  <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
     <h2 class="text-2xl font-bold">Push-команды</h2>
     <div class="text-sm text-slate-500 space-x-4">
       <span>В очереди: <strong class="text-amber-600">{{ pending }}</strong></span>
@@ -353,7 +353,7 @@
     </script>
   </details>
 
-  <div class="bg-white rounded-lg shadow-sm overflow-hidden">
+  <div class="bg-white rounded-lg shadow-sm overflow-x-auto">
     <table class="min-w-full divide-y divide-slate-200">
       <thead class="bg-slate-50">
         <tr class="text-xs uppercase tracking-wide text-slate-500 text-left">

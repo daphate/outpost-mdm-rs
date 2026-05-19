@@ -103,7 +103,7 @@
     {% endif %}
   </section>
 
-  <form method="POST" action="/configurations/{{ config_id }}/delete" onsubmit="return confirm('Удалить конфигурацию {{ name }}? Устройства, использующие её, потеряют конфигурацию.')" class="bg-white rounded-lg shadow-sm p-4 flex items-center justify-between">
+  <form method="POST" action="/configurations/{{ config_id }}/delete" onsubmit="return confirm('Удалить конфигурацию {{ name }}? Устройства, использующие её, потеряют конфигурацию.')" class="bg-white rounded-lg shadow-sm p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
     <div>
       <p class="font-medium text-red-800">Опасная зона</p>
       <p class="text-sm text-slate-500">Назначения приложений и ссылки устройств будут очищены.</p>

@@ -6,7 +6,7 @@
 {% include "_nav.html" %}
 
 <main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
-  <div class="flex items-center justify-between">
+  <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
     <h2 class="text-2xl font-bold">Роли и разрешения</h2>
     <span class="text-sm text-slate-500">{{ roles.len() }} ролей · {{ permissions.len() }} разрешений</span>
   </div>
@@ -15,7 +15,7 @@
     Встроенные роли в этом представлении доступны только для чтения. Для настройки разрешений измените миграции или создайте issue.
   </div>
 
-  <div class="bg-white rounded-lg shadow-sm overflow-hidden">
+  <div class="bg-white rounded-lg shadow-sm overflow-x-auto">
     <table class="min-w-full divide-y divide-slate-200">
       <thead class="bg-slate-50">
         <tr class="text-xs uppercase tracking-wide text-slate-500 text-left">
