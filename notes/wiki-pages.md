@@ -23,6 +23,7 @@
 | 49792577 | `.../v25-soldier-rollout` | [`docs/V25-SOLDIER-ROLLOUT.md`](../docs/V25-SOLDIER-ROLLOUT.md) | V25 Soldier rollout |
 | 49792580 | `.../changelog` | [`CHANGELOG.md`](../CHANGELOG.md) | Журнал изменений |
 | 49792840 | `.../library-archives` | [`docs/LIBRARY-ARCHIVES.md`](../docs/LIBRARY-ARCHIVES.md) | Library archives — server-side mirror |
+| 49793045 | `.../patterns-and-gotchas` | [`sophia-soul/insights/outpost-mdm-patterns.md`](https://github.com/daphate/sophia-soul/blob/main/insights/outpost-mdm-patterns.md) | Patterns & gotchas (15 уроков из v0.18.0–v0.18.14) |
 
 ## URLs для просмотра
 
