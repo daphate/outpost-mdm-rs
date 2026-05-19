@@ -571,7 +571,7 @@ fn strings_ru() -> &'static Strings {
         devices_serial_required: "Серийный номер обязателен",
         devices_duplicate: "Устройство с этим серийным номером уже существует",
 
-        device_edit_title: "Изменить устройство",
+        device_edit_title: "Настроить устройство",
         device_edit_back: "← к списку устройств",
         device_edit_configuration: "Конфигурация",
         device_edit_active: "Активность",
@@ -919,7 +919,7 @@ fn strings_en() -> &'static Strings {
         devices_serial_required: "Serial is required",
         devices_duplicate: "Device with this serial already exists",
 
-        device_edit_title: "Edit device",
+        device_edit_title: "Configure device",
         device_edit_back: "← back to devices",
         device_edit_configuration: "Configuration",
         device_edit_active: "Active",
