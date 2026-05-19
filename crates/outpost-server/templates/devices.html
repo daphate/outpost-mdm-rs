@@ -51,8 +51,12 @@
       <tbody class="divide-y divide-slate-100">
         {% for d in devices %}
         <tr class="hover:bg-slate-50">
-          <td class="px-4 py-3 font-mono text-sm">{{ d.serial }}</td>
-          <td class="px-4 py-3">{{ d.display_name }}</td>
+          <td class="px-4 py-3 font-mono text-sm">
+            <a href="/devices/{{ d.id }}/telemetry" class="text-blue-600 hover:text-blue-800 hover:underline">{{ d.serial }}</a>
+          </td>
+          <td class="px-4 py-3">
+            <a href="/devices/{{ d.id }}/telemetry" class="hover:underline">{{ d.display_name }}</a>
+          </td>
           <td class="px-4 py-3">
             {% if d.is_enrolled %}
               {% if d.is_online %}

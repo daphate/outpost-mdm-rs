@@ -9,34 +9,34 @@
   <h2 class="text-2xl font-bold">Сводка по парку</h2>
 
   <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-    <div class="bg-white p-5 rounded-lg shadow-sm">
+    <a href="/devices" class="block bg-white p-5 rounded-lg shadow-sm hover:shadow-md hover:bg-slate-50 transition">
       <div class="text-xs uppercase tracking-wide text-slate-500">Устройства</div>
       <div class="text-3xl font-bold mt-1">{{ stats.devices_total }}</div>
-    </div>
-    <div class="bg-white p-5 rounded-lg shadow-sm">
+    </a>
+    <a href="/devices" class="block bg-white p-5 rounded-lg shadow-sm hover:shadow-md hover:bg-slate-50 transition">
       <div class="text-xs uppercase tracking-wide text-slate-500">Онлайн</div>
       <div class="text-3xl font-bold mt-1 text-emerald-600">{{ stats.devices_online }}</div>
-    </div>
-    <div class="bg-white p-5 rounded-lg shadow-sm">
+    </a>
+    <a href="/devices" class="block bg-white p-5 rounded-lg shadow-sm hover:shadow-md hover:bg-slate-50 transition">
       <div class="text-xs uppercase tracking-wide text-slate-500">Зарегистрированы</div>
       <div class="text-3xl font-bold mt-1">{{ stats.devices_enrolled }}</div>
-    </div>
-    <div class="bg-white p-5 rounded-lg shadow-sm">
+    </a>
+    <a href="/applications" class="block bg-white p-5 rounded-lg shadow-sm hover:shadow-md hover:bg-slate-50 transition">
       <div class="text-xs uppercase tracking-wide text-slate-500">Приложения</div>
       <div class="text-3xl font-bold mt-1">{{ stats.applications_total }}</div>
-    </div>
-    <div class="bg-white p-5 rounded-lg shadow-sm">
+    </a>
+    <a href="/configurations" class="block bg-white p-5 rounded-lg shadow-sm hover:shadow-md hover:bg-slate-50 transition">
       <div class="text-xs uppercase tracking-wide text-slate-500">Конфигурации</div>
       <div class="text-3xl font-bold mt-1">{{ stats.configurations_total }}</div>
-    </div>
-    <div class="bg-white p-5 rounded-lg shadow-sm">
+    </a>
+    <a href="/push" class="block bg-white p-5 rounded-lg shadow-sm hover:shadow-md hover:bg-slate-50 transition">
       <div class="text-xs uppercase tracking-wide text-slate-500">Push ожидают</div>
       <div class="text-3xl font-bold mt-1 text-amber-600">{{ stats.push_pending }}</div>
-    </div>
-    <div class="bg-white p-5 rounded-lg shadow-sm">
+    </a>
+    <a href="/push" class="block bg-white p-5 rounded-lg shadow-sm hover:shadow-md hover:bg-slate-50 transition">
       <div class="text-xs uppercase tracking-wide text-slate-500">Push за 24 ч</div>
       <div class="text-3xl font-bold mt-1">{{ stats.push_sent_24h }}</div>
-    </div>
+    </a>
   </div>
 </main>
 {% endblock %}

@@ -57,13 +57,14 @@
         <tbody class="divide-y divide-slate-100">
           {% for d in top_devices %}
           <tr class="hover:bg-slate-50">
-            <td class="px-4 py-2 font-mono text-xs">{{ d.serial }}</td>
+            <td class="px-4 py-2 font-mono text-xs">
+              <a href="/devices/{{ d.id }}/telemetry" class="text-blue-600 hover:text-blue-800 hover:underline">{{ d.serial }}</a>
+            </td>
             <td class="px-4 py-2 text-sm">{{ d.logs }}</td>
             <td class="px-4 py-2 text-sm {% if d.errors > 0 %}text-red-700{% endif %}">{{ d.errors }}</td>
             <td class="px-4 py-2 text-sm text-slate-500">{{ d.last_seen }}</td>
             <td class="px-4 py-2 text-right text-sm">
-              <a href="/devices/{{ d.id }}/telemetry" class="text-blue-600 hover:text-blue-800">телеметрия</a>
-              <a href="/devices/{{ d.id }}/logs" class="ml-2 text-slate-600 hover:text-slate-900">логи</a>
+              <a href="/devices/{{ d.id }}/telemetry" class="text-blue-600 hover:text-blue-800">открыть</a>
             </td>
           </tr>
           {% endfor %}
