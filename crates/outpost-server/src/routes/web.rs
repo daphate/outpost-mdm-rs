@@ -2417,34 +2417,62 @@ impl ConfigOptionLabel {
 /// Известные модели для preferred_llm / preferred_translator_llm / preferred_vlm /
 /// preferred_stt. Hardcoded потому что (1) набор меняется раз в несколько
 /// недель, (2) добавление новой модели требует ещё и upload на mirror +
-/// bootstrap-manifest update — лишний редеплой server'а не блокер. Если/когда
-/// захотим динамику — читать из bootstrap-manifest.json на startup'е.
+/// bootstrap-manifest update — лишний редеплой server'а не блокер.
 ///
-/// **Source of truth для filename'ов**: `bootstrap-manifest.json` bundles[]
-/// (для T0/T1/T2 bundles) + `models/qwen3-4b-soldier-v25-Q4_K_M.gguf` /
-/// `models/qwen3-4b-soldier-v24-q4_k_m.gguf` для распространяемых отдельно
-/// Soldier-моделей.
+/// **Source of truth**: AR Hud `ModelRegistry.kt` в
+/// `tactical-ar-hud/prototypes/outpost-android/app/src/main/java/ru/tacticalar/outpost/ml/ModelRegistry.kt`.
+/// Filename'ы должны точно совпадать (client matching на `endsWith(filename)`
+/// в installLocal). Размеры тоже оттуда — реальные байты в R2 / Cloud.ru
+/// бакетах.
+///
+/// **Tier guidance** (из ModelRegistry comments):
+/// - T0 = 4 ГБ RAM (Realme Note 60X и аналоги) — только лёгкие модели
+/// - T1 = 6–8 ГБ RAM — основной парк, до 7B Q4
+/// - T2 = 8–12 ГБ RAM (Ulefone, Honor 400 Pro) — комфортно 9B Q4 + Whisper
+///
+/// Vosk **не включён** в STT dropdown — это wake-word engine («штаб, приём»),
+/// отдельный канал от STT main pipeline.
 fn llm_options() -> Vec<ConfigOptionLabel> {
     vec![
         ConfigOptionLabel::new(
             "qwen3-4b-soldier-v25-Q4_K_M.gguf",
-            "Soldier V25 4B Q4_K_M — рекомендуется",
-            "Fine-tune Qwen3-4B на полевой корпус (raskat'нут 2026-05-18). T1+, ~2.5 ГБ.",
+            "Soldier V25 4B Q4_K_M — рекомендуется (T1+, 2.5 ГБ)",
+            "Fine-tune Qwen3-4B на полевой корпус (raskat'нут 2026-05-18). \
+             Полевой помощник РФ — НЕ для перевода / поэзии.",
         ),
         ConfigOptionLabel::new(
             "qwen3-4b-soldier-v24-q4_k_m.gguf",
-            "Soldier V24 4B Q4_K_M — legacy",
-            "Предыдущий fine-tune. Оставлен для отката если V25 в полях покажет регрессию.",
-        ),
-        ConfigOptionLabel::new(
-            "qwen2.5-3b-instruct-q4_k_m.gguf",
-            "Qwen2.5 3B Instruct Q4_K_M — generic",
-            "Базовый instruct без полевого fine-tune. Для general-purpose сценариев.",
+            "Soldier V24 4B Q4_K_M — legacy (T1+, 2.5 ГБ)",
+            "Предыдущий Soldier fine-tune. Оставлен для отката если V25 \
+             покажет регрессию в полях.",
         ),
         ConfigOptionLabel::new(
             "qwen2.5-1.5b-instruct-Q4_K_M.gguf",
-            "Qwen2.5 1.5B Instruct Q4_K_M — облегчённая",
-            "Для T0 устройств (Realme Note 60X и аналоги, 4 ГБ RAM). Bundled в \"Минимум\".",
+            "Qwen2.5 1.5B Instruct Q4_K_M — облегчённая (T0+, 1.1 ГБ)",
+            "Для устройств 4 ГБ RAM (Realme Note 60X и аналоги). \
+             Bundled в \"Минимум\".",
+        ),
+        ConfigOptionLabel::new(
+            "qwen2.5-3b-instruct-q4_k_m.gguf",
+            "Qwen2.5 3B Instruct Q4_K_M — generic (T1+, 1.9 ГБ)",
+            "Базовый instruct, без полевого fine-tune. General-purpose.",
+        ),
+        ConfigOptionLabel::new(
+            "qwen2.5-3b-instruct-Q5_K_M.gguf",
+            "Qwen2.5 3B Instruct Q5_K_M — generic выше качества (T1+, 2.4 ГБ)",
+            "Q5 квантизация 3B. Требуется 8+ ГБ RAM. Заметно качественнее Q4.",
+        ),
+        ConfigOptionLabel::new(
+            "qwen2.5-7b-instruct-q4_k_m.gguf",
+            "Qwen2.5 7B Instruct Q4_K_M — флагман (T1+, 4.7 ГБ)",
+            "Multilingual flagship. Лучшее RU/EN/UK/ZH среди ~5 ГБ моделей. \
+             Ловит поэтический регистр. ~5 ГБ resident с KV-cache.",
+        ),
+        ConfigOptionLabel::new(
+            "qwen3.5-9b-q4_k_m.gguf",
+            "Qwen3.5 9B Q4_K_M — новейший (T2+, 5.9 ГБ)",
+            "Q3.5 series Feb 2026. Лучший перевод в open-source ≤6 ГБ. \
+             Vision-language pipeline, но text-only inference работает идеально.",
         ),
     ]
 }
@@ -2452,37 +2480,86 @@ fn llm_options() -> Vec<ConfigOptionLabel> {
 fn translator_llm_options() -> Vec<ConfigOptionLabel> {
     vec![
         ConfigOptionLabel::new(
+            "HY-MT1.5-1.8B-Q4_K_M.gguf",
+            "Hunyuan MT 1.5 1.8B Q4_K_M — translation-specific (T0+, 1.1 ГБ)",
+            "Оптимизирован специально под перевод. Идёт первым кандидатом \
+             если устройство translation-heavy.",
+        ),
+        ConfigOptionLabel::new(
             "qwen2.5-3b-instruct-q4_k_m.gguf",
-            "Qwen2.5 3B Instruct — рекомендуется для переводчика",
-            "Сбалансированный по качеству/скорости для on-device перевода.",
+            "Qwen2.5 3B Instruct Q4_K_M — рекомендуется (T1+, 1.9 ГБ)",
+            "Сбалансированный generic для on-device перевода.",
         ),
         ConfigOptionLabel::new(
             "qwen2.5-1.5b-instruct-Q4_K_M.gguf",
-            "Qwen2.5 1.5B Instruct — для T0",
+            "Qwen2.5 1.5B Instruct Q4_K_M — для T0 (1.1 ГБ)",
             "Облегчённый вариант если устройство уже грузит другой LLM.",
+        ),
+        ConfigOptionLabel::new(
+            "qwen2.5-7b-instruct-q4_k_m.gguf",
+            "Qwen2.5 7B Instruct Q4_K_M — флагман перевода (T1+, 4.7 ГБ)",
+            "Топ-качество RU/EN/UK/ZH/JA среди ~5 ГБ open-source.",
+        ),
+        ConfigOptionLabel::new(
+            "qwen3.5-9b-q4_k_m.gguf",
+            "Qwen3.5 9B Q4_K_M — новейший (T2+, 5.9 ГБ)",
+            "Лучший перевод в open-source ≤6 ГБ. Feb 2026.",
         ),
     ]
 }
 
 fn vlm_options() -> Vec<ConfigOptionLabel> {
-    vec![ConfigOptionLabel::new(
-        "qwen2-vl-2b-instruct-q4_k_m.gguf",
-        "Qwen2-VL 2B Instruct Q4_K_M",
-        "Multilingual VLM (распознавание камерой). T1+ (bundled в \"Рекомендуемый\").",
-    )]
+    vec![
+        ConfigOptionLabel::new(
+            "qwen2-vl-2b-instruct-q4_k_m.gguf",
+            "Qwen2-VL 2B Instruct Q4_K_M — multilingual (T1+, 986 МБ + 1.3 ГБ mmproj)",
+            "Cyrillic-friendly VLM. OCRBench 794. Bundled в \"Рекомендуемый\". \
+             Требует парный mmproj.",
+        ),
+        ConfigOptionLabel::new(
+            "qwen3vl-8b-instruct-q4_k_m.gguf",
+            "Qwen3-VL 8B Instruct Q4_K_M — флагман для камеры (T2+, 5 ГБ + 1.2 ГБ mmproj)",
+            "Vision tower поколением выше Qwen2-VL. +20-30% точности на \
+             грибах/растениях/животных/технике/лекарствах. ~7-8 ГБ resident.",
+        ),
+        ConfigOptionLabel::new(
+            "moondream2-text-model-f16.gguf",
+            "Moondream2 F16 — English-only (T1+, 2.8 ГБ + 0.9 ГБ mmproj)",
+            "Phi-1.5 backbone. OCR 61.2, English-only по карточке HF. Альтернатива \
+             если Qwen2-VL не подходит.",
+        ),
+        ConfigOptionLabel::new(
+            "smolvlm-500m-decoder-q4.onnx",
+            "SmolVLM 500M decoder Q4 — облегчённый ONNX (T0+, 229 МБ)",
+            "ONNX runtime (не llama.cpp). English-only. Самый маленький VLM. \
+             Для устройств где Qwen2-VL не помещается.",
+        ),
+    ]
 }
 
 fn stt_options() -> Vec<ConfigOptionLabel> {
     vec![
         ConfigOptionLabel::new(
-            "ggml-base-q5_1.bin",
-            "Whisper base Q5_1 — рекомендуется",
-            "Baseline качество, T1+.",
+            "ggml-tiny-q5_1.bin",
+            "Whisper tiny Q5_1 — T0 (32 МБ)",
+            "Работает на самых слабых устройствах. Хуже по точности на длинных \
+             репликах. Bundled в \"Минимум\".",
         ),
         ConfigOptionLabel::new(
-            "ggml-tiny-q5_1.bin",
-            "Whisper tiny Q5_1 — облегчённая",
-            "Bundled в \"Минимум\", работает на T0. Хуже по точности на длинных репликах.",
+            "ggml-base-q5_1.bin",
+            "Whisper base Q5_1 — рекомендуется (60 МБ, T1+)",
+            "Baseline качество. Default в production-конфиге.",
+        ),
+        ConfigOptionLabel::new(
+            "ggml-small-q5_1.bin",
+            "Whisper small Q5_1 — выше точность (190 МБ, T1+)",
+            "Заметно лучше base на нюансах артикуляции. Медленнее.",
+        ),
+        ConfigOptionLabel::new(
+            "ggml-large-v3-turbo-q5_0.bin",
+            "Whisper large-v3-turbo Q5_0 — флагман (574 МБ, T2+)",
+            "Newer arch, 3-5× быстрее large-v3 при сравнимом качестве. \
+             Только для мощных устройств.",
         ),
     ]
 }
