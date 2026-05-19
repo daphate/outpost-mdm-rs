@@ -275,6 +275,93 @@ Measure with `systemd-cgtop` (live) and `systemctl status outpost-server` (the `
 
 ---
 
+## Observability stack (Grafana + Prometheus + node-exporter)
+
+The production host runs a self-contained metrics stack alongside
+outpost-server:
+
+- `prometheus.service` — listens on **tailscale IP** `100.68.41.91:9090`
+  (`--web.listen-address` in `/etc/default/prometheus`). Scrapes
+  `outpost-server` on `localhost:8080/metrics`, `node-exporter` on
+  `100.68.41.91:9100`, and itself.
+- `prometheus-node-exporter.service` — listens on `100.68.41.91:9100`
+  (`/etc/default/prometheus-node-exporter`).
+- `grafana-server.service` — reads from Prometheus as datasource (UID
+  `prometheus`), serves the two checked-in dashboards under
+  `deploy/grafana-dashboards/`.
+
+Both Prometheus and node-exporter are bound to the tailscale IP (not
+`0.0.0.0`) so the metrics endpoints are only reachable inside the
+tailnet. nginx fronts Grafana separately for browser access.
+
+### Boot-time race: Prometheus / node-exporter vs tailscaled
+
+**Incident, 2026-05-19:** during phone provisioning the host became
+unresponsive (no SSH, no HTTPS) and had to be hard-reset by the cloud
+provider. After the reboot all Grafana panels — Fleet overview and
+Device drill-down — showed **"No data"**, even though `outpost-server`
+was healthy and OTLP ingest logs were flowing.
+
+**Root cause:** on boot, systemd starts `prometheus.service` and
+`prometheus-node-exporter.service` before `tailscaled` has finished
+bringing up the `tailscale0` interface and assigning IP
+`100.68.41.91`. The bind fails with:
+
+```
+err="listen tcp 100.68.41.91:9090: bind: cannot assign requested address"
+```
+
+The upstream `prometheus.service` unit ships `Restart=on-abnormal`,
+which **does not cover** an exit-code-1 failure (only signals /
+timeouts). So Prometheus dies once and stays dead until manual
+intervention. Grafana datasource queries then return
+`connection refused`, and every panel renders as "No data".
+
+**Fix:** systemd drop-ins under
+[`deploy/systemd-drop-ins/`](../deploy/systemd-drop-ins/) that add
+`After=tailscaled.service` + switch to `Restart=on-failure` with a
+5 s back-off and a generous retry burst, so the service keeps retrying
+until tailscale brings the interface up (typically within ~10 s).
+
+Install on a fresh host or after re-imaging:
+
+```bash
+sudo mkdir -p /etc/systemd/system/prometheus.service.d
+sudo mkdir -p /etc/systemd/system/prometheus-node-exporter.service.d
+sudo cp deploy/systemd-drop-ins/prometheus.service.d/tailscale-bind.conf \
+        /etc/systemd/system/prometheus.service.d/
+sudo cp deploy/systemd-drop-ins/prometheus-node-exporter.service.d/tailscale-bind.conf \
+        /etc/systemd/system/prometheus-node-exporter.service.d/
+sudo systemctl daemon-reload
+sudo systemctl reset-failed prometheus prometheus-node-exporter
+sudo systemctl restart prometheus prometheus-node-exporter
+```
+
+Verify the drop-ins are loaded (`Drop-In:` line) and all scrape targets
+are healthy:
+
+```bash
+sudo systemctl status prometheus prometheus-node-exporter --no-pager | head -20
+curl -s http://100.68.41.91:9090/api/v1/targets \
+  | python3 -m json.tool \
+  | grep -E '"(job|health|lastError)"'
+```
+
+After this fix, a reboot of the host recovers Grafana automatically
+once `tailscaled` is up. No manual intervention needed.
+
+### Note on TSDB gaps after a reset
+
+A reset costs whatever interval elapsed between boot and the moment
+Prometheus successfully binds and resumes scraping. On the
+2026-05-19 incident this was ~15 minutes; the TSDB WAL is intact and
+historical data is preserved, but timeseries graphs spanning that
+window will show a visible gap. This is expected and not a bug — pick
+a time range entirely before or entirely after the gap to see clean
+data.
+
+---
+
 ## Hardening checklist
 
 - [x] Static musl binary; no runtime libc / loader dependency.

@@ -2,6 +2,40 @@
 
 Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased] — Ops
+
+### Observability stack: fix Prometheus / node-exporter boot race against tailscaled
+
+После hard-reset `mdm.secondf8n.tech` (provisioning телефонов, host
+стал неотвечающим) Grafana показывала "No data" на всех панелях.
+Root cause: `prometheus.service` и `prometheus-node-exporter.service`
+bind'ятся на tailscale IP `100.68.41.91:9090` / `:9100`, но на boot
+стартуют **раньше** чем `tailscaled` поднимает интерфейс →
+`bind: cannot assign requested address` → exit 1. Vendor unit
+`prometheus.service` имеет `Restart=on-abnormal` который **не**
+покрывает exit-code-1 → сервис стоит мёртвый до manual restart.
+
+**Fix:** systemd drop-in'ы в
+[`deploy/systemd-drop-ins/`](deploy/systemd-drop-ins/) — добавляют
+`After=tailscaled.service` + переключают на `Restart=on-failure`
+с 5 s back-off и burst до 20–30 попыток. На следующих reboot'ах
+сервисы будут retry'ить пока tailscale не поднимет интерфейс
+(обычно <10 сек). Никакого ручного вмешательства не нужно.
+
+Документировано:
+- [`docs/DEPLOY.md → Observability stack`](docs/DEPLOY.md#observability-stack-grafana--prometheus--node-exporter) — incident write-up + install steps + verify
+- [`deploy/systemd-drop-ins/README.md`](deploy/systemd-drop-ins/README.md) — copy/paste install commands
+- [sophia-soul `insights/outpost-mdm-patterns.md` §16](https://github.com/daphate/sophia-soul/blob/main/insights/outpost-mdm-patterns.md) — generic pattern для **любого** сервиса который bind'ится на tailscale IP
+
+Caveat: TSDB content за период `boot → first successful Prometheus
+bind` отсутствует (на инциденте 2026-05-19 — ≈15 мин). WAL
+восстановился полностью, исторические данные сохранены, но на
+timeseries-графиках спанящих это окно будет видимый gap. Это
+expected, не bug.
+
+Code-changes: 0 (operational config-only commit). Прода не требует
+redeploy outpost-server'а.
+
 ## [0.18.13] — 2026-05-19
 
 ### Phase 26 — UX polish: timezone, groups UI, bulk file ops
