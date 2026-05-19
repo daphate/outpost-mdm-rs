@@ -150,6 +150,15 @@ pub fn router() -> Router<AppState> {
             "/devices/{id}/remote-wipe-form",
             post(device_remote_wipe_form),
         )
+        // v0.18.15 (Phase 27): structured update-config form + install-apk push.
+        .route(
+            "/devices/{id}/config-structured",
+            post(device_config_structured_form),
+        )
+        .route(
+            "/devices/{id}/install-apk-form",
+            post(device_install_apk_form),
+        )
         // Server-wide settings
         .route("/settings", get(settings_page).post(settings_save))
         .route("/settings/language", post(settings_language))
@@ -2402,6 +2411,220 @@ async fn me_password_post(
 
 // ----- Device edit / delete ------------------------------------------------
 
+/// Один вариант в dropdown'е «Настроить устройство → быстрая настройка».
+/// Используется для LLM / VLM / STT / TTS-voice выпадушек, а также для enum'ов
+/// типа `tts_mode` / `answer_mode` / `log_level`.
+///
+/// `value` идёт в JSON payload (filename `.gguf` для моделей; имя варианта
+/// enum'а для перечислений — должно ТОЧНО соответствовать тому что
+/// `ModelPreferences.setXxx` принимает на клиенте, см.
+/// `MDM-DEVICE-CONTROL-CONTRACT.md §1.3`).
+///
+/// `label` — человекочитаемая подпись для admin'а.
+///
+/// `description` — короткий hint про сценарий применения. Пустой если нечего
+/// сказать сверх label'а.
+#[derive(Clone)]
+pub struct ConfigOptionLabel {
+    pub value: String,
+    pub label: String,
+    pub description: String,
+}
+
+impl ConfigOptionLabel {
+    fn new(value: &str, label: &str, description: &str) -> Self {
+        Self {
+            value: value.into(),
+            label: label.into(),
+            description: description.into(),
+        }
+    }
+}
+
+/// Известные модели для preferred_llm / preferred_translator_llm / preferred_vlm /
+/// preferred_stt. Hardcoded потому что (1) набор меняется раз в несколько
+/// недель, (2) добавление новой модели требует ещё и upload на mirror +
+/// bootstrap-manifest update — лишний редеплой server'а не блокер. Если/когда
+/// захотим динамику — читать из bootstrap-manifest.json на startup'е.
+///
+/// **Source of truth для filename'ов**: `bootstrap-manifest.json` bundles[]
+/// (для T0/T1/T2 bundles) + `models/qwen3-4b-soldier-v25-Q4_K_M.gguf` /
+/// `models/qwen3-4b-soldier-v24-q4_k_m.gguf` для распространяемых отдельно
+/// Soldier-моделей.
+fn llm_options() -> Vec<ConfigOptionLabel> {
+    vec![
+        ConfigOptionLabel::new(
+            "qwen3-4b-soldier-v25-Q4_K_M.gguf",
+            "Soldier V25 4B Q4_K_M — рекомендуется",
+            "Fine-tune Qwen3-4B на полевой корпус (raskat'нут 2026-05-18). T1+, ~2.5 ГБ.",
+        ),
+        ConfigOptionLabel::new(
+            "qwen3-4b-soldier-v24-q4_k_m.gguf",
+            "Soldier V24 4B Q4_K_M — legacy",
+            "Предыдущий fine-tune. Оставлен для отката если V25 в полях покажет регрессию.",
+        ),
+        ConfigOptionLabel::new(
+            "qwen2.5-3b-instruct-q4_k_m.gguf",
+            "Qwen2.5 3B Instruct Q4_K_M — generic",
+            "Базовый instruct без полевого fine-tune. Для general-purpose сценариев.",
+        ),
+        ConfigOptionLabel::new(
+            "qwen2.5-1.5b-instruct-Q4_K_M.gguf",
+            "Qwen2.5 1.5B Instruct Q4_K_M — облегчённая",
+            "Для T0 устройств (Realme Note 60X и аналоги, 4 ГБ RAM). Bundled в \"Минимум\".",
+        ),
+    ]
+}
+
+fn translator_llm_options() -> Vec<ConfigOptionLabel> {
+    vec![
+        ConfigOptionLabel::new(
+            "qwen2.5-3b-instruct-q4_k_m.gguf",
+            "Qwen2.5 3B Instruct — рекомендуется для переводчика",
+            "Сбалансированный по качеству/скорости для on-device перевода.",
+        ),
+        ConfigOptionLabel::new(
+            "qwen2.5-1.5b-instruct-Q4_K_M.gguf",
+            "Qwen2.5 1.5B Instruct — для T0",
+            "Облегчённый вариант если устройство уже грузит другой LLM.",
+        ),
+    ]
+}
+
+fn vlm_options() -> Vec<ConfigOptionLabel> {
+    vec![ConfigOptionLabel::new(
+        "qwen2-vl-2b-instruct-q4_k_m.gguf",
+        "Qwen2-VL 2B Instruct Q4_K_M",
+        "Multilingual VLM (распознавание камерой). T1+ (bundled в \"Рекомендуемый\").",
+    )]
+}
+
+fn stt_options() -> Vec<ConfigOptionLabel> {
+    vec![
+        ConfigOptionLabel::new(
+            "ggml-base-q5_1.bin",
+            "Whisper base Q5_1 — рекомендуется",
+            "Baseline качество, T1+.",
+        ),
+        ConfigOptionLabel::new(
+            "ggml-tiny-q5_1.bin",
+            "Whisper tiny Q5_1 — облегчённая",
+            "Bundled в \"Минимум\", работает на T0. Хуже по точности на длинных репликах.",
+        ),
+    ]
+}
+
+fn tts_mode_options() -> Vec<ConfigOptionLabel> {
+    vec![
+        ConfigOptionLabel::new(
+            "Off",
+            "Off — звук всегда выключен",
+            "Тишина. Текст-only сценарии.",
+        ),
+        ConfigOptionLabel::new(
+            "WakeWordOnly",
+            "WakeWordOnly — озвучка только после wake-word",
+            "Default. Минимум звукового шума в окопе.",
+        ),
+        ConfigOptionLabel::new(
+            "Always",
+            "Always — озвучивать все ответы",
+            "Тренировочные / show-and-tell сценарии.",
+        ),
+    ]
+}
+
+fn answer_mode_options() -> Vec<ConfigOptionLabel> {
+    vec![
+        ConfigOptionLabel::new(
+            "Auto",
+            "Auto — client сам решает (default)",
+            "Search / FastAssistant / FullAssistant выбирается по сложности запроса.",
+        ),
+        ConfigOptionLabel::new(
+            "Search",
+            "Search — только RAG-поиск",
+            "Чистый retrieval, без LLM-генерации. Самый быстрый.",
+        ),
+        ConfigOptionLabel::new(
+            "Assistant",
+            "Assistant — всегда LLM-ответ",
+            "Каждый запрос идёт в LLM. Медленно, но качественнее.",
+        ),
+    ]
+}
+
+fn translator_mode_options() -> Vec<ConfigOptionLabel> {
+    vec![
+        ConfigOptionLabel::new(
+            "Local",
+            "Local — только on-device LLM (default)",
+            "Offline-first. Privacy-friendly.",
+        ),
+        ConfigOptionLabel::new(
+            "Auto",
+            "Auto — local + cloud fallback",
+            "Если cloud_enabled и local не справился — пробует cloud.",
+        ),
+        ConfigOptionLabel::new(
+            "Cloud",
+            "Cloud — всегда облако",
+            "Требует translator_cloud_enabled=true. Быстрее и качественнее, но нужна сеть.",
+        ),
+    ]
+}
+
+fn translator_audio_mode_options() -> Vec<ConfigOptionLabel> {
+    vec![
+        ConfigOptionLabel::new(
+            "SpeakerphoneBoth",
+            "SpeakerphoneBoth — оба слышат через динамик (default)",
+            "Двое лицом к лицу, телефон между ними.",
+        ),
+        ConfigOptionLabel::new(
+            "HeadsetSplit",
+            "HeadsetSplit — RU→FOR в динамик, FOR→RU в гарнитуру",
+            "Хозяин телефона в гарнитуре, иностранец слышит свой перевод вслух.",
+        ),
+    ]
+}
+
+fn log_level_options() -> Vec<ConfigOptionLabel> {
+    vec![
+        ConfigOptionLabel::new(
+            "OFF",
+            "OFF — без логов",
+            "Production-mode (max privacy, нет тел. данных в OTLP).",
+        ),
+        ConfigOptionLabel::new(
+            "BASIC",
+            "BASIC — только метрики и события",
+            "Counts, timings, errors. Без bodies prompt'ов/ответов.",
+        ),
+        ConfigOptionLabel::new(
+            "VERBOSE",
+            "VERBOSE — всё включая bodies (beta)",
+            "Полные тексты chat/translator/VLM в OTLP. Beta-mode.",
+        ),
+    ]
+}
+
+fn cpu_thread_count_options() -> Vec<ConfigOptionLabel> {
+    let mut out = vec![ConfigOptionLabel::new(
+        "0",
+        "0 — auto (client выбирает по tier)",
+        "Default. Hardware detection.",
+    )];
+    for n in 2..=8i64 {
+        out.push(ConfigOptionLabel::new(
+            &n.to_string(),
+            &format!("{n} threads"),
+            "",
+        ));
+    }
+    out
+}
+
 #[derive(Template)]
 #[template(path = "device_edit.html")]
 struct DeviceEditTemplate {
@@ -2434,6 +2657,21 @@ struct DeviceEditTemplate {
     /// Текстовое сообщение для admin'а под формой update-config: причина
     /// почему форма disabled (старый клиент / нет state).
     update_config_blocker: Option<String>,
+    /// v0.18.15 (Phase 27): что сейчас в device.current_state_json для каждой
+    /// known key — рендерим рядом с dropdown'ом «было: X». Пустая map если
+    /// устройство ещё не reportilось.
+    current_settings: std::collections::BTreeMap<String, String>,
+    /// v0.18.15: dropdown options для structured config form.
+    llm_options: Vec<ConfigOptionLabel>,
+    translator_llm_options: Vec<ConfigOptionLabel>,
+    vlm_options: Vec<ConfigOptionLabel>,
+    stt_options: Vec<ConfigOptionLabel>,
+    tts_mode_options: Vec<ConfigOptionLabel>,
+    answer_mode_options: Vec<ConfigOptionLabel>,
+    translator_mode_options: Vec<ConfigOptionLabel>,
+    translator_audio_mode_options: Vec<ConfigOptionLabel>,
+    log_level_options: Vec<ConfigOptionLabel>,
+    cpu_thread_count_options: Vec<ConfigOptionLabel>,
     flash: Option<String>,
     error: Option<String>,
 }
@@ -2566,6 +2804,27 @@ async fn render_device_edit(
     .bind(user.customer_id)
     .fetch_all(&state.db)
     .await?;
+    // v0.18.15: распарсить current_state_json в плоскую map для рендеринга
+    // рядом с dropdown'ами. Игнорируем nested objects / arrays — на форме
+    // показываем только примитивы (числа, строки, bool).
+    let mut current_settings: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    if current_state_version > 0 {
+        if let Ok(serde_json::Value::Object(map)) =
+            serde_json::from_str::<serde_json::Value>(&current_state_json_raw)
+        {
+            for (k, v) in map {
+                let stringified = match v {
+                    serde_json::Value::String(s) => s,
+                    serde_json::Value::Number(n) => n.to_string(),
+                    serde_json::Value::Bool(b) => b.to_string(),
+                    serde_json::Value::Null => "null".to_string(),
+                    _ => continue, // skip nested objects/arrays
+                };
+                current_settings.insert(k, stringified);
+            }
+        }
+    }
     let mut resp = render(DeviceEditTemplate {
         user_login: user.login.clone(),
         device_id: id,
@@ -2583,6 +2842,17 @@ async fn render_device_edit(
         current_state_version,
         current_state_seen_at,
         update_config_blocker,
+        current_settings,
+        llm_options: llm_options(),
+        translator_llm_options: translator_llm_options(),
+        vlm_options: vlm_options(),
+        stt_options: stt_options(),
+        tts_mode_options: tts_mode_options(),
+        answer_mode_options: answer_mode_options(),
+        translator_mode_options: translator_mode_options(),
+        translator_audio_mode_options: translator_audio_mode_options(),
+        log_level_options: log_level_options(),
+        cpu_thread_count_options: cpu_thread_count_options(),
         flash,
         error,
     });
@@ -3049,6 +3319,158 @@ async fn files_bulk_distribute(
 }
 
 // ----- §3 device-command form handlers --------------------------------------
+
+/// v0.18.15 (Phase 27): structured update-config form. В отличие от
+/// `device_config_form` который принимает raw JSON, здесь имеется по одному
+/// HTML form field на каждый whitelist key из `MDM-DEVICE-CONTROL-CONTRACT
+/// §1.3`. Пустое значение fields трактуется как «не менять» (key пропускается
+/// в итоговом payload'е). Special-cased `*_TRISTATE` для bool fields, где
+/// "" = не менять, "true"/"false" — соответствующее присвоение.
+///
+/// На итоговый push_message пишется тот же `command='update-config'` что и
+/// у raw-JSON формы — для клиента это identical contract.
+async fn device_config_structured_form(
+    user: WebUser,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    body: axum::body::Bytes,
+) -> Response {
+    let form = parse_form(&body);
+    // Каждый key добавляется в payload только если value не пустое.
+    // Type coercion: bools "true"/"false", ints парсятся, остальное — strings.
+    let mut payload = serde_json::Map::new();
+
+    // Filename / enum string keys.
+    for key in [
+        "preferred_llm",
+        "preferred_translator_llm",
+        "preferred_vlm",
+        "preferred_stt",
+        "tts_mode",
+        "answer_mode",
+        "translator_mode",
+        "translator_audio_mode",
+        "log_level",
+    ] {
+        if let Some(raw) = form.first(key) {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() {
+                payload.insert(key.into(), serde_json::Value::String(trimmed.into()));
+            }
+        }
+    }
+    // Integer keys.
+    for key in ["cpu_thread_count"] {
+        if let Some(raw) = form.first(key) {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() {
+                if let Ok(n) = trimmed.parse::<i64>() {
+                    payload.insert(key.into(), serde_json::Value::Number(n.into()));
+                }
+            }
+        }
+    }
+    // Tri-state bool keys: "" = skip, "true"/"false" = присвоить.
+    for key in [
+        "wake_word_enabled",
+        "translator_cloud_enabled",
+        "show_build_badge",
+        "telemetry_enabled",
+    ] {
+        if let Some(raw) = form.first(key) {
+            match raw.trim() {
+                "true" => {
+                    payload.insert(key.into(), serde_json::Value::Bool(true));
+                }
+                "false" => {
+                    payload.insert(key.into(), serde_json::Value::Bool(false));
+                }
+                _ => {} // skip empty / unrecognised
+            }
+        }
+    }
+
+    if payload.is_empty() {
+        return redirect_with_flash(
+            &format!("/devices/{id}/edit"),
+            "Ничего не выбрано — все поля стояли на «не менять». Команда не отправлена.",
+        );
+    }
+
+    queue_device_command_form(
+        &state,
+        &user,
+        id,
+        "update-config",
+        serde_json::Value::Object(payload),
+    )
+    .await
+}
+
+/// v0.18.15 (Phase 27): admin-initiated `install-apk` push. Ставит в очередь
+/// push_message с command='install-apk' и payload {version_code, version_name,
+/// sha256, url, size_bytes}. Client (rc≥X b≥Y, точное число согласуется
+/// с AR Hud team — см. `MDM-DEVICE-CONTROL-CONTRACT.md §3.4`) применяет:
+/// — качает APK с url
+/// — verify'ит sha256
+/// — вызывает PackageInstaller с user-prompt (silent-install требует
+///   Device-Owner DPM, реализация on AR Hud стороне).
+///
+/// До тех пор пока AR Hud не реализует client-side — команда будет
+/// сохраняться в `applied_commands` со status='error', message='unknown
+/// command' или просто игнорироваться (зависит от client behaviour для
+/// unknown commands). Безопасно — пользовательских данных не задевает.
+async fn device_install_apk_form(
+    user: WebUser,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    body: axum::body::Bytes,
+) -> Response {
+    let form = parse_form(&body);
+    let version_id_raw = form.first("version_id").unwrap_or("").trim();
+    let version_id: i64 = match version_id_raw.parse() {
+        Ok(v) => v,
+        Err(_) => {
+            return redirect_with_flash(
+                &format!("/devices/{id}/edit"),
+                "Выберите версию APK из dropdown'а.",
+            );
+        }
+    };
+    // Lookup app version row + verify customer ownership через JOIN на applications.
+    let row: Option<(i64, String, String, i64, Option<String>)> = sqlx::query_as(
+        "SELECT av.version_code, av.version_name, av.sha256, av.file_size_bytes, av.source_url \
+         FROM application_versions av \
+         JOIN applications a ON a.id = av.application_id \
+         WHERE av.id = ? AND a.customer_id = ? AND a.kind = 'apk'",
+    )
+    .bind(version_id)
+    .bind(user.customer_id)
+    .fetch_optional(&state.db)
+    .await
+    .unwrap_or(None);
+    let Some((version_code, version_name, sha256, size_bytes, source_url)) = row else {
+        return redirect_with_flash(
+            &format!("/devices/{id}/edit"),
+            "Версия APK не найдена в customer scope.",
+        );
+    };
+    let Some(url) = source_url else {
+        return redirect_with_flash(
+            &format!("/devices/{id}/edit"),
+            "У этой версии APK нет source_url — устройство не сможет её скачать. \
+             Загрузите версию с source_url через /applications или раскатайте через rollouts.",
+        );
+    };
+    let payload = serde_json::json!({
+        "version_code": version_code,
+        "version_name": version_name,
+        "sha256": sha256,
+        "size_bytes": size_bytes,
+        "url": url,
+    });
+    queue_device_command_form(&state, &user, id, "install-apk", payload).await
+}
 
 async fn device_rotate_cloudru_creds_form(
     user: WebUser,

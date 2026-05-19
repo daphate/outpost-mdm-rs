@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Изменить устройство {{ serial }}{% endblock %}
+{% block title %}Настроить устройство {{ serial }}{% endblock %}
 
 {% block body %}
 {% include "_nav.html" %}
@@ -8,7 +8,7 @@
 <main class="max-w-5xl mx-auto px-4 py-6 space-y-6">
   <div>
     <a href="/devices" class="text-sm text-slate-500 hover:text-slate-900">← к списку устройств</a>
-    <h2 class="text-2xl font-bold mt-2">Изменить устройство</h2>
+    <h2 class="text-2xl font-bold mt-2">Настроить устройство</h2>
     <p class="text-sm text-slate-500">Серийный №: <code class="font-mono">{{ serial }}</code> · ID: {{ device_id }}</p>
   </div>
 
@@ -16,7 +16,11 @@
     <div class="bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm px-4 py-2 rounded">{{ msg }}</div>
   {% endif %}
 
+  <!-- ============================================================ -->
+  <!-- Раздел 1: общие свойства устройства                          -->
+  <!-- ============================================================ -->
   <form method="POST" action="/devices/{{ device_id }}/edit" class="bg-white rounded-lg shadow-sm p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+    <h3 class="md:col-span-2 font-medium border-b border-slate-200 pb-2">Свойства устройства</h3>
     <label class="block md:col-span-2">
       <span class="text-xs uppercase tracking-wide text-slate-500">Отображаемое имя</span>
       <input name="display_name" value="{{ display_name }}" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
@@ -58,7 +62,7 @@
               <option value="{{ v.id }}" {% if pinned_version_id.unwrap_or(-1) == v.id %}selected{% endif %}>{{ v.label }}</option>
             {% endfor %}
           </select>
-          <p class="text-xs text-slate-500 mt-1">Pin переопределяет canary/fleet rollout: устройство получает ровно эту версию. Пустое значение возвращает к policy.</p>
+          <p class="text-xs text-slate-500 mt-1">Pin переопределяет canary/fleet rollout: устройство получает ровно эту версию на ближайшем /sync. Пустое значение возвращает к policy.</p>
         </label>
       </div>
     </fieldset>
@@ -86,9 +90,11 @@
     {% endif %}
   </form>
 
-  <!-- v0.13: Settings Sync — отображение current_state + форма update-config push'а -->
+  <!-- ============================================================ -->
+  <!-- Раздел 2: текущее состояние (Settings Sync)                  -->
+  <!-- ============================================================ -->
   <section class="bg-white rounded-lg shadow-sm p-4 space-y-3">
-    <h3 class="font-medium">Состояние устройства (Settings Sync)</h3>
+    <h3 class="font-medium border-b border-slate-200 pb-2">Текущее состояние устройства</h3>
     {% if current_state_version > 0 %}
       <div class="text-xs text-slate-500">
         Снапшот v{{ current_state_version }}
@@ -101,32 +107,317 @@
     {% else %}
       <p class="text-sm text-slate-500">Устройство ещё не сообщало snapshot настроек. Появится после первого /sync с rc42 b37+ клиентом.</p>
     {% endif %}
+  </section>
 
-    <form method="POST" action="/devices/{{ device_id }}/config-form" class="border border-slate-200 rounded p-3 space-y-2">
-      <div class="text-xs uppercase tracking-wide text-slate-500">Отправить update-config patch</div>
-      {% if let Some(blocker) = update_config_blocker %}
-        <p class="text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded px-2 py-1">⚠ {{ blocker }}</p>
-      {% endif %}
-      <textarea
-        name="payload"
-        rows="6"
-        placeholder='{"preferred_llm": "qwen2-vl-2b-instruct-q4_k_m.gguf", "tts_mode": "Off"}'
-        class="w-full font-mono text-xs rounded border-slate-300 px-2 py-1 disabled:bg-slate-50 disabled:text-slate-400"
-        {% if update_config_blocker.is_some() %}disabled{% endif %}></textarea>
-      <div class="flex items-center justify-between text-xs text-slate-500">
-        <span>JSON object. Ключи описаны в <code>MDM-DEVICE-CONTROL-CONTRACT.md §1.3</code>. Устройство применит на следующем /sync (≤30мин).</span>
+  <!-- ============================================================ -->
+  <!-- Раздел 3: Быстрая настройка (structured update-config)       -->
+  <!-- ============================================================ -->
+  <section class="bg-white rounded-lg shadow-sm p-4 space-y-3">
+    <h3 class="font-medium border-b border-slate-200 pb-2">Быстрая настройка</h3>
+    <p class="text-xs text-slate-500">
+      Изменения отправляются на устройство командой <code>update-config</code> и применяются на ближайшем <code>/sync</code> (≤30 мин).
+      Поле со значением «— не менять —» в payload не пойдёт. Контракт ключей — в
+      <code>MDM-DEVICE-CONTROL-CONTRACT.md §1.3</code>.
+    </p>
+    {% if let Some(blocker) = update_config_blocker %}
+      <p class="text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded px-2 py-1">⚠ {{ blocker }}</p>
+    {% endif %}
+
+    <form method="POST" action="/devices/{{ device_id }}/config-structured" class="space-y-5">
+
+      <!-- ----- 3.1 Модели ----- -->
+      <fieldset class="border border-slate-200 rounded p-3 space-y-3">
+        <legend class="text-xs uppercase tracking-wide text-slate-500 px-1">Модели</legend>
+
+        <label class="block">
+          <span class="text-xs uppercase tracking-wide text-slate-500">Активная LLM (чат, RAG)</span>
+          {% if let Some(cur) = current_settings.get("preferred_llm") %}
+            <span class="text-xs text-slate-400">было: <code class="font-mono">{{ cur }}</code></span>
+          {% endif %}
+          <select name="preferred_llm" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm disabled:bg-slate-50" {% if update_config_blocker.is_some() %}disabled{% endif %}>
+            <option value="" selected>— не менять —</option>
+            {% for opt in llm_options %}
+              <option value="{{ opt.value }}" title="{{ opt.description }}">{{ opt.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label class="block">
+          <span class="text-xs uppercase tracking-wide text-slate-500">LLM для переводчика</span>
+          {% if let Some(cur) = current_settings.get("preferred_translator_llm") %}
+            <span class="text-xs text-slate-400">было: <code class="font-mono">{{ cur }}</code></span>
+          {% endif %}
+          <select name="preferred_translator_llm" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm disabled:bg-slate-50" {% if update_config_blocker.is_some() %}disabled{% endif %}>
+            <option value="" selected>— не менять —</option>
+            {% for opt in translator_llm_options %}
+              <option value="{{ opt.value }}" title="{{ opt.description }}">{{ opt.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label class="block">
+          <span class="text-xs uppercase tracking-wide text-slate-500">VLM (распознавание камерой)</span>
+          {% if let Some(cur) = current_settings.get("preferred_vlm") %}
+            <span class="text-xs text-slate-400">было: <code class="font-mono">{{ cur }}</code></span>
+          {% endif %}
+          <select name="preferred_vlm" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm disabled:bg-slate-50" {% if update_config_blocker.is_some() %}disabled{% endif %}>
+            <option value="" selected>— не менять —</option>
+            {% for opt in vlm_options %}
+              <option value="{{ opt.value }}" title="{{ opt.description }}">{{ opt.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label class="block">
+          <span class="text-xs uppercase tracking-wide text-slate-500">STT (распознавание речи)</span>
+          {% if let Some(cur) = current_settings.get("preferred_stt") %}
+            <span class="text-xs text-slate-400">было: <code class="font-mono">{{ cur }}</code></span>
+          {% endif %}
+          <select name="preferred_stt" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm disabled:bg-slate-50" {% if update_config_blocker.is_some() %}disabled{% endif %}>
+            <option value="" selected>— не менять —</option>
+            {% for opt in stt_options %}
+              <option value="{{ opt.value }}" title="{{ opt.description }}">{{ opt.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </fieldset>
+
+      <!-- ----- 3.2 Режимы работы ----- -->
+      <fieldset class="border border-slate-200 rounded p-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+        <legend class="text-xs uppercase tracking-wide text-slate-500 px-1">Режимы работы</legend>
+
+        <label class="block">
+          <span class="text-xs uppercase tracking-wide text-slate-500">Режим TTS (озвучка)</span>
+          {% if let Some(cur) = current_settings.get("tts_mode") %}
+            <span class="text-xs text-slate-400">было: <code class="font-mono">{{ cur }}</code></span>
+          {% endif %}
+          <select name="tts_mode" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm disabled:bg-slate-50" {% if update_config_blocker.is_some() %}disabled{% endif %}>
+            <option value="" selected>— не менять —</option>
+            {% for opt in tts_mode_options %}
+              <option value="{{ opt.value }}" title="{{ opt.description }}">{{ opt.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label class="block">
+          <span class="text-xs uppercase tracking-wide text-slate-500">Answer mode</span>
+          {% if let Some(cur) = current_settings.get("answer_mode") %}
+            <span class="text-xs text-slate-400">было: <code class="font-mono">{{ cur }}</code></span>
+          {% endif %}
+          <select name="answer_mode" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm disabled:bg-slate-50" {% if update_config_blocker.is_some() %}disabled{% endif %}>
+            <option value="" selected>— не менять —</option>
+            {% for opt in answer_mode_options %}
+              <option value="{{ opt.value }}" title="{{ opt.description }}">{{ opt.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label class="block">
+          <span class="text-xs uppercase tracking-wide text-slate-500">Translator mode</span>
+          {% if let Some(cur) = current_settings.get("translator_mode") %}
+            <span class="text-xs text-slate-400">было: <code class="font-mono">{{ cur }}</code></span>
+          {% endif %}
+          <select name="translator_mode" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm disabled:bg-slate-50" {% if update_config_blocker.is_some() %}disabled{% endif %}>
+            <option value="" selected>— не менять —</option>
+            {% for opt in translator_mode_options %}
+              <option value="{{ opt.value }}" title="{{ opt.description }}">{{ opt.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label class="block">
+          <span class="text-xs uppercase tracking-wide text-slate-500">Translator audio</span>
+          {% if let Some(cur) = current_settings.get("translator_audio_mode") %}
+            <span class="text-xs text-slate-400">было: <code class="font-mono">{{ cur }}</code></span>
+          {% endif %}
+          <select name="translator_audio_mode" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm disabled:bg-slate-50" {% if update_config_blocker.is_some() %}disabled{% endif %}>
+            <option value="" selected>— не менять —</option>
+            {% for opt in translator_audio_mode_options %}
+              <option value="{{ opt.value }}" title="{{ opt.description }}">{{ opt.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label class="block">
+          <span class="text-xs uppercase tracking-wide text-slate-500">Log level</span>
+          {% if let Some(cur) = current_settings.get("log_level") %}
+            <span class="text-xs text-slate-400">было: <code class="font-mono">{{ cur }}</code></span>
+          {% endif %}
+          <select name="log_level" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm disabled:bg-slate-50" {% if update_config_blocker.is_some() %}disabled{% endif %}>
+            <option value="" selected>— не менять —</option>
+            {% for opt in log_level_options %}
+              <option value="{{ opt.value }}" title="{{ opt.description }}">{{ opt.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label class="block">
+          <span class="text-xs uppercase tracking-wide text-slate-500">CPU threads</span>
+          {% if let Some(cur) = current_settings.get("cpu_thread_count") %}
+            <span class="text-xs text-slate-400">было: <code class="font-mono">{{ cur }}</code></span>
+          {% endif %}
+          <select name="cpu_thread_count" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm disabled:bg-slate-50" {% if update_config_blocker.is_some() %}disabled{% endif %}>
+            <option value="" selected>— не менять —</option>
+            {% for opt in cpu_thread_count_options %}
+              <option value="{{ opt.value }}" title="{{ opt.description }}">{{ opt.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </fieldset>
+
+      <!-- ----- 3.3 Переключатели (tri-state) ----- -->
+      <fieldset class="border border-slate-200 rounded p-3 space-y-2">
+        <legend class="text-xs uppercase tracking-wide text-slate-500 px-1">Переключатели</legend>
+        <p class="text-xs text-slate-500">Каждый переключатель имеет три состояния: «не менять» (по умолчанию), «вкл», «выкл».</p>
+
+        <div class="grid grid-cols-1 sm:grid-cols-4 gap-2 items-center">
+          <span class="text-sm">Wake-word</span>
+          {% if let Some(cur) = current_settings.get("wake_word_enabled") %}
+            <span class="text-xs text-slate-400">было: <code class="font-mono">{{ cur }}</code></span>
+          {% else %}
+            <span></span>
+          {% endif %}
+          <select name="wake_word_enabled" class="rounded border-slate-300 px-3 py-1 text-sm disabled:bg-slate-50 sm:col-span-2" {% if update_config_blocker.is_some() %}disabled{% endif %}>
+            <option value="" selected>— не менять —</option>
+            <option value="true">Вкл</option>
+            <option value="false">Выкл</option>
+          </select>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-4 gap-2 items-center">
+          <span class="text-sm">Cloud-перевод</span>
+          {% if let Some(cur) = current_settings.get("translator_cloud_enabled") %}
+            <span class="text-xs text-slate-400">было: <code class="font-mono">{{ cur }}</code></span>
+          {% else %}
+            <span></span>
+          {% endif %}
+          <select name="translator_cloud_enabled" class="rounded border-slate-300 px-3 py-1 text-sm disabled:bg-slate-50 sm:col-span-2" {% if update_config_blocker.is_some() %}disabled{% endif %}>
+            <option value="" selected>— не менять —</option>
+            <option value="true">Вкл</option>
+            <option value="false">Выкл</option>
+          </select>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-4 gap-2 items-center">
+          <span class="text-sm">Build badge в UI</span>
+          {% if let Some(cur) = current_settings.get("show_build_badge") %}
+            <span class="text-xs text-slate-400">было: <code class="font-mono">{{ cur }}</code></span>
+          {% else %}
+            <span></span>
+          {% endif %}
+          <select name="show_build_badge" class="rounded border-slate-300 px-3 py-1 text-sm disabled:bg-slate-50 sm:col-span-2" {% if update_config_blocker.is_some() %}disabled{% endif %}>
+            <option value="" selected>— не менять —</option>
+            <option value="true">Вкл</option>
+            <option value="false">Выкл</option>
+          </select>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-4 gap-2 items-center">
+          <span class="text-sm">Телеметрия</span>
+          {% if let Some(cur) = current_settings.get("telemetry_enabled") %}
+            <span class="text-xs text-slate-400">было: <code class="font-mono">{{ cur }}</code></span>
+          {% else %}
+            <span></span>
+          {% endif %}
+          <select name="telemetry_enabled" class="rounded border-slate-300 px-3 py-1 text-sm disabled:bg-slate-50 sm:col-span-2" {% if update_config_blocker.is_some() %}disabled{% endif %}>
+            <option value="" selected>— не менять —</option>
+            <option value="true">Вкл</option>
+            <option value="false">Выкл</option>
+          </select>
+        </div>
+      </fieldset>
+
+      <div class="flex items-center justify-end">
         <button
-          class="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white text-sm font-medium px-4 py-1.5 rounded"
+          class="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white text-sm font-medium px-4 py-2 rounded"
           {% if update_config_blocker.is_some() %}disabled{% endif %}>
-          Отправить
+          Отправить настройки
         </button>
       </div>
     </form>
+
+    <!-- ----- 3.4 Raw JSON под expand ----- -->
+    <details class="border border-slate-200 rounded p-3 bg-slate-50">
+      <summary class="cursor-pointer text-sm text-slate-700">Расширенно — сырой JSON patch</summary>
+      <form method="POST" action="/devices/{{ device_id }}/config-form" class="space-y-2 mt-3">
+        <textarea
+          name="payload"
+          rows="6"
+          placeholder='{"preferred_llm": "qwen3-4b-soldier-v25-Q4_K_M.gguf", "tts_mode": "Off"}'
+          class="w-full font-mono text-xs rounded border-slate-300 px-2 py-1 disabled:bg-slate-50 disabled:text-slate-400"
+          {% if update_config_blocker.is_some() %}disabled{% endif %}></textarea>
+        <div class="flex items-center justify-between text-xs text-slate-500">
+          <span>Произвольный JSON object. Для keys которых нет в Быстрой настройке (например новых после добавления в контракт).</span>
+          <button
+            class="bg-slate-600 hover:bg-slate-700 disabled:bg-slate-300 text-white text-sm font-medium px-4 py-1.5 rounded"
+            {% if update_config_blocker.is_some() %}disabled{% endif %}>
+            Отправить
+          </button>
+        </div>
+      </form>
+    </details>
   </section>
 
-  <!-- v0.15 §3: sensitive admin commands -->
+  <!-- ============================================================ -->
+  <!-- Раздел 4: Push новой версии приложения                       -->
+  <!-- ============================================================ -->
+  <section class="bg-white rounded-lg shadow-sm p-4 space-y-3">
+    <h3 class="font-medium border-b border-slate-200 pb-2">Push новой версии приложения</h3>
+    <p class="text-xs text-slate-500">
+      Управление APK-обновлениями. Есть три способа доставить новую версию на это устройство:
+    </p>
+    <ol class="text-xs text-slate-600 list-decimal pl-5 space-y-1">
+      <li>
+        <strong>Pin версии</strong> в форме сверху («Закрепить версию») —
+        устройство получит её на ближайшем <code>/sync</code> в поле
+        <code>update_available</code>; AR Hud покажет пользователю кнопку
+        «Обновить». Самый мягкий способ.
+      </li>
+      <li>
+        <strong>Раскатка через rollouts</strong> на <a href="/applications" class="text-blue-600">/applications</a> —
+        canary в группе → fleet-wide. Та же механика <code>update_available</code>,
+        но автоматически по политике.
+      </li>
+      <li>
+        <strong>Push <code>install-apk</code></strong> — командой ниже. Устройство
+        получит команду в <code>commands[]</code> и (когда AR Hud client это
+        реализует, см. MDM-DEVICE-CONTROL-CONTRACT §3.4) скачает и установит APK.
+        Без silent-install DPM — будет user-prompt от Android PackageInstaller.
+      </li>
+    </ol>
+
+    <details class="border border-amber-300 rounded p-3 bg-amber-50">
+      <summary class="cursor-pointer text-sm text-amber-900 font-medium">install-apk — поставить версию в очередь push'а</summary>
+      <form method="POST" action="/devices/{{ device_id }}/install-apk-form" class="space-y-2 mt-3"
+            onsubmit="return confirm('Послать команду install-apk устройству? Будет качать и устанавливать APK.')">
+        <label class="block">
+          <span class="text-xs uppercase tracking-wide text-amber-900">Версия APK</span>
+          <select name="version_id" class="mt-1 w-full rounded border-amber-300 px-3 py-1.5 text-sm disabled:bg-slate-50" {% if update_config_blocker.is_some() %}disabled{% endif %} required>
+            <option value="" disabled selected>— выберите версию —</option>
+            {% for v in app_versions %}
+              <option value="{{ v.id }}">{{ v.label }}</option>
+            {% endfor %}
+          </select>
+          <p class="text-xs text-amber-900 mt-1">
+            У версии должен быть выставлен <code>source_url</code> (загруженная через UI или watcher-discovered версия). Без URL'а команда не пройдёт — устройство не сможет качать APK.
+          </p>
+        </label>
+        <button class="bg-amber-700 hover:bg-amber-800 disabled:bg-slate-300 text-white text-sm px-3 py-1.5 rounded"
+                {% if update_config_blocker.is_some() %}disabled{% endif %}>
+          Поставить в очередь install-apk
+        </button>
+        <p class="text-xs text-amber-900">
+          ⚠ Client-side install-apk handler **TBD** (контракт `MDM-DEVICE-CONTROL-CONTRACT §3.4`). До реализации в AR Hud — устройство получит команду но не выполнит её. Команда безвредна (нет destructive семантики), используйте для тестового канала.
+        </p>
+      </form>
+    </details>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- Раздел 5: Sensitive admin commands (§3 контракта)            -->
+  <!-- ============================================================ -->
   <section class="bg-white rounded-lg shadow-sm p-4 space-y-4">
-    <h3 class="font-medium">Push-команды устройству (§3)</h3>
+    <h3 class="font-medium border-b border-slate-200 pb-2">Sensitive admin-команды</h3>
     {% if let Some(blocker) = update_config_blocker %}
       <p class="text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded px-2 py-1">⚠ {{ blocker }} — кнопки ниже работают только с rc42 b37+ клиентами.</p>
     {% endif %}
@@ -179,6 +470,9 @@
     </details>
   </section>
 
+  <!-- ============================================================ -->
+  <!-- Раздел 6: Опасная зона                                       -->
+  <!-- ============================================================ -->
   <form method="POST" action="/devices/{{ device_id }}/delete" onsubmit="return confirm('Удалить устройство {{ serial }}? Это необратимо.')" class="bg-white rounded-lg shadow-sm p-4 flex items-center justify-between">
     <div>
       <p class="font-medium text-red-800">Опасная зона — hard revoke</p>

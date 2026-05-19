@@ -2,6 +2,77 @@
 
 Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.15] — 2026-05-19
+
+### Phase 27 — «Настроить устройство»: structured update-config + install-apk push
+
+**Переименование** — раздел `/devices/{id}/edit` теперь называется
+«Настроить устройство» (был «Изменить устройство»). Это не косметика —
+страница теперь делает много больше чем edit row в БД.
+
+**Structured update-config form** — новый раздел «Быстрая настройка» с
+типизированными dropdown'ами вместо raw-JSON textarea, который требовал
+от admin'а помнить точные filename'ы моделей и enum-значения:
+
+- **Модели (4 dropdown'а)** — `preferred_llm` / `preferred_translator_llm`
+  / `preferred_vlm` / `preferred_stt`. Hardcoded в Rust список
+  ([`web.rs llm_options()`](crates/outpost-server/src/routes/web.rs)) с
+  filename + label + описанием сценария применения («Soldier V25 4B —
+  рекомендуется», «Whisper tiny — для T0 устройств», etc.).
+- **Режимы (6 dropdown'ов)** — `tts_mode`, `answer_mode`, `translator_mode`,
+  `translator_audio_mode`, `log_level`, `cpu_thread_count`. Все enum-варианты
+  и числа из контракта.
+- **Tri-state переключатели (4)** — `wake_word_enabled`,
+  `translator_cloud_enabled`, `show_build_badge`, `telemetry_enabled`.
+  Состояния: «не менять» (по умолчанию), «вкл», «выкл».
+- **Рядом с каждым dropdown'ом** — текущее значение из
+  `current_state_json` (что сейчас на устройстве по последнему /sync
+  snapshot'у), pretty-печать через `current_settings` map в template'е.
+
+Новый handler [`device_config_structured_form`](crates/outpost-server/src/routes/web.rs)
+собирает form fields → JSON object → ставит в очередь push_messages с
+`command='update-config'`. Пустые поля не попадают в payload (idempotent —
+не отправляем «не менять» как явное присвоение).
+
+**Raw JSON форма не удалена** — переехала под `<details>` «Расширенно —
+сырой JSON patch». Для случаев когда нужен key, которого ещё нет в Quick
+Setup (например свежедобавленный в контракт).
+
+**Push новой версии приложения (install-apk)** — новый раздел в форме с
+тремя способами доставки APK:
+
+1. **Pin версии** через `pinned_version_id` (был и раньше) — pull-on-sync.
+2. **Раскатка через rollouts** (был и раньше) — fleet/canary policy.
+3. **install-apk push (новое)** — admin выбирает версию из dropdown'а,
+   нажимает «Поставить в очередь install-apk», server создаёт
+   `push_messages.command='install-apk'` с payload `{version_code,
+   version_name, sha256, size_bytes, url}`.
+
+Handler [`device_install_apk_form`](crates/outpost-server/src/routes/web.rs) валидирует:
+- Версия принадлежит этому customer'у.
+- `source_url` не null (иначе устройство не сможет скачать APK).
+- Гейт `versionCode >= 178 (rc42 b37)` — устройство должно поддерживать
+  push commands.
+
+⚠ **Client-side install-apk handler не реализован** — это AR Hud team's
+scope. До его реализации команда сохраняется в `applied_commands`
+с unknown-command status, без вреда. Контракт `install-apk` задокументирован
+как §3.4 в [tactical-ar-hud `MDM-DEVICE-CONTROL-CONTRACT.md`](https://github.com/daphate/tactical-ar-hud/blob/master/tools/MDM-DEVICE-CONTROL-CONTRACT.md).
+
+**Файлы:**
+- [`crates/outpost-server/templates/device_edit.html`](crates/outpost-server/templates/device_edit.html) — полная переработка, ~430 строк (было ~190).
+- [`crates/outpost-server/src/routes/web.rs`](crates/outpost-server/src/routes/web.rs):
+  - +10 helper functions для dropdown options (`llm_options`, `tts_mode_options`, и т.д.).
+  - +`DeviceEditTemplate` расширен 10 fields для options + `current_settings`.
+  - +`device_config_structured_form` handler.
+  - +`device_install_apk_form` handler.
+  - +2 routes: `/devices/{id}/config-structured`, `/devices/{id}/install-apk-form`.
+
+**Tests:** 97/97 passing. Новые tests **не добавлены** (UI form roundtrip
+без headless-browser-теста сложно покрыть; structured handler — simple
+form-parsing + delegation в существующий `queue_device_command_form`,
+который уже test'ируется через push command routes).
+
 ## [Unreleased] — Ops
 
 ### Observability stack: fix Prometheus / node-exporter boot race against tailscaled
