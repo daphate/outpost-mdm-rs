@@ -85,6 +85,10 @@ async fn main() -> Result<()> {
     let server_tz = state::load_server_tz(&pool).await;
     tracing::info!(timezone = %server_tz, "server timezone loaded");
 
+    // v0.18.16: pull saved datetime format (defaults to Ru per migration 0022).
+    let server_dt_format = state::load_server_dt_format(&pool).await;
+    tracing::info!(datetime_format = %server_dt_format.as_id(), "server datetime format loaded");
+
     let state = AppState::new(
         pool.clone(),
         cfg.app_secret,
@@ -97,6 +101,7 @@ async fn main() -> Result<()> {
         cfg.cloudru_apk_key,
         server_tz,
     );
+    state.set_dt_format(server_dt_format);
     let _scheduler_handle = scheduler::spawn(pool.clone());
     // v0.11: APK upstream watcher. Polls R2 mirror каждые 15 минут,
     // регистрирует свежие сборки Outpost-Android в `application_versions`.

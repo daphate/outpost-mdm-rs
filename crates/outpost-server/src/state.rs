@@ -7,6 +7,74 @@ use sqlx::SqlitePool;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
+/// v0.18.16: выбираемый формат вывода datetime в admin UI. Хранится в
+/// `settings.server.datetime_format` как короткая строка-id (`ru` /
+/// `iso` / `eu` / `us`). Default — `Ru` (DD.MM.YYYY HH:MM, привычный
+/// российскому пользователю).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DateFormat {
+    /// 19.05.2026 20:26 — российский формат
+    Ru,
+    /// 2026-05-19 20:26 — ISO 8601 short (debugging-friendly)
+    Iso,
+    /// 19/05/2026 20:26 — европейский слэш-формат
+    EuShort,
+    /// 05/19/2026 8:26 PM — американский формат с AM/PM
+    UsShort,
+}
+
+impl DateFormat {
+    /// Канонический id для хранения в БД / dropdown'ах.
+    pub fn as_id(&self) -> &'static str {
+        match self {
+            Self::Ru => "ru",
+            Self::Iso => "iso",
+            Self::EuShort => "eu",
+            Self::UsShort => "us",
+        }
+    }
+
+    /// Человекочитаемая подпись для dropdown'а на /settings.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Ru => "RU — 19.05.2026 20:26",
+            Self::Iso => "ISO — 2026-05-19 20:26",
+            Self::EuShort => "EU — 19/05/2026 20:26",
+            Self::UsShort => "US — 05/19/2026 8:26 PM",
+        }
+    }
+
+    /// Все варианты для рендеринга dropdown'а в settings.html.
+    pub fn all() -> [DateFormat; 4] {
+        [Self::Ru, Self::Iso, Self::EuShort, Self::UsShort]
+    }
+
+    /// Parse id из БД / form input. Unknown → fallback на Ru с warning.
+    pub fn from_id(s: &str) -> Self {
+        match s.trim() {
+            "ru" => Self::Ru,
+            "iso" => Self::Iso,
+            "eu" => Self::EuShort,
+            "us" => Self::UsShort,
+            other => {
+                tracing::warn!(value = %other, "unknown datetime_format id, fallback to ru");
+                Self::Ru
+            }
+        }
+    }
+
+    /// chrono strftime-spec для соответствующего варианта. Без секунд —
+    /// все варианты «HH:MM», без миллисекунд (юзеру они не нужны в UI).
+    pub fn strftime(&self) -> &'static str {
+        match self {
+            Self::Ru => "%d.%m.%Y %H:%M",
+            Self::Iso => "%Y-%m-%d %H:%M",
+            Self::EuShort => "%d/%m/%Y %H:%M",
+            Self::UsShort => "%m/%d/%Y %-I:%M %p",
+        }
+    }
+}
+
 /// Application state — held by axum's `with_state` and extracted via
 /// `axum::extract::State<AppState>`. Cheap to clone.
 #[derive(Clone)]
@@ -32,6 +100,9 @@ pub struct AppState {
     /// hot-reloaded by `settings_save` handler — no restart required.
     /// Default Europe/Moscow (MSK).
     pub server_tz: Arc<RwLock<Tz>>,
+    /// v0.18.16: формат отображения дат в admin UI. Hot-reloadable
+    /// аналогично server_tz. Default — DateFormat::Ru.
+    pub server_dt_format: Arc<RwLock<DateFormat>>,
 }
 
 impl AppState {
@@ -60,6 +131,22 @@ impl AppState {
             cloudru_signer: cloudru_signer.map(Arc::new),
             cloudru_apk_key: Arc::new(cloudru_apk_key),
             server_tz: Arc::new(RwLock::new(server_tz)),
+            server_dt_format: Arc::new(RwLock::new(DateFormat::Ru)),
+        }
+    }
+
+    /// Snapshot of current datetime format. Cheap (Copy under lock).
+    pub fn dt_format(&self) -> DateFormat {
+        *self
+            .server_dt_format
+            .read()
+            .expect("server_dt_format RwLock poisoned — bug somewhere upstream")
+    }
+
+    /// Replace the active datetime format atomically.
+    pub fn set_dt_format(&self, f: DateFormat) {
+        if let Ok(mut guard) = self.server_dt_format.write() {
+            *guard = f;
         }
     }
 
@@ -79,19 +166,61 @@ impl AppState {
         }
     }
 
-    /// Format an ISO-8601 UTC timestamp (`YYYY-MM-DD HH:MM:SS` from
-    /// `datetime('now')`) as `YYYY-MM-DD HH:MM` in the configured TZ.
-    /// Falls back to the raw string verbatim if parsing fails — admin UI
-    /// must never crash on a stale or malformed row.
+    /// Format a UTC timestamp string from БД as the user's selected
+    /// datetime format in the configured timezone.
+    ///
+    /// Поддерживает несколько входных форматов (в БД могут лежать оба):
+    /// - `"YYYY-MM-DD HH:MM:SS"` — SQLite `datetime('now')` (naive UTC,
+    ///   без TZ marker'а).
+    /// - `"YYYY-MM-DD HH:MM:SS.SSS"` — то же + миллисекунды.
+    /// - `"YYYY-MM-DDTHH:MM:SS[.SSS][+00:00|Z]"` — RFC 3339 / ISO 8601
+    ///   с TZ marker'ом (OTLP ingest пишет так).
+    ///
+    /// Falls back to the raw string verbatim if все парсеры провалились —
+    /// admin UI must never crash on a stale or malformed row.
     pub fn fmt_ts(&self, s: &str) -> String {
         use chrono::TimeZone;
-        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
-            .map(|naive_utc| {
-                let utc_dt = chrono::Utc.from_utc_datetime(&naive_utc);
-                let local = utc_dt.with_timezone(&self.tz());
-                local.format("%Y-%m-%d %H:%M").to_string()
-            })
-            .unwrap_or_else(|_| s.to_string())
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return String::new();
+        }
+        // 1. RFC 3339 / ISO 8601 — с TZ marker'ом.
+        let utc_dt = if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(trimmed) {
+            parsed.with_timezone(&chrono::Utc)
+        } else if let Ok(naive) =
+            chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M:%S%.f")
+        {
+            // 2. SQLite format с миллисекундами (treat as UTC).
+            chrono::Utc.from_utc_datetime(&naive)
+        } else if let Ok(naive) =
+            chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M:%S")
+        {
+            // 3. SQLite naive datetime, без TZ (treat as UTC).
+            chrono::Utc.from_utc_datetime(&naive)
+        } else {
+            // 4. Fallback — отдать raw, не падать.
+            return trimmed.to_string();
+        };
+        let local = utc_dt.with_timezone(&self.tz());
+        local.format(self.dt_format().strftime()).to_string()
+    }
+}
+
+/// Resolve the server's datetime format from
+/// `settings.server.datetime_format`. Idempotent. Falls back to
+/// DateFormat::Ru if the setting is absent / unrecognised.
+pub async fn load_server_dt_format(db: &SqlitePool) -> DateFormat {
+    let raw: Option<String> = sqlx::query_scalar(
+        "SELECT json_extract(value_json, '$') FROM settings WHERE key = 'server.datetime_format'",
+    )
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten()
+    .flatten();
+    match raw {
+        Some(s) => DateFormat::from_id(&s),
+        None => DateFormat::Ru,
     }
 }
 
@@ -189,9 +318,10 @@ mod tests {
     #[tokio::test]
     async fn fmt_ts_converts_utc_to_msk_with_plus3_offset() {
         let state = state_with_tz(chrono_tz::Europe::Moscow).await;
-        // UTC 2026-05-19 00:00:00 → MSK 2026-05-19 03:00. MSK = UTC+3 fixed.
+        // v0.18.16: default dt_format = Ru → "DD.MM.YYYY HH:MM".
+        // UTC 2026-05-19 00:00:00 → MSK 2026-05-19 03:00.
         let result = state.fmt_ts("2026-05-19 00:00:00");
-        assert_eq!(result, "2026-05-19 03:00", "UTC→MSK conversion broken");
+        assert_eq!(result, "19.05.2026 03:00", "UTC→MSK conversion broken (Ru format)");
     }
 
     #[tokio::test]
@@ -199,7 +329,7 @@ mod tests {
         let state = state_with_tz(chrono_tz::America::Los_Angeles).await;
         // UTC 2026-05-19 07:00:00 в Los_Angeles (DST = UTC-7) → 2026-05-19 00:00.
         let result = state.fmt_ts("2026-05-19 07:00:00");
-        assert_eq!(result, "2026-05-19 00:00", "UTC→LA conversion broken");
+        assert_eq!(result, "19.05.2026 00:00", "UTC→LA conversion broken (Ru format)");
     }
 
     #[tokio::test]
@@ -214,17 +344,60 @@ mod tests {
     #[tokio::test]
     async fn fmt_ts_utc_tz_is_identity_format() {
         let state = state_with_tz(chrono_tz::UTC).await;
-        assert_eq!(state.fmt_ts("2026-05-19 12:34:56"), "2026-05-19 12:34");
+        // Ru default.
+        assert_eq!(state.fmt_ts("2026-05-19 12:34:56"), "19.05.2026 12:34");
     }
 
     #[tokio::test]
     async fn set_tz_atomically_replaces_current() {
         let state = state_with_tz(chrono_tz::Europe::Moscow).await;
-        // Изначально MSK
-        assert_eq!(state.fmt_ts("2026-05-19 00:00:00"), "2026-05-19 03:00");
+        // Изначально MSK + Ru format.
+        assert_eq!(state.fmt_ts("2026-05-19 00:00:00"), "19.05.2026 03:00");
         // Переключаемся на UTC
         state.set_tz(chrono_tz::UTC);
-        assert_eq!(state.fmt_ts("2026-05-19 00:00:00"), "2026-05-19 00:00");
+        assert_eq!(state.fmt_ts("2026-05-19 00:00:00"), "19.05.2026 00:00");
+    }
+
+    #[tokio::test]
+    async fn fmt_ts_parses_rfc3339_with_timezone_offset() {
+        // v0.18.16: OTLP ingest пишет ts в формате "2026-05-19T17:26:44.966+00:00".
+        // Раньше fmt_ts падал на этот формат → возвращал raw. Теперь парсит как RFC3339.
+        let state = state_with_tz(chrono_tz::Europe::Moscow).await;
+        let result = state.fmt_ts("2026-05-19T17:26:44.966+00:00");
+        // UTC 17:26 → MSK 20:26.
+        assert_eq!(result, "19.05.2026 20:26");
+    }
+
+    #[tokio::test]
+    async fn fmt_ts_parses_sqlite_datetime_with_fractional_seconds() {
+        let state = state_with_tz(chrono_tz::UTC).await;
+        let result = state.fmt_ts("2026-05-19 12:34:56.789");
+        assert_eq!(result, "19.05.2026 12:34");
+    }
+
+    #[tokio::test]
+    async fn fmt_ts_respects_dt_format_iso() {
+        let state = state_with_tz(chrono_tz::UTC).await;
+        state.set_dt_format(DateFormat::Iso);
+        assert_eq!(state.fmt_ts("2026-05-19 12:34:56"), "2026-05-19 12:34");
+    }
+
+    #[tokio::test]
+    async fn fmt_ts_respects_dt_format_eu_short() {
+        let state = state_with_tz(chrono_tz::UTC).await;
+        state.set_dt_format(DateFormat::EuShort);
+        assert_eq!(state.fmt_ts("2026-05-19 12:34:56"), "19/05/2026 12:34");
+    }
+
+    #[tokio::test]
+    async fn date_format_from_id_handles_unknown_with_fallback() {
+        assert_eq!(DateFormat::from_id("ru"), DateFormat::Ru);
+        assert_eq!(DateFormat::from_id("iso"), DateFormat::Iso);
+        assert_eq!(DateFormat::from_id("eu"), DateFormat::EuShort);
+        assert_eq!(DateFormat::from_id("us"), DateFormat::UsShort);
+        // Unknown → fallback Ru
+        assert_eq!(DateFormat::from_id("zzz"), DateFormat::Ru);
+        assert_eq!(DateFormat::from_id(""), DateFormat::Ru);
     }
 
     /// Helper — миграция 0020 seed'ит `server.timezone = "Europe/Moscow"` в

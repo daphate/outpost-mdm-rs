@@ -5412,10 +5412,19 @@ struct SettingsTemplate {
     /// Askama equality в template (`tz == current_timezone`) — PartialEq
     /// между &str и String не реализован.
     all_timezones: Vec<String>,
+    /// v0.18.16: текущий формат datetime в виде id ('ru' / 'iso' / 'eu' / 'us').
+    current_dt_format: String,
+    /// Все варианты datetime-формата для dropdown'а.
+    all_dt_formats: Vec<DateFormatOption>,
     raw_entries: Vec<SettingEntry>,
     flash: Option<String>,
     error: Option<String>,
     current_locale: &'static str,
+}
+
+struct DateFormatOption {
+    id: String,
+    label: String,
 }
 
 struct SettingEntry {
@@ -5494,6 +5503,14 @@ async fn render_settings(
         .iter()
         .map(|tz| tz.name().to_string())
         .collect();
+    let current_dt_format = state.dt_format().as_id().to_string();
+    let all_dt_formats: Vec<DateFormatOption> = crate::state::DateFormat::all()
+        .iter()
+        .map(|f| DateFormatOption {
+            id: f.as_id().to_string(),
+            label: f.label().to_string(),
+        })
+        .collect();
     let mut resp = render(SettingsTemplate {
         user_login: user.login.clone(),
         enrollment_base_url,
@@ -5502,6 +5519,8 @@ async fn render_settings(
         branding_display_name,
         current_timezone,
         all_timezones,
+        current_dt_format,
+        all_dt_formats,
         raw_entries,
         flash,
         error,
@@ -5531,6 +5550,8 @@ struct SettingsForm {
     branding_display_name: Option<String>,
     /// v0.18.9: IANA timezone (Europe/Moscow, UTC, …).
     timezone: Option<String>,
+    /// v0.18.16: datetime format id ('ru' / 'iso' / 'eu' / 'us').
+    datetime_format: Option<String>,
 }
 
 async fn settings_save(
@@ -5586,9 +5607,21 @@ async fn settings_save(
         ))
     })?;
     upsert_setting(&mut tx, "server.timezone", &json_quote(tz_input)).await?;
+    // v0.18.16: datetime format. Невалидный id → fallback на Ru с warning
+    // (из DateFormat::from_id), что юзеру show-ит как «сохранено» с тем
+    // что мы реально приняли.
+    let dt_input = req.datetime_format.as_deref().unwrap_or("ru").trim();
+    let new_dt = crate::state::DateFormat::from_id(dt_input);
+    upsert_setting(
+        &mut tx,
+        "server.datetime_format",
+        &json_quote(new_dt.as_id()),
+    )
+    .await?;
     tx.commit().await?;
-    // Hot-reload tz в AppState — admin UI сразу подхватит без restart'а.
+    // Hot-reload tz + dt_format в AppState — admin UI сразу подхватит без restart'а.
     state.set_tz(new_tz);
+    state.set_dt_format(new_dt);
     let _ = user;
     Ok(redirect_with_flash("/settings", "Settings saved."))
 }
