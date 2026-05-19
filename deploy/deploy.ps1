@@ -41,7 +41,11 @@ wsl -d $WslDistro -- bash -lc $rsyncCmd
 if ($LASTEXITCODE -ne 0) { throw 'rsync into WSL failed' }
 
 Write-Host '==> cargo build --release (in WSL)' -ForegroundColor Cyan
-$buildCmd = '. $HOME/.cargo/env && cd /root/outpost-mdm-rs && cargo build --release --bin outpost-server'
+# v0.18.14: unset HTTP(S)_PROXY перед cargo. WSL2 auto-mirror подтягивает
+# Windows-side HTTP_PROXY (xray от Hide.My.Name VPN на 127.0.0.1:1301),
+# и если xray временно дропнут — cargo не может скачать crates с
+# crates.io. Прокси нам не нужен для crates.io в любом случае.
+$buildCmd = 'unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy; . $HOME/.cargo/env && cd /root/outpost-mdm-rs && cargo build --release --bin outpost-server'
 wsl -d $WslDistro -- bash -lc $buildCmd
 if ($LASTEXITCODE -ne 0) { throw 'cargo build failed inside WSL' }
 
@@ -51,7 +55,7 @@ if ($LASTEXITCODE -ne 0) { throw 'cargo build failed inside WSL' }
 # the same target/release artifacts from the build above on subsequent
 # runs, so the typical overhead is ~5 seconds.
 Write-Host '==> cargo test --release (in WSL)' -ForegroundColor Cyan
-$testCmd = '. $HOME/.cargo/env && cd /root/outpost-mdm-rs && cargo test --release --lib -p outpost-server --quiet'
+$testCmd = 'unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy; . $HOME/.cargo/env && cd /root/outpost-mdm-rs && cargo test --release --lib -p outpost-server --quiet'
 wsl -d $WslDistro -- bash -lc $testCmd
 if ($LASTEXITCODE -ne 0) { throw 'cargo test failed inside WSL — fix tests before deploying' }
 
