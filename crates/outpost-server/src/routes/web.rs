@@ -130,6 +130,12 @@ pub fn router() -> Router<AppState> {
         )
         // POST из form (alias action чтоб не путать с GET).
         .route("/files/{id}/distribute-form", post(file_distribute_form))
+        // v0.18.12: multi-file distribution в один target (device/group/fleet).
+        // Принимает Vec<file_ids> + target, цикл вызывает do_distribute_file
+        // для каждого. Идемпотентно — повторное распределение того же файла
+        // на тот же target создаст новую encrypted_distribution row, но
+        // дедупликация по sha256 + recipient выполняется в do_distribute_file.
+        .route("/files/bulk-distribute", post(files_bulk_distribute))
         // v0.15 (MDM-DEVICE-CONTROL-CONTRACT §3): destructive admin commands
         // через web form'ы (alternative к JSON API в routes/devices.rs).
         .route(
@@ -2934,6 +2940,114 @@ async fn file_distribute_form(
     }
 }
 
+/// v0.18.12: загрузить N файлов одной операцией на один target.
+///
+/// HTML form parses через `parse_form` (стандартный helper в этом файле для
+/// POST'ов чтобы избежать axum::Form ограничений на repeated keys). Поле
+/// `file_ids` повторяется N раз (по одному на checkbox), `target_type`
+/// + `target_device_id`/`target_group_id` — один на форму.
+///
+/// Делает loop по file_ids, для каждого вызывает существующий
+/// `do_distribute_file` с тем же target. Накопленные результаты — total
+/// command_ids, total skipped, partial-failures.
+async fn files_bulk_distribute(
+    user: WebUser,
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> Response {
+    let form = parse_form(&body);
+    let file_ids: Vec<i64> = form
+        .all("file_ids")
+        .into_iter()
+        .filter_map(|s| s.parse::<i64>().ok())
+        .collect();
+    if file_ids.is_empty() {
+        return redirect_with_flash("/files", "Не выбрано ни одного файла.");
+    }
+    let target_type = form.first("target_type").unwrap_or("");
+    let target_json = match target_type {
+        "device" => {
+            let Some(dev_id) = form
+                .first("target_device_id")
+                .and_then(|s| s.parse::<i64>().ok())
+            else {
+                return redirect_with_flash("/files", "Не выбрано устройство.");
+            };
+            serde_json::json!({"type": "device", "id": dev_id})
+        }
+        "group" => {
+            let Some(g_id) = form
+                .first("target_group_id")
+                .and_then(|s| s.parse::<i64>().ok())
+            else {
+                return redirect_with_flash("/files", "Не выбрана группа.");
+            };
+            serde_json::json!({"type": "group", "id": g_id})
+        }
+        "customer_fleet" => serde_json::json!({"type": "customer_fleet"}),
+        _ => {
+            return redirect_with_flash("/files", "Не выбран target_type.");
+        }
+    };
+
+    let mut total_commands: i64 = 0;
+    let mut total_skipped_no_pubkey: i64 = 0;
+    let mut total_skipped_legacy: i64 = 0;
+    let mut failures: Vec<String> = Vec::new();
+    let actor: crate::routes::distribute::DistributeActor = (&user).into();
+
+    for file_id in &file_ids {
+        // Pull original_name из uploaded_files для filename поля.
+        let original_name: Option<String> = sqlx::query_scalar(
+            "SELECT original_name FROM uploaded_files WHERE id = ? AND customer_id = ?",
+        )
+        .bind(file_id)
+        .bind(user.customer_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
+        let Some(filename) = original_name else {
+            failures.push(format!("file_id={file_id} not found"));
+            continue;
+        };
+        let req = crate::routes::distribute::DistributeRequestRaw {
+            target: target_json.clone(),
+            filename,
+            kind: "arbitrary_blob".to_string(),
+            expires_at: None,
+            notes: Some(format!("bulk-distribute by user {} via UI", user.login)),
+        };
+        match crate::routes::distribute::do_distribute_file(&state, &actor, *file_id, req).await {
+            Ok(resp) => {
+                total_commands += resp.command_ids.len() as i64;
+                total_skipped_no_pubkey += resp.skipped_no_pubkey;
+                total_skipped_legacy += resp.skipped_old_clients;
+            }
+            Err(e) => failures.push(format!("file_id={file_id}: {e:?}")),
+        }
+    }
+
+    let msg = if failures.is_empty() {
+        format!(
+            "Bulk-distribute: {} файлов → {} команд, skipped pubkey={}, legacy={}",
+            file_ids.len(),
+            total_commands,
+            total_skipped_no_pubkey,
+            total_skipped_legacy,
+        )
+    } else {
+        format!(
+            "Bulk-distribute (с ошибками): {} команд, skipped pubkey={}, legacy={}; failures: {}",
+            total_commands,
+            total_skipped_no_pubkey,
+            total_skipped_legacy,
+            failures.join("; "),
+        )
+    };
+    redirect_with_flash("/files", &msg)
+}
+
 // ----- §3 device-command form handlers --------------------------------------
 
 async fn device_rotate_cloudru_creds_form(
@@ -4454,6 +4568,11 @@ struct FilesTemplate {
     user_login: String,
     total: i64,
     files: Vec<FileRow>,
+    /// v0.18.12: устройства/группы для dropdown'а в bulk-distribute bar.
+    /// Те же sources что в FileDistributeTemplate, но переиспользуем
+    /// существующие structs.
+    target_devices: Vec<DistributeDeviceOption>,
+    target_groups: Vec<GroupOption>,
     flash: Option<String>,
     create_error: Option<String>,
 }
@@ -4514,10 +4633,29 @@ async fn render_files(
             uploaded_at: state.fmt_ts(&r.uploaded_at),
         })
         .collect();
+    // v0.18.12: targets для bulk-distribute bar.
+    let target_devices: Vec<DistributeDeviceOption> = sqlx::query_as(
+        "SELECT id, serial, display_name FROM devices \
+         WHERE customer_id = ? AND is_active = 1 \
+         ORDER BY serial LIMIT 500",
+    )
+    .bind(user.customer_id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+    let target_groups: Vec<GroupOption> = sqlx::query_as(
+        "SELECT id, name FROM groups WHERE customer_id = ? ORDER BY name LIMIT 200",
+    )
+    .bind(user.customer_id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
     let mut resp = render(FilesTemplate {
         user_login: user.login.clone(),
         total,
         files,
+        target_devices,
+        target_groups,
         flash,
         create_error,
     });
@@ -4530,8 +4668,14 @@ async fn files_upload(
     State(state): State<AppState>,
     multipart: Multipart,
 ) -> Response {
-    match try_upload_file(&user, &state, multipart).await {
-        Ok(()) => redirect_with_flash("/files", "File uploaded."),
+    match try_upload_files(&user, &state, multipart).await {
+        Ok(0) => render_files(&user, &state, None, Some("Не было файлов в форме".into()))
+            .await
+            .unwrap_or_else(|_| {
+                (StatusCode::INTERNAL_SERVER_ERROR, "render failed").into_response()
+            }),
+        Ok(1) => redirect_with_flash("/files", "Файл загружен."),
+        Ok(n) => redirect_with_flash("/files", &format!("Загружено файлов: {n}.")),
         Err(msg) => render_files(&user, &state, None, Some(msg))
             .await
             .unwrap_or_else(|_| {
@@ -4540,16 +4684,29 @@ async fn files_upload(
     }
 }
 
-async fn try_upload_file(
+/// v0.18.12: multi-file upload. Принимает 1..N полей `file` в одном
+/// multipart-запросе (HTML5 `<input multiple>` или drag-drop нескольких
+/// файлов в dropzone). Каждый файл сохраняется в storage и получает
+/// отдельную строку в `uploaded_files`. Поле `kind` (опционально) —
+/// применяется ко всем файлам в batch'е.
+///
+/// Возвращает количество успешно сохранённых файлов. На первой ошибке
+/// сохранения — откатываемся: ранее уже сохранённые в этом batch'е
+/// файлы НЕ удаляются (admin может почистить через /files delete),
+/// но в БД нужные строки также не появятся для уже-битого файла.
+/// Это компромисс — атомарный rollback требует двухфазной операции
+/// storage+DB.
+async fn try_upload_files(
     user: &WebUser,
     state: &AppState,
     mut multipart: Multipart,
-) -> Result<(), String> {
+) -> Result<usize, String> {
     use sha2::{Digest, Sha256};
+    // Сначала вычитываем потенциальный `kind` (если присутствует, применяется
+    // ко всем file-частям batch'а). Потом обрабатываем все `file` parts по
+    // мере поступления.
     let mut kind = "generic".to_string();
-    let mut bytes: Option<Vec<u8>> = None;
-    let mut original: Option<String> = None;
-    let mut content_type: Option<String> = None;
+    let mut saved: usize = 0;
     while let Some(field) = multipart
         .next_field()
         .await
@@ -4564,48 +4721,62 @@ async fn try_upload_file(
                 }
             }
             "file" => {
-                original = field.file_name().map(|s| s.to_string());
-                content_type = field.content_type().map(|s| s.to_string());
-                let data = field.bytes().await.map_err(|e| format!("{e}"))?;
-                bytes = Some(data.to_vec());
+                let original_name = field
+                    .file_name()
+                    .map(|s| s.to_string())
+                    .ok_or_else(|| "file part без filename".to_string())?;
+                if original_name.trim().is_empty() {
+                    // HTML5 multiple-input иногда шлёт пустой file part если
+                    // юзер выбрал и потом снял выбор — игнорируем.
+                    continue;
+                }
+                let content_type = field.content_type().map(|s| s.to_string());
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|e| format!("read part bytes: {e}"))?;
+                if bytes.is_empty() {
+                    // Пустой файл — пропускаем.
+                    continue;
+                }
+                let extension = std::path::Path::new(&original_name)
+                    .extension()
+                    .and_then(|e| e.to_str());
+                let stored =
+                    crate::storage::write_bytes(state.app_files_dir.as_ref(), &bytes, extension)
+                        .await
+                        .map_err(|e| {
+                            tracing::error!(error = %e, name = %original_name, "storage write failed");
+                            format!("storage write failed для {original_name}")
+                        })?;
+                let mut hasher = Sha256::new();
+                hasher.update(&bytes);
+                let sha = hex::encode(hasher.finalize());
+                sqlx::query(
+                    "INSERT INTO uploaded_files \
+                        (customer_id, file_path, original_name, content_type, file_size_bytes, sha256, kind, uploaded_by) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                )
+                .bind(user.customer_id)
+                .bind(&stored.relative_path)
+                .bind(&original_name)
+                .bind(&content_type)
+                .bind(bytes.len() as i64)
+                .bind(&sha)
+                .bind(&kind)
+                .bind(user.id)
+                .execute(&state.db)
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = %e, name = %original_name, "files insert failed");
+                    format!("database error для {original_name}")
+                })?;
+                saved += 1;
             }
             _ => {}
         }
     }
-    let bytes = bytes.ok_or_else(|| "file is required".to_string())?;
-    let original_name = original.ok_or_else(|| "file has no name".to_string())?;
-    let extension = std::path::Path::new(&original_name)
-        .extension()
-        .and_then(|e| e.to_str());
-    let stored = crate::storage::write_bytes(state.app_files_dir.as_ref(), &bytes, extension)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "storage write failed");
-            "storage write failed".to_string()
-        })?;
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    let sha = hex::encode(hasher.finalize());
-    sqlx::query(
-        "INSERT INTO uploaded_files \
-            (customer_id, file_path, original_name, content_type, file_size_bytes, sha256, kind, uploaded_by) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(user.customer_id)
-    .bind(&stored.relative_path)
-    .bind(&original_name)
-    .bind(&content_type)
-    .bind(bytes.len() as i64)
-    .bind(&sha)
-    .bind(&kind)
-    .bind(user.id)
-    .execute(&state.db)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "files insert failed");
-        "database error".to_string()
-    })?;
-    Ok(())
+    Ok(saved)
 }
 
 async fn files_delete(

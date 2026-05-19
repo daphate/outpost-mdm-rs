@@ -16,14 +16,31 @@
   {% endif %}
 
   <details class="bg-white rounded-lg shadow-sm p-4" {% if create_error.is_some() %}open{% endif %}>
-    <summary class="cursor-pointer font-medium text-slate-700">+ Загрузить файл</summary>
-    <form method="POST" action="/files/upload" enctype="multipart/form-data" class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
-      <label class="block md:col-span-2">
-        <span class="text-xs uppercase tracking-wide text-slate-500">Файл</span>
-        <input name="file" type="file" required class="mt-1 w-full text-sm">
-      </label>
+    <summary class="cursor-pointer font-medium text-slate-700">+ Загрузить файлы</summary>
+    {# v0.18.12: drag-drop dropzone + multi-file input + folder upload.
+       JavaScript обрабатывает drop event, переносит файлы в скрытый <input
+       name="file" multiple> (через DataTransfer API). Submit отправляет
+       один multipart с N file-частями. Серверный handler files_upload
+       итерирует по всем 'file' parts. #}
+    <form id="upload-form" method="POST" action="/files/upload" enctype="multipart/form-data" class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
+      <div class="md:col-span-3">
+        <div id="dropzone"
+             class="border-2 border-dashed border-slate-300 rounded-lg p-8 text-center cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition"
+             onclick="document.getElementById('file-input').click()">
+          <div class="text-slate-600">
+            <p class="text-base font-medium">Перетащите файлы или папку сюда</p>
+            <p class="text-xs text-slate-500 mt-1">либо нажмите для выбора (можно выделить несколько)</p>
+          </div>
+          <input id="file-input" name="file" type="file" multiple class="hidden">
+          <div id="file-list" class="mt-3 text-xs text-left text-slate-600"></div>
+        </div>
+        <div class="mt-2 flex items-center justify-end gap-2">
+          <button type="button" id="folder-btn" class="text-xs text-slate-600 hover:text-slate-900 underline">Выбрать папку</button>
+          <input id="folder-input" name="file" type="file" webkitdirectory directory multiple class="hidden">
+        </div>
+      </div>
       <label class="block">
-        <span class="text-xs uppercase tracking-wide text-slate-500">Тип</span>
+        <span class="text-xs uppercase tracking-wide text-slate-500">Тип (применится ко всем файлам)</span>
         <select name="kind" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
           <option value="generic" selected>generic</option>
           <option value="knowledge-db">knowledge-db</option>
@@ -32,51 +49,165 @@
           <option value="icon">icon</option>
         </select>
       </label>
-      <div class="md:col-span-3 flex items-center justify-between">
-        <p class="text-xs text-slate-500">Файлы видны здесь независимо от того, привязаны они к версии приложения или нет.</p>
+      <div class="md:col-span-2 flex items-center justify-end">
         <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded">Загрузить</button>
       </div>
       {% if let Some(e) = create_error %}
         <p class="md:col-span-3 text-red-600 text-sm">{{ e }}</p>
       {% endif %}
     </form>
+    <script>
+      (function() {
+        const dz = document.getElementById('dropzone');
+        const fi = document.getElementById('file-input');
+        const fd = document.getElementById('folder-input');
+        const fb = document.getElementById('folder-btn');
+        const fl = document.getElementById('file-list');
+
+        function renderList(files) {
+          if (!files || files.length === 0) { fl.innerHTML = ''; return; }
+          const items = Array.from(files).slice(0, 20).map(f => {
+            const size = f.size > 1024 * 1024
+              ? (f.size / 1024 / 1024).toFixed(1) + ' MB'
+              : (f.size / 1024).toFixed(1) + ' KB';
+            // webkitRelativePath показывает иерархию при folder upload
+            const name = f.webkitRelativePath || f.name;
+            return '<div class="font-mono">' + name + ' <span class="text-slate-400">' + size + '</span></div>';
+          });
+          const more = files.length > 20 ? '<div class="text-slate-400 mt-1">…и ещё ' + (files.length - 20) + ' файлов</div>' : '';
+          fl.innerHTML = '<div class="font-medium text-slate-700 mb-1">Выбрано: ' + files.length + '</div>' + items.join('') + more;
+        }
+
+        fi.addEventListener('change', () => renderList(fi.files));
+        fd.addEventListener('change', () => {
+          // Перенесём файлы из folder-input в основной file-input через DataTransfer
+          const dt = new DataTransfer();
+          for (const f of fd.files) dt.items.add(f);
+          fi.files = dt.files;
+          renderList(fi.files);
+        });
+        fb.addEventListener('click', () => fd.click());
+
+        ['dragenter', 'dragover'].forEach(e => dz.addEventListener(e, ev => {
+          ev.preventDefault();
+          dz.classList.add('border-blue-500', 'bg-blue-50');
+        }));
+        ['dragleave', 'drop'].forEach(e => dz.addEventListener(e, ev => {
+          ev.preventDefault();
+          dz.classList.remove('border-blue-500', 'bg-blue-50');
+        }));
+        dz.addEventListener('drop', ev => {
+          ev.preventDefault();
+          // Перенесём dropped файлы в hidden input через DataTransfer
+          const dt = new DataTransfer();
+          for (const f of ev.dataTransfer.files) dt.items.add(f);
+          fi.files = dt.files;
+          renderList(fi.files);
+        });
+      })();
+    </script>
   </details>
 
-  <div class="bg-white rounded-lg shadow-sm overflow-hidden">
-    <table class="min-w-full divide-y divide-slate-200">
-      <thead class="bg-slate-50">
-        <tr class="text-xs uppercase tracking-wide text-slate-500 text-left">
-          <th class="px-4 py-3">Имя файла</th>
-          <th class="px-4 py-3">Тип</th>
-          <th class="px-4 py-3">Размер</th>
-          <th class="px-4 py-3">SHA-256</th>
-          <th class="px-4 py-3">Загружен</th>
-          <th class="px-4 py-3 text-right">Действия</th>
-        </tr>
-      </thead>
-      <tbody class="divide-y divide-slate-100">
-        {% for f in files %}
-        <tr class="hover:bg-slate-50">
-          <td class="px-4 py-3">{{ f.original_name }}</td>
-          <td class="px-4 py-3">
-            <span class="inline-block px-2 py-0.5 text-xs font-medium rounded bg-slate-100 text-slate-700">{{ f.kind }}</span>
-          </td>
-          <td class="px-4 py-3 text-sm">{{ f.size_human }}</td>
-          <td class="px-4 py-3 font-mono text-xs">{{ f.sha256_short }}…</td>
-          <td class="px-4 py-3 text-sm text-slate-500">{{ f.uploaded_at }}</td>
-          <td class="px-4 py-3 text-right text-sm">
-            <a href="/files/{{ f.id }}/distribute" class="text-blue-600 hover:text-blue-800 mr-3">Распространить →</a>
-            <form method="POST" action="/files/{{ f.id }}/delete" onsubmit="return confirm('Удалить файл {{ f.original_name }}? Версии приложений, ссылающиеся на него, перестанут работать.')" class="inline">
-              <button class="text-red-600 hover:text-red-800">Удалить</button>
-            </form>
-          </td>
-        </tr>
-        {% endfor %}
-        {% if files.is_empty() %}
-        <tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">Файлы ещё не загружены.</td></tr>
-        {% endif %}
-      </tbody>
-    </table>
-  </div>
+  {# v0.18.12: bulk-distribute selected files. Checkboxes в каждой строке,
+     общая форма submit'ит file_ids[] на /files/bulk-distribute. Цикл на
+     server-side создаёт N×devices encrypted_distribution команд. #}
+  <form id="bulk-form" method="POST" action="/files/bulk-distribute">
+    <div class="bg-white rounded-lg shadow-sm overflow-hidden">
+      <table class="min-w-full divide-y divide-slate-200">
+        <thead class="bg-slate-50">
+          <tr class="text-xs uppercase tracking-wide text-slate-500 text-left">
+            <th class="px-4 py-3 w-8">
+              <input type="checkbox" id="select-all"
+                     onclick="document.querySelectorAll('.file-row-cb').forEach(c => c.checked = this.checked); updateBulkBar();">
+            </th>
+            <th class="px-4 py-3">Имя файла</th>
+            <th class="px-4 py-3">Тип</th>
+            <th class="px-4 py-3">Размер</th>
+            <th class="px-4 py-3">SHA-256</th>
+            <th class="px-4 py-3">Загружен</th>
+            <th class="px-4 py-3 text-right">Действия</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+          {% for f in files %}
+          <tr class="hover:bg-slate-50">
+            <td class="px-4 py-3">
+              <input type="checkbox" class="file-row-cb" name="file_ids" value="{{ f.id }}" onclick="updateBulkBar()">
+            </td>
+            <td class="px-4 py-3">{{ f.original_name }}</td>
+            <td class="px-4 py-3">
+              <span class="inline-block px-2 py-0.5 text-xs font-medium rounded bg-slate-100 text-slate-700">{{ f.kind }}</span>
+            </td>
+            <td class="px-4 py-3 text-sm">{{ f.size_human }}</td>
+            <td class="px-4 py-3 font-mono text-xs">{{ f.sha256_short }}…</td>
+            <td class="px-4 py-3 text-sm text-slate-500">{{ f.uploaded_at }}</td>
+            <td class="px-4 py-3 text-right text-sm">
+              <a href="/files/{{ f.id }}/distribute" class="text-blue-600 hover:text-blue-800 mr-3">Распространить →</a>
+              <button type="button" onclick="confirmDelete({{ f.id }}, '{{ f.original_name }}')" class="text-red-600 hover:text-red-800">Удалить</button>
+            </td>
+          </tr>
+          {% endfor %}
+          {% if files.is_empty() %}
+          <tr><td colspan="7" class="px-4 py-8 text-center text-slate-400">Файлы ещё не загружены.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+
+    {# Bulk action bar — появляется когда выбран хотя бы один файл. #}
+    <div id="bulk-bar" class="hidden mt-3 bg-blue-50 border border-blue-200 rounded-lg p-4 space-y-3">
+      <div class="flex items-center justify-between">
+        <span class="font-medium text-blue-900">Выбрано файлов: <span id="bulk-count">0</span></span>
+        <button type="button" onclick="document.querySelectorAll('.file-row-cb').forEach(c => c.checked = false); document.getElementById('select-all').checked = false; updateBulkBar();" class="text-xs text-blue-700 hover:underline">Снять выбор</button>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <label class="block">
+          <span class="text-xs uppercase tracking-wide text-slate-500">Куда</span>
+          <select name="target_type" onchange="document.getElementById('target-device').classList.toggle('hidden', this.value !== 'device'); document.getElementById('target-group').classList.toggle('hidden', this.value !== 'group');" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+            <option value="device">На устройство</option>
+            <option value="group">На группу</option>
+            <option value="customer_fleet">На весь парк</option>
+          </select>
+        </label>
+        <label id="target-device" class="block">
+          <span class="text-xs uppercase tracking-wide text-slate-500">Устройство</span>
+          <select name="target_device_id" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+            {% for d in target_devices %}
+            <option value="{{ d.id }}">{{ d.serial }}{% if let Some(dn) = d.display_name %} — {{ dn }}{% endif %}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label id="target-group" class="block hidden">
+          <span class="text-xs uppercase tracking-wide text-slate-500">Группа</span>
+          <select name="target_group_id" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+            {% for g in target_groups %}
+            <option value="{{ g.id }}">{{ g.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <div class="md:col-span-3 flex items-center justify-end">
+          <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded">Распространить выбранные</button>
+        </div>
+      </div>
+    </div>
+  </form>
+
+  <script>
+    function updateBulkBar() {
+      const sel = document.querySelectorAll('.file-row-cb:checked');
+      const bar = document.getElementById('bulk-bar');
+      document.getElementById('bulk-count').textContent = sel.length;
+      bar.classList.toggle('hidden', sel.length === 0);
+    }
+    function confirmDelete(id, name) {
+      if (confirm('Удалить файл ' + name + '? Версии приложений, ссылающиеся на него, перестанут работать.')) {
+        const f = document.createElement('form');
+        f.method = 'POST';
+        f.action = '/files/' + id + '/delete';
+        document.body.appendChild(f);
+        f.submit();
+      }
+    }
+  </script>
 </main>
 {% endblock %}

@@ -2,6 +2,74 @@
 
 Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.13] — 2026-05-19
+
+### Phase 26 — UX polish: timezone, groups UI, bulk file ops
+
+**Default configuration (v0.18.8)** — каждый customer получает seed-конфиг
+«По умолчанию» через migration 0019, при создании нового устройства она
+автоматически назначается через `customers.default_configuration_id`.
+В `/configurations` отображается с амбер-бейджем + кнопка «Сделать
+дефолтной». Также — `build.rs` для outpost-migrations crate
+(`cargo:rerun-if-changed=migrations`), без него incremental cargo
+не пересобирал embedded migrations при изменении только SQL-файлов
+(silent-skip bug, который мог прятать миграции в ранних deploy'ах).
+
+**Server timezone (v0.18.9)** — admin UI рендерит все timestamps в
+configurable IANA timezone (default `Europe/Moscow`, MSK). Migration
+0020 seed'ит ключ `settings.server.timezone`. AppState.fmt_ts метод
+конвертит UTC из БД → server_tz через chrono-tz. /settings page имеет
+dropdown с 596 IANA timezone'ами, settings_save обновляет
+Arc<RwLock<Tz>> в AppState — hot-reload без restart'а сервера.
+
+**Regression tests + deploy gate (v0.18.10, v0.18.11)** — добавлены
+13 тестов: 4 на `trim_to` (regression на v0.18.7 byte-slice panic с
+кириллицей), 9 на timezone (fmt_ts корректность UTC→MSK, fallback на
+malformed input, atomic set_tz, load_server_tz с default'ами,
+migration 0020 sanity). deploy.ps1 теперь делает `cargo test
+--release --lib` после build и до scp — broken тесты блокируют deploy.
+
+**Multi-file upload (v0.18.12)** — `/files` имеет drag-drop dropzone +
+HTML5 `<input multiple webkitdirectory>`, можно перетащить целую папку.
+files_upload handler итерирует по всем `file` parts multipart запроса
+и создаёт N row'ов в `uploaded_files` за один HTTP-запрос. Flash-message
+отчитывается о количестве загруженных файлов.
+
+**Multi-file distribute (v0.18.12)** — checkboxes на `/files` rows
++ bulk-action bar (появляется когда выбран ≥1 файл). Submit form'ы на
+`POST /files/bulk-distribute` с file_ids[] + target_type + target_id
+итерирует через `do_distribute_file` для каждого выбранного, накапливая
+total_commands + per-file failures. Flash-message содержит сводку.
+
+**Groups UI (v0.18.6)** — на `/devices` колонка «Группы» (chip badges),
+на `/groups` группы стали раскрывающимися с табличкой членов и формой
+«Добавить устройство». Routes POST `/groups/{id}/members` + DELETE с
+проверкой ownership на двойной JOIN (group AND device должны
+принадлежать одному customer'у).
+
+**Grafana SSO (v0.18.2)** — Grafana под `auth_request /__mdm_auth_check`,
+запросы без cookie или с pending_2fa session → 401 → redirect на
+/login. Grafana ini переведена на `anonymous = Admin` +
+`disable_login_form = true` (полное доверие nginx-слою). Один логин
+с 2FA даёт доступ ко всему admin UI + Grafana + Prometheus.
+
+**Embedded static assets (v0.18.0)** — tailwind.js + htmx.min.js вшиты
+в release-binary через `include_bytes!` (раньше тянулись с
+cdn.tailwindcss.com / unpkg.com — admin UI ломался под VPN с медленными
+CDN-маршрутами). Сейчас `<script src="/static/*">` ходит на тот же
+hostname, без внешних зависимостей.
+
+**Adaptive width (v0.18.5, v0.18.13)** — стандартизованы max-width
+классы:
+- Listing pages (`/devices`, `/groups`, `/configurations`, `/files`,
+  `/applications`, `/users`, `/telemetry`): `max-w-7xl`
+- Edit pages с tables (`/devices/{id}/edit`, `/configurations/{id}/edit`,
+  `/file/{id}/distribute`): `max-w-5xl`
+- Pure forms (`/profile`, `/me/2fa`, `/me/password`, group_edit):
+  `max-w-3xl` / `max-w-md` для compactness
+- Login/signup: `max-w-sm/md` (specifically narrow)
+- Settings (`/settings` с raw_entries table): `max-w-7xl`
+
 ## [Unreleased]
 
 ### Phase 24 — Русский язык по умолчанию + i18n framework
