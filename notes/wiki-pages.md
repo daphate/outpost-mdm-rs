@@ -22,6 +22,7 @@
 | 49792576 | `.../client-telemetry-contract` | [`docs/CLIENT-TELEMETRY-CONTRACT.md`](../docs/CLIENT-TELEMETRY-CONTRACT.md) | Контракт client telemetry |
 | 49792577 | `.../v25-soldier-rollout` | [`docs/V25-SOLDIER-ROLLOUT.md`](../docs/V25-SOLDIER-ROLLOUT.md) | V25 Soldier rollout |
 | 49792580 | `.../changelog` | [`CHANGELOG.md`](../CHANGELOG.md) | Журнал изменений |
+| 49792840 | `.../library-archives` | [`docs/LIBRARY-ARCHIVES.md`](../docs/LIBRARY-ARCHIVES.md) | Library archives — server-side mirror |
 
 ## URLs для просмотра
 
@@ -34,6 +35,7 @@
 - Client telemetry: https://wiki.yandex.ru/homepage/nii-ii/outpost-mdm-rs/client-telemetry-contract
 - V25 rollout: https://wiki.yandex.ru/homepage/nii-ii/outpost-mdm-rs/v25-soldier-rollout
 - Changelog: https://wiki.yandex.ru/homepage/nii-ii/outpost-mdm-rs/changelog
+- Library archives: https://wiki.yandex.ru/homepage/nii-ii/outpost-mdm-rs/library-archives
 
 ## Workflow обновления
 
