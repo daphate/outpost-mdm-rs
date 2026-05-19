@@ -68,7 +68,7 @@
           <td class="px-4 py-3 text-sm font-medium">{{ v.version_code }}</td>
           <td class="px-4 py-3 text-sm">{{ v.version_name }}</td>
           <td class="px-4 py-3 text-sm">{{ v.file_size }}</td>
-          <td class="px-4 py-3 font-mono text-xs">{{ v.sha256_short }}…</td>
+          <td class="px-4 py-3 font-mono text-sm">{{ v.sha256_short }}…</td>
           <td class="px-4 py-3 text-sm">
             {% if let Some(src) = v.source_url %}
               <span class="inline-block px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 text-xs font-medium mr-1">discovery</span>

@@ -78,9 +78,9 @@
       <tbody class="divide-y divide-slate-100">
         {% for e in raw_entries %}
         <tr>
-          <td class="px-4 py-2 font-mono text-xs">{{ e.key }}</td>
-          <td class="px-4 py-2 font-mono text-xs">{{ e.value_json }}</td>
-          <td class="px-4 py-2 text-xs text-slate-500">{{ e.updated_at }}</td>
+          <td class="px-4 py-2 font-mono text-sm">{{ e.key }}</td>
+          <td class="px-4 py-2 font-mono text-sm">{{ e.value_json }}</td>
+          <td class="px-4 py-2 text-sm text-slate-500">{{ e.updated_at }}</td>
         </tr>
         {% endfor %}
         {% if raw_entries.is_empty() %}

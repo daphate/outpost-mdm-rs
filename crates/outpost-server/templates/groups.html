@@ -72,7 +72,7 @@
               <tbody class="divide-y divide-slate-100">
                 {% for m in g.members %}
                 <tr>
-                  <td class="px-3 py-1.5 font-mono text-xs">
+                  <td class="px-3 py-1.5 font-mono text-sm">
                     <a href="/devices/{{ m.id }}/telemetry" class="text-blue-600 hover:underline">{{ m.serial }}</a>
                   </td>
                   <td class="px-3 py-1.5 text-sm">{{ m.display_name }}</td>
