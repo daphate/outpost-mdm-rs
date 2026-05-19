@@ -20,43 +20,337 @@
 
   <details class="bg-white rounded-lg shadow-sm p-4" {% if create_error.is_some() %}open{% endif %}>
     <summary class="cursor-pointer font-medium text-slate-700">+ Запланировать push-команду</summary>
-    <form method="POST" action="/push/new" class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
-      <label class="block">
-        <span class="text-xs uppercase tracking-wide text-slate-500">Цель</span>
-        <select name="target" required class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
-          <option value="">— выберите —</option>
-          {% for d in target_devices %}<option value="device:{{ d.id }}">устройство · {{ d.serial }}</option>{% endfor %}
-          {% for g in target_groups %}<option value="group:{{ g.id }}">группа · {{ g.name }}</option>{% endfor %}
-        </select>
-      </label>
-      <label class="block">
-        <span class="text-xs uppercase tracking-wide text-slate-500">Команда</span>
-        <select name="command" required class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm font-mono">
-          <option value="reboot">reboot</option>
-          <option value="install-apk">install-apk</option>
-          <option value="update-config">update-config</option>
-          <option value="sync-models">sync-models</option>
-          <option value="sync-knowledge">sync-knowledge</option>
-          <option value="sync-maps">sync-maps</option>
-          <option value="remote-wipe">remote-wipe</option>
-        </select>
-      </label>
-      <label class="block">
-        <span class="text-xs uppercase tracking-wide text-slate-500">Запуск (UTC, опционально)</span>
-        <input name="due_at" type="datetime-local" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
-      </label>
-      <label class="block md:col-span-3">
-        <span class="text-xs uppercase tracking-wide text-slate-500">JSON-полезная нагрузка</span>
-        <textarea name="payload_json" rows="2" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm font-mono">{}</textarea>
-      </label>
-      <div class="md:col-span-3 flex items-center justify-between">
+
+    {# v0.18.16: structured push form. JS-builder собирает payload_json
+       из активного command-panel'а перед submit. Старый POST handler
+       /push/new принимает плоский payload_json без изменений. #}
+    <form id="push-form" method="POST" action="/push/new" class="space-y-4 mt-4"
+          onsubmit="return buildPushPayload();">
+
+      <!-- Цель + Команда + Запуск (общие поля) -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <label class="block">
+          <span class="text-xs uppercase tracking-wide text-slate-500">Цель</span>
+          <select name="target" required class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+            <option value="">— выберите —</option>
+            {% for d in target_devices %}<option value="device:{{ d.id }}">устройство · {{ d.serial }}</option>{% endfor %}
+            {% for g in target_groups %}<option value="group:{{ g.id }}">группа · {{ g.name }}</option>{% endfor %}
+          </select>
+        </label>
+        <label class="block">
+          <span class="text-xs uppercase tracking-wide text-slate-500">Команда</span>
+          <select id="push-command" name="command" required onchange="onPushCommandChange()" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm font-mono">
+            <option value="update-config" selected>update-config</option>
+            <option value="install-apk">install-apk</option>
+            <option value="rotate-cloudru-creds">rotate-cloudru-creds</option>
+            <option value="revoke-enrollment">revoke-enrollment</option>
+            <option value="remote-wipe">remote-wipe</option>
+            <option value="reboot">reboot</option>
+            <option value="sync-models">sync-models</option>
+            <option value="sync-knowledge">sync-knowledge</option>
+            <option value="sync-maps">sync-maps</option>
+          </select>
+        </label>
+        <label class="block">
+          <span class="text-xs uppercase tracking-wide text-slate-500">Запуск (UTC, опционально)</span>
+          <input name="due_at" type="datetime-local" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+        </label>
+      </div>
+
+      <!-- ============== Panel: update-config ============== -->
+      <fieldset id="panel-update-config" class="push-panel border border-slate-200 rounded p-3 space-y-5">
+        <legend class="text-xs uppercase tracking-wide text-slate-500 px-1">Настройки <code>update-config</code></legend>
+        <p class="text-xs text-slate-500">
+          Пустое значение в dropdown'е («— не менять —») не идёт в payload. Контракт
+          ключей — <code>MDM-DEVICE-CONTROL-CONTRACT.md §1.3</code>.
+        </p>
+
+        <!-- Модели -->
+        <div class="space-y-2">
+          <label class="block">
+            <span class="text-xs uppercase tracking-wide text-slate-500">Активная LLM (чат, RAG)</span>
+            <select data-uc-key="preferred_llm" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+              <option value="" selected>— не менять —</option>
+              {% for opt in llm_options %}
+                <option value="{{ opt.value }}" title="{{ opt.description }}">{{ opt.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="block">
+            <span class="text-xs uppercase tracking-wide text-slate-500">LLM для переводчика</span>
+            <select data-uc-key="preferred_translator_llm" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+              <option value="" selected>— не менять —</option>
+              {% for opt in translator_llm_options %}
+                <option value="{{ opt.value }}" title="{{ opt.description }}">{{ opt.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="block">
+            <span class="text-xs uppercase tracking-wide text-slate-500">VLM (камера)</span>
+            <select data-uc-key="preferred_vlm" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+              <option value="" selected>— не менять —</option>
+              {% for opt in vlm_options %}
+                <option value="{{ opt.value }}" title="{{ opt.description }}">{{ opt.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="block">
+            <span class="text-xs uppercase tracking-wide text-slate-500">STT (распознавание речи)</span>
+            <select data-uc-key="preferred_stt" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+              <option value="" selected>— не менять —</option>
+              {% for opt in stt_options %}
+                <option value="{{ opt.value }}" title="{{ opt.description }}">{{ opt.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+
+        <!-- Режимы -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <label class="block">
+            <span class="text-xs uppercase tracking-wide text-slate-500">Режим TTS</span>
+            <select data-uc-key="tts_mode" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+              <option value="" selected>— не менять —</option>
+              {% for opt in tts_mode_options %}<option value="{{ opt.value }}" title="{{ opt.description }}">{{ opt.label }}</option>{% endfor %}
+            </select>
+          </label>
+          <label class="block">
+            <span class="text-xs uppercase tracking-wide text-slate-500">Answer mode</span>
+            <select data-uc-key="answer_mode" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+              <option value="" selected>— не менять —</option>
+              {% for opt in answer_mode_options %}<option value="{{ opt.value }}" title="{{ opt.description }}">{{ opt.label }}</option>{% endfor %}
+            </select>
+          </label>
+          <label class="block">
+            <span class="text-xs uppercase tracking-wide text-slate-500">Translator mode</span>
+            <select data-uc-key="translator_mode" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+              <option value="" selected>— не менять —</option>
+              {% for opt in translator_mode_options %}<option value="{{ opt.value }}" title="{{ opt.description }}">{{ opt.label }}</option>{% endfor %}
+            </select>
+          </label>
+          <label class="block">
+            <span class="text-xs uppercase tracking-wide text-slate-500">Translator audio</span>
+            <select data-uc-key="translator_audio_mode" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+              <option value="" selected>— не менять —</option>
+              {% for opt in translator_audio_mode_options %}<option value="{{ opt.value }}" title="{{ opt.description }}">{{ opt.label }}</option>{% endfor %}
+            </select>
+          </label>
+          <label class="block">
+            <span class="text-xs uppercase tracking-wide text-slate-500">Log level</span>
+            <select data-uc-key="log_level" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+              <option value="" selected>— не менять —</option>
+              {% for opt in log_level_options %}<option value="{{ opt.value }}" title="{{ opt.description }}">{{ opt.label }}</option>{% endfor %}
+            </select>
+          </label>
+          <label class="block">
+            <span class="text-xs uppercase tracking-wide text-slate-500">CPU threads</span>
+            <select data-uc-key="cpu_thread_count" data-uc-int="1" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+              <option value="" selected>— не менять —</option>
+              {% for opt in cpu_thread_count_options %}<option value="{{ opt.value }}" title="{{ opt.description }}">{{ opt.label }}</option>{% endfor %}
+            </select>
+          </label>
+        </div>
+
+        <!-- Tri-state переключатели -->
+        <div class="space-y-2">
+          <p class="text-xs text-slate-500">Переключатели — три состояния: «не менять» (default) / «Вкл» / «Выкл».</p>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <label class="flex items-center gap-2 text-sm">
+              <span class="w-40">Wake-word</span>
+              <select data-uc-key="wake_word_enabled" data-uc-bool="1" class="flex-1 rounded border-slate-300 px-2 py-1 text-sm">
+                <option value="" selected>— не менять —</option>
+                <option value="true">Вкл</option>
+                <option value="false">Выкл</option>
+              </select>
+            </label>
+            <label class="flex items-center gap-2 text-sm">
+              <span class="w-40">Cloud-перевод</span>
+              <select data-uc-key="translator_cloud_enabled" data-uc-bool="1" class="flex-1 rounded border-slate-300 px-2 py-1 text-sm">
+                <option value="" selected>— не менять —</option>
+                <option value="true">Вкл</option>
+                <option value="false">Выкл</option>
+              </select>
+            </label>
+            <label class="flex items-center gap-2 text-sm">
+              <span class="w-40">Build badge в UI</span>
+              <select data-uc-key="show_build_badge" data-uc-bool="1" class="flex-1 rounded border-slate-300 px-2 py-1 text-sm">
+                <option value="" selected>— не менять —</option>
+                <option value="true">Вкл</option>
+                <option value="false">Выкл</option>
+              </select>
+            </label>
+            <label class="flex items-center gap-2 text-sm">
+              <span class="w-40">Телеметрия</span>
+              <select data-uc-key="telemetry_enabled" data-uc-bool="1" class="flex-1 rounded border-slate-300 px-2 py-1 text-sm">
+                <option value="" selected>— не менять —</option>
+                <option value="true">Вкл</option>
+                <option value="false">Выкл</option>
+              </select>
+            </label>
+          </div>
+        </div>
+      </fieldset>
+
+      <!-- ============== Panel: install-apk ============== -->
+      <fieldset id="panel-install-apk" class="push-panel hidden border border-amber-300 bg-amber-50 rounded p-3 space-y-2">
+        <legend class="text-xs uppercase tracking-wide text-amber-900 px-1">Версия APK</legend>
+        <label class="block">
+          <span class="text-xs uppercase tracking-wide text-amber-900">Версия APK</span>
+          <select id="install-apk-version" class="mt-1 w-full rounded border-amber-300 px-3 py-1.5 text-sm">
+            <option value="">— выберите версию —</option>
+            {% for v in apk_versions %}
+              <option value="{{ v.id }}"
+                      data-version-code="{{ v.version_code }}"
+                      data-version-name="{{ v.version_name }}"
+                      data-sha256="{{ v.sha256 }}"
+                      data-size="{{ v.file_size_bytes }}"
+                      data-url="{% if let Some(u) = v.source_url %}{{ u }}{% endif %}">
+                {{ v.label }}
+              </option>
+            {% endfor %}
+          </select>
+          <p class="text-xs text-amber-900 mt-1">
+            Версия должна иметь <code>source_url</code> — иначе устройство не сможет скачать APK.
+            Client-side install-apk handler у AR Hud — TBD (контракт <code>MDM-DEVICE-CONTROL-CONTRACT §3.4</code>).
+          </p>
+        </label>
+      </fieldset>
+
+      <!-- ============== Panel: rotate-cloudru-creds ============== -->
+      <fieldset id="panel-rotate-cloudru-creds" class="push-panel hidden border border-slate-200 bg-slate-50 rounded p-3 space-y-2">
+        <legend class="text-xs uppercase tracking-wide text-slate-500 px-1">Cloud.ru creds (read-only)</legend>
+        <p class="text-xs text-slate-500">Хотя бы одно поле обязательно. Партиал-ротация поддерживается.</p>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
+          <input id="cr-tenant-id" placeholder="tenant_id (UUID)" class="rounded border-slate-300 px-2 py-1 text-sm font-mono">
+          <input id="cr-key-id" placeholder="key_id (hex)" class="rounded border-slate-300 px-2 py-1 text-sm font-mono">
+          <input id="cr-secret" placeholder="secret (hex)" type="password" class="rounded border-slate-300 px-2 py-1 text-sm font-mono">
+        </div>
+      </fieldset>
+
+      <!-- ============== Panel: revoke-enrollment ============== -->
+      <fieldset id="panel-revoke-enrollment" class="push-panel hidden border border-amber-300 bg-amber-50 rounded p-3 space-y-2">
+        <legend class="text-xs uppercase tracking-wide text-amber-900 px-1">Soft revoke enrollment</legend>
+        <p class="text-xs text-amber-900">Клиент очистит локальный <code>device_token</code> + state и попросит re-enroll на ближайшем /sync.</p>
+        <input id="revoke-reason" placeholder="Причина для audit log (опционально)" class="w-full rounded border-amber-300 px-2 py-1 text-sm">
+      </fieldset>
+
+      <!-- ============== Panel: remote-wipe ============== -->
+      <fieldset id="panel-remote-wipe" class="push-panel hidden border border-red-300 bg-red-50 rounded p-3 space-y-2">
+        <legend class="text-xs uppercase tracking-wide text-red-900 px-1">REMOTE WIPE — клиент сотрёт ModelPreferences, knowledge.db, модели, encrypted-distribution cache</legend>
+        <p class="text-xs text-red-900">⚠ Отменить нельзя.</p>
+        <label class="block">
+          <span class="text-xs uppercase tracking-wide text-red-900">Scope</span>
+          <select id="wipe-scope" class="mt-1 w-full rounded border-red-300 px-2 py-1 text-sm">
+            <option value="app-data" selected>app-data (recommended, sideload-friendly)</option>
+            <option value="factory-reset">factory-reset (нужен Device-Owner DPM; fallback на app-data)</option>
+          </select>
+        </label>
+        <input id="wipe-reason" required placeholder="Причина для audit log (обязательна)" class="w-full rounded border-red-300 px-2 py-1 text-sm">
+      </fieldset>
+
+      <!-- ============== Panel: no-payload commands (reboot / sync-*) ============== -->
+      <fieldset id="panel-empty-payload" class="push-panel hidden border border-slate-200 bg-slate-50 rounded p-3">
+        <legend class="text-xs uppercase tracking-wide text-slate-500 px-1">Команда без параметров</legend>
+        <p class="text-xs text-slate-500" id="empty-payload-note">Эта команда не требует параметров — payload = <code>{}</code>.</p>
+      </fieldset>
+
+      <!-- Hidden field — JS-builder заполняет перед submit'ом -->
+      <input type="hidden" name="payload_json" id="payload-json" value="{}">
+
+      <div class="flex items-center justify-between">
         <p class="text-xs text-slate-500">Пустое поле <code>due_at</code> — на следующем такте планировщика (≤60 с).</p>
         <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded">Запланировать</button>
       </div>
       {% if let Some(e) = create_error %}
-        <p class="md:col-span-3 text-red-600 text-sm">{{ e }}</p>
+        <p class="text-red-600 text-sm">{{ e }}</p>
       {% endif %}
     </form>
+
+    <script>
+      // v0.18.16: structured push form. Скрытое поле payload_json
+      // заполняется JS-ом из активного command-panel'а перед submit.
+      const PUSH_PANEL_BY_CMD = {
+        'update-config':       'panel-update-config',
+        'install-apk':         'panel-install-apk',
+        'rotate-cloudru-creds':'panel-rotate-cloudru-creds',
+        'revoke-enrollment':   'panel-revoke-enrollment',
+        'remote-wipe':         'panel-remote-wipe',
+        'reboot':              'panel-empty-payload',
+        'sync-models':         'panel-empty-payload',
+        'sync-knowledge':      'panel-empty-payload',
+        'sync-maps':           'panel-empty-payload',
+      };
+
+      function onPushCommandChange() {
+        const cmd = document.getElementById('push-command').value;
+        const wanted = PUSH_PANEL_BY_CMD[cmd] || 'panel-empty-payload';
+        document.querySelectorAll('.push-panel').forEach(p => {
+          p.classList.toggle('hidden', p.id !== wanted);
+        });
+      }
+
+      function buildPushPayload() {
+        const cmd = document.getElementById('push-command').value;
+        let payload = {};
+        if (cmd === 'update-config') {
+          // Собираем по data-uc-key атрибутам. Пустые значения skip.
+          document.querySelectorAll('#panel-update-config select[data-uc-key]').forEach(sel => {
+            const v = sel.value;
+            if (v === '') return;
+            const key = sel.getAttribute('data-uc-key');
+            if (sel.hasAttribute('data-uc-bool')) {
+              if (v === 'true') payload[key] = true;
+              else if (v === 'false') payload[key] = false;
+            } else if (sel.hasAttribute('data-uc-int')) {
+              const n = parseInt(v, 10);
+              if (!isNaN(n)) payload[key] = n;
+            } else {
+              payload[key] = v;
+            }
+          });
+          if (Object.keys(payload).length === 0) {
+            alert('Ничего не выбрано — все поля стояли на «не менять». Выбери хотя бы одно значение.');
+            return false;
+          }
+        } else if (cmd === 'install-apk') {
+          const sel = document.getElementById('install-apk-version');
+          const opt = sel.selectedOptions[0];
+          if (!sel.value || !opt) { alert('Выбери версию APK.'); return false; }
+          const url = opt.getAttribute('data-url');
+          if (!url) { alert('У версии нет source_url — устройство не сможет скачать APK.'); return false; }
+          payload = {
+            version_code: parseInt(opt.getAttribute('data-version-code'), 10),
+            version_name: opt.getAttribute('data-version-name'),
+            sha256:       opt.getAttribute('data-sha256'),
+            size_bytes:   parseInt(opt.getAttribute('data-size'), 10),
+            url:          url,
+          };
+        } else if (cmd === 'rotate-cloudru-creds') {
+          const t = document.getElementById('cr-tenant-id').value.trim();
+          const k = document.getElementById('cr-key-id').value.trim();
+          const s = document.getElementById('cr-secret').value.trim();
+          if (!t && !k && !s) { alert('Хотя бы одно поле tenant_id/key_id/secret обязательно.'); return false; }
+          payload = { tenant_id: t || null, key_id: k || null, secret: s || null };
+        } else if (cmd === 'revoke-enrollment') {
+          const r = document.getElementById('revoke-reason').value.trim();
+          payload = { reason: r || 'admin-initiated' };
+        } else if (cmd === 'remote-wipe') {
+          const scope = document.getElementById('wipe-scope').value;
+          const reason = document.getElementById('wipe-reason').value.trim();
+          if (!reason) { alert('Для remote-wipe нужна причина в audit log.'); return false; }
+          if (!confirm('REMOTE WIPE — клиент сотрёт ModelPreferences, knowledge.db, модели, encrypted cache. ОТМЕНИТЬ НЕЛЬЗЯ.\n\nПродолжить?')) return false;
+          payload = { scope: scope, reason: reason };
+        } else {
+          // reboot / sync-models / sync-knowledge / sync-maps — empty
+          payload = {};
+        }
+        document.getElementById('payload-json').value = JSON.stringify(payload);
+        return true;
+      }
+
+      // Initial state
+      onPushCommandChange();
+    </script>
   </details>
 
   <div class="bg-white rounded-lg shadow-sm overflow-hidden">

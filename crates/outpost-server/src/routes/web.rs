@@ -1424,8 +1424,35 @@ struct PushTemplate {
     messages: Vec<PushRow>,
     target_devices: Vec<DeviceOption>,
     target_groups: Vec<GroupOption>,
+    /// v0.18.16: список APK-версий для install-apk dropdown'а.
+    /// Те же кандидаты что и на /devices/{id}/edit но с дополнительным
+    /// payload (sha256/size/url) — JS соберёт JSON.
+    apk_versions: Vec<PushApkVersionOption>,
+    /// v0.18.16: те же model registry опции что и в DeviceEditTemplate —
+    /// для structured update-config panel.
+    llm_options: Vec<ConfigOptionLabel>,
+    translator_llm_options: Vec<ConfigOptionLabel>,
+    vlm_options: Vec<ConfigOptionLabel>,
+    stt_options: Vec<ConfigOptionLabel>,
+    tts_mode_options: Vec<ConfigOptionLabel>,
+    answer_mode_options: Vec<ConfigOptionLabel>,
+    translator_mode_options: Vec<ConfigOptionLabel>,
+    translator_audio_mode_options: Vec<ConfigOptionLabel>,
+    log_level_options: Vec<ConfigOptionLabel>,
+    cpu_thread_count_options: Vec<ConfigOptionLabel>,
     flash: Option<String>,
     create_error: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct PushApkVersionOption {
+    id: i64,
+    label: String,
+    version_code: i64,
+    version_name: String,
+    sha256: String,
+    file_size_bytes: i64,
+    source_url: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -1505,6 +1532,19 @@ async fn render_push(
     .bind(user.customer_id)
     .fetch_all(&state.db)
     .await?;
+    let apk_versions: Vec<PushApkVersionOption> = sqlx::query_as(
+        "SELECT av.id, \
+                av.version_name || ' (code ' || av.version_code || ', sha ' || \
+                substr(av.sha256, 1, 8) || '…)' AS label, \
+                av.version_code, av.version_name, av.sha256, av.file_size_bytes, av.source_url \
+         FROM application_versions av \
+         JOIN applications a ON a.id = av.application_id \
+         WHERE a.customer_id = ? AND a.kind = 'apk' \
+         ORDER BY av.version_code DESC LIMIT 200",
+    )
+    .bind(user.customer_id)
+    .fetch_all(&state.db)
+    .await?;
     let messages = rows
         .into_iter()
         .map(|r| PushRow {
@@ -1522,6 +1562,17 @@ async fn render_push(
         messages,
         target_devices,
         target_groups,
+        apk_versions,
+        llm_options: llm_options(),
+        translator_llm_options: translator_llm_options(),
+        vlm_options: vlm_options(),
+        stt_options: stt_options(),
+        tts_mode_options: tts_mode_options(),
+        answer_mode_options: answer_mode_options(),
+        translator_mode_options: translator_mode_options(),
+        translator_audio_mode_options: translator_audio_mode_options(),
+        log_level_options: log_level_options(),
+        cpu_thread_count_options: cpu_thread_count_options(),
         flash,
         create_error,
     });
