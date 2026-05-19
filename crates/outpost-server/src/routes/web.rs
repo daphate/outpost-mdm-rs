@@ -2197,40 +2197,20 @@ fn encode_enrollment_uri(payload: &serde_json::Value) -> String {
     format!("outpost-mdm://v1/{b64}")
 }
 
-#[derive(Template)]
-#[template(path = "device_push.html")]
-struct DevicePushTemplate {
-    user_login: String,
-    device_id: i64,
-    serial: String,
-    flash: Option<String>,
-    error: Option<String>,
-}
+// v0.18.15: DevicePushTemplate удалён вместе с device_push.html — страница
+// /devices/{id}/push теперь 303-redirect'ит на /devices/{id}/edit.
 
+/// v0.18.15 (Phase 27): страница /devices/{id}/push устарела — функционал
+/// полностью переехал на /devices/{id}/edit «Настроить устройство»
+/// (structured update-config + install-apk + sensitive admin commands).
+/// GET сюда — 303 redirect на /edit. POST оставлен в `device_push_post`
+/// для backward compat (curl-скрипты и закладки).
 async fn device_push_view(
-    user: WebUser,
-    State(state): State<AppState>,
+    _user: WebUser,
+    State(_state): State<AppState>,
     Path(id): Path<i64>,
-    flash: FlashCookie,
-) -> Result<Response, ApiError> {
-    let serial_row: Option<(String,)> =
-        sqlx::query_as("SELECT serial FROM devices WHERE id = ? AND customer_id = ?")
-            .bind(id)
-            .bind(user.customer_id)
-            .fetch_optional(&state.db)
-            .await?;
-    let Some((serial,)) = serial_row else {
-        return Err(ApiError::NotFound);
-    };
-    let mut resp = render(DevicePushTemplate {
-        user_login: user.login,
-        device_id: id,
-        serial,
-        flash: flash.0,
-        error: None,
-    });
-    clear_flash_cookie(&mut resp);
-    Ok(resp)
+) -> Response {
+    axum::response::Redirect::to(&format!("/devices/{id}/edit")).into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -2240,32 +2220,30 @@ struct DevicePushForm {
     due_at: Option<String>,
 }
 
+/// Backward-compat для curl-скриптов / закладок, бьющих POST в
+/// /devices/{id}/push. GET той же ручки теперь редиректит на /edit
+/// (см. device_push_view). После успешного scheduling редиректит туда же.
 async fn device_push_post(
     user: WebUser,
     State(state): State<AppState>,
     Path(id): Path<i64>,
     Form(req): Form<DevicePushForm>,
 ) -> Result<Response, ApiError> {
-    let serial_row: Option<(String,)> =
-        sqlx::query_as("SELECT serial FROM devices WHERE id = ? AND customer_id = ?")
+    let serial_exists: Option<(i64,)> =
+        sqlx::query_as("SELECT id FROM devices WHERE id = ? AND customer_id = ?")
             .bind(id)
             .bind(user.customer_id)
             .fetch_optional(&state.db)
             .await?;
-    let Some((serial,)) = serial_row else {
+    if serial_exists.is_none() {
         return Err(ApiError::NotFound);
-    };
+    }
     let command = req.command.trim();
     if command.is_empty() {
-        let mut resp = render(DevicePushTemplate {
-            user_login: user.login,
-            device_id: id,
-            serial,
-            flash: None,
-            error: Some("Command is required".into()),
-        });
-        clear_flash_cookie(&mut resp);
-        return Ok(resp);
+        return Ok(redirect_with_flash(
+            &format!("/devices/{id}/edit"),
+            "Command is required.",
+        ));
     }
     let payload = req
         .payload_json
@@ -2274,15 +2252,10 @@ async fn device_push_post(
         .filter(|s| !s.is_empty())
         .unwrap_or("{}");
     if let Err(e) = serde_json::from_str::<serde_json::Value>(payload) {
-        let mut resp = render(DevicePushTemplate {
-            user_login: user.login,
-            device_id: id,
-            serial,
-            flash: None,
-            error: Some(format!("payload_json is not valid JSON: {e}")),
-        });
-        clear_flash_cookie(&mut resp);
-        return Ok(resp);
+        return Ok(redirect_with_flash(
+            &format!("/devices/{id}/edit"),
+            &format!("payload_json is not valid JSON: {e}"),
+        ));
     }
     let due_at_iso = req
         .due_at
@@ -2310,7 +2283,7 @@ async fn device_push_post(
     .execute(&state.db)
     .await?;
     Ok(redirect_with_flash(
-        &format!("/devices/{id}/push"),
+        &format!("/devices/{id}/edit"),
         "Push scheduled.",
     ))
 }

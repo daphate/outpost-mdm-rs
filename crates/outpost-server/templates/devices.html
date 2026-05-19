@@ -55,7 +55,7 @@
           <td class="px-4 py-3 font-mono text-sm">
             <a href="/devices/{{ d.id }}/telemetry" class="text-blue-600 hover:text-blue-800 hover:underline">{{ d.serial }}</a>
           </td>
-          <td class="px-4 py-3">
+          <td class="px-4 py-3 text-sm">
             <a href="/devices/{{ d.id }}/telemetry" class="hover:underline">{{ d.display_name }}</a>
           </td>
           <td class="px-4 py-3">
@@ -92,7 +92,6 @@
           <td class="px-4 py-3 text-right text-sm space-x-3">
             <a href="/devices/{{ d.id }}/edit" class="text-slate-600 hover:text-slate-900">Настроить</a>
             <a href="/devices/{{ d.id }}/enroll" class="text-blue-600 hover:text-blue-800">Регистрация</a>
-            <a href="/devices/{{ d.id }}/push" class="text-slate-600 hover:text-slate-900">Push</a>
           </td>
         </tr>
         {% endfor %}

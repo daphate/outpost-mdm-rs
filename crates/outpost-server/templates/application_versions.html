@@ -65,8 +65,8 @@
       <tbody class="divide-y divide-slate-100">
         {% for v in versions %}
         <tr class="hover:bg-slate-50">
-          <td class="px-4 py-3 text-sm">{{ v.version_code }}</td>
-          <td class="px-4 py-3 font-medium">{{ v.version_name }}</td>
+          <td class="px-4 py-3 text-sm font-medium">{{ v.version_code }}</td>
+          <td class="px-4 py-3 text-sm">{{ v.version_name }}</td>
           <td class="px-4 py-3 text-sm">{{ v.file_size }}</td>
           <td class="px-4 py-3 font-mono text-xs">{{ v.sha256_short }}…</td>
           <td class="px-4 py-3 text-sm">

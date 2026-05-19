@@ -28,7 +28,7 @@
       <tbody class="divide-y divide-slate-100">
         {% for r in roles %}
         <tr>
-          <td class="px-4 py-3 font-medium">{{ r.name }}{% if r.is_super_admin %} <span class="ml-1 text-xs text-amber-700">★ super</span>{% endif %}</td>
+          <td class="px-4 py-3 text-sm font-medium">{{ r.name }}{% if r.is_super_admin %} <span class="ml-1 text-xs text-amber-700">★ super</span>{% endif %}</td>
           <td class="px-4 py-3 text-sm text-slate-600">{{ r.description }}</td>
           <td class="px-4 py-3 text-sm">
             {% if r.permissions.is_empty() %}

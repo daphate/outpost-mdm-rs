@@ -76,7 +76,7 @@
           <td class="px-4 py-3 text-sm text-slate-500">{{ m.created_at }}</td>
           <td class="px-4 py-3 font-mono text-xs">{{ m.device_serial }}</td>
           <td class="px-4 py-3 font-mono text-xs">{{ m.command }}</td>
-          <td class="px-4 py-3">
+          <td class="px-4 py-3 text-sm">
             {% if m.status == "pending" %}
               <span class="inline-block px-2 py-0.5 text-xs rounded bg-amber-100 text-amber-700">ожидает</span>
             {% else if m.status == "sent" %}

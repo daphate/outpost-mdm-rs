@@ -61,14 +61,16 @@
         {% for c in customers %}
         <tr class="hover:bg-slate-50">
           <td class="px-4 py-3 text-sm font-mono">{{ c.id }}</td>
-          <td class="px-4 py-3 font-medium">{{ c.name }}</td>
-          <td class="px-4 py-3">
+          <td class="px-4 py-3 text-sm font-medium">
+            <a href="/customers/{{ c.id }}/edit" class="text-blue-600 hover:underline">{{ c.name }}</a>
+          </td>
+          <td class="px-4 py-3 text-sm">
             <span class="inline-block px-2 py-0.5 text-xs font-medium rounded
               {% if c.kind == "production" %}bg-emerald-100 text-emerald-700
               {% else if c.kind == "demo" %}bg-amber-100 text-amber-700
               {% else %}bg-slate-100 text-slate-700{% endif %}">{{ c.kind }}</span>
           </td>
-          <td class="px-4 py-3">
+          <td class="px-4 py-3 text-sm">
             {% if c.is_active %}
               <span class="inline-block px-2 py-0.5 text-xs rounded bg-emerald-100 text-emerald-700">активен</span>
             {% else %}
