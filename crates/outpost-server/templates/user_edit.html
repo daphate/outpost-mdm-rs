@@ -1,22 +1,22 @@
 {% extends "base.html" %}
 
-{% block title %}Профиль{% endblock %}
+{% block title %}Профиль пользователя {{ target_login }}{% endblock %}
 
 {% block body %}
 {% include "_nav.html" %}
 
 <main class="max-w-3xl mx-auto px-4 py-6 space-y-6">
-  <h2 class="text-2xl font-bold">Мой профиль</h2>
+  <div>
+    <a href="/users" class="text-sm text-slate-500 hover:text-slate-900">← к списку пользователей</a>
+    <h2 class="text-2xl font-bold mt-2">Профиль пользователя</h2>
+    <p class="text-sm text-slate-500">Логин: <code class="font-mono">{{ target_login }}</code> · ID: {{ target_id }}{% if is_self %} · <span class="text-amber-700">это вы</span>{% endif %}</p>
+  </div>
 
   {% if let Some(msg) = flash %}
     <div class="bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm px-4 py-2 rounded">{{ msg }}</div>
   {% endif %}
 
-  <form method="POST" action="/profile" class="bg-white rounded-lg shadow-sm p-6 space-y-4">
-    <div>
-      <span class="text-xs uppercase tracking-wide text-slate-500">Логин</span>
-      <p class="font-mono mt-1 text-sm">{{ login }}</p>
-    </div>
+  <form method="POST" action="/users/{{ target_id }}/edit" class="bg-white rounded-lg shadow-sm p-6 space-y-4">
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
       <label class="block">
         <span class="text-xs uppercase tracking-wide text-slate-500">Отображаемое имя</span>
@@ -40,10 +40,7 @@
       <textarea name="comment" rows="2" placeholder="должность / подразделение / заметки" class="mt-1 block w-full rounded border-slate-300 px-3 py-1.5 text-sm">{{ comment }}</textarea>
     </label>
     <div class="flex items-center justify-between pt-2">
-      <div class="space-x-3 text-sm">
-        <a href="/me/password" class="text-blue-600 hover:text-blue-800">Сменить пароль →</a>
-        <a href="/me/2fa" class="text-blue-600 hover:text-blue-800">2FA →</a>
-      </div>
+      <a href="/users" class="text-sm text-slate-500 hover:text-slate-900">Отмена</a>
       <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded">Сохранить</button>
     </div>
     {% if let Some(e) = error %}
@@ -55,6 +52,11 @@
     <p>Роль: <span class="font-mono">{{ role_name }}</span></p>
     <p>Последний вход: <span class="font-mono">{{ last_login_at }}</span></p>
     <p>Зарегистрирован: <span class="font-mono">{{ created_at }}</span></p>
+    {% if is_self %}
+      <p class="text-xs text-slate-500 pt-2">
+        Для смены пароля / 2FA / языка интерфейса — <a href="/profile" class="text-blue-600 hover:underline">«Мой профиль» →</a>
+      </p>
+    {% endif %}
   </div>
 </main>
 {% endblock %}

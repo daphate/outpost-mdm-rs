@@ -62,7 +62,9 @@
       <tbody class="divide-y divide-slate-100">
         {% for u in users %}
         <tr class="hover:bg-slate-50">
-          <td class="px-4 py-3 text-sm font-medium">{{ u.login }}</td>
+          <td class="px-4 py-3 text-sm font-medium">
+            <a href="/users/{{ u.id }}/edit" class="text-blue-600 hover:underline">{{ u.login }}</a>
+          </td>
           <td class="px-4 py-3 text-sm text-slate-600">{{ u.email }}</td>
           <td class="px-4 py-3 text-sm">{{ u.role_name }}</td>
           <td class="px-4 py-3 text-sm">
@@ -77,6 +79,7 @@
           </td>
           <td class="px-4 py-3 text-sm text-slate-500">{{ u.last_login_at }}</td>
           <td class="px-4 py-3 text-right text-sm space-x-3">
+            <a href="/users/{{ u.id }}/edit" class="text-slate-600 hover:text-slate-900">Изменить</a>
             {% if u.id != current_user_id %}
               <form method="POST" action="/users/{{ u.id }}/reset-password" class="inline" onsubmit="return confirm('Сгенерировать одноразовый пароль для пользователя {{ u.login }}? Текущий пароль перестанет работать.')">
                 <button class="text-blue-600 hover:text-blue-800">Сбросить пароль</button>

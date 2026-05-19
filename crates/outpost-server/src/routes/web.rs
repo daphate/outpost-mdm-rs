@@ -112,6 +112,10 @@ pub fn router() -> Router<AppState> {
         // Users
         .route("/users", get(users_page))
         .route("/users/new", post(users_create))
+        .route(
+            "/users/{id}/edit",
+            get(user_edit_view).post(user_edit_post),
+        )
         .route("/users/{id}/toggle-active", post(users_toggle_active))
         .route("/users/{id}/delete", post(users_delete))
         .route("/users/{id}/reset-password", post(users_admin_reset_password))
@@ -1839,6 +1843,134 @@ async fn users_create(
                 .map_err(|e| e.into_response())?)
         }
     }
+}
+
+// ----- /users/{id}/edit (admin edits another user's profile) -------------
+
+#[derive(Template)]
+#[template(path = "user_edit.html")]
+struct UserEditTemplate {
+    user_login: String,
+    /// id редактируемого user'а (для form action url).
+    target_id: i64,
+    target_login: String,
+    email: String,
+    display_name: String,
+    comment: String,
+    phone: String,
+    tg: String,
+    role_name: String,
+    last_login_at: String,
+    created_at: String,
+    is_self: bool,
+    flash: Option<String>,
+    error: Option<String>,
+}
+
+async fn user_edit_view(
+    user: WebUser,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    flash: FlashCookie,
+) -> Result<Response, ApiError> {
+    render_user_edit(&user, &state, id, flash.0, None).await
+}
+
+async fn render_user_edit(
+    user: &WebUser,
+    state: &AppState,
+    id: i64,
+    flash: Option<String>,
+    error: Option<String>,
+) -> Result<Response, ApiError> {
+    #[derive(sqlx::FromRow)]
+    struct UserEditRaw {
+        login: String,
+        email: Option<String>,
+        display_name: Option<String>,
+        comment: Option<String>,
+        phone: Option<String>,
+        tg: Option<String>,
+        role_name: String,
+        last_login_at: Option<String>,
+        created_at: String,
+    }
+    let row: Option<UserEditRaw> = sqlx::query_as::<_, UserEditRaw>(
+        "SELECT u.login, u.email, u.display_name, u.comment, u.phone, u.tg, \
+                r.name AS role_name, u.last_login_at, u.created_at \
+         FROM users u JOIN user_roles r ON r.id = u.role_id \
+         WHERE u.id = ? AND u.customer_id = ?",
+    )
+    .bind(id)
+    .bind(user.customer_id)
+    .fetch_optional(&state.db)
+    .await?;
+    let Some(r) = row else {
+        return Err(ApiError::NotFound);
+    };
+    let mut resp = render(UserEditTemplate {
+        user_login: user.login.clone(),
+        target_id: id,
+        target_login: r.login,
+        email: r.email.unwrap_or_default(),
+        display_name: r.display_name.unwrap_or_default(),
+        comment: r.comment.unwrap_or_default(),
+        phone: r.phone.unwrap_or_default(),
+        tg: r.tg.unwrap_or_default(),
+        role_name: r.role_name,
+        last_login_at: r
+            .last_login_at
+            .as_deref()
+            .map(|s| state.fmt_ts(s))
+            .unwrap_or_else(|| "—".into()),
+        created_at: state.fmt_ts(&r.created_at),
+        is_self: id == user.id,
+        flash,
+        error,
+    });
+    clear_flash_cookie(&mut resp);
+    Ok(resp)
+}
+
+async fn user_edit_post(
+    user: WebUser,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Form(req): Form<ProfileForm>,
+) -> Result<Response, ApiError> {
+    // Verify target user в том же customer'е (multi-tenant scoping).
+    let exists: Option<(i64,)> = sqlx::query_as(
+        "SELECT id FROM users WHERE id = ? AND customer_id = ?",
+    )
+    .bind(id)
+    .bind(user.customer_id)
+    .fetch_optional(&state.db)
+    .await?;
+    if exists.is_none() {
+        return Err(ApiError::NotFound);
+    }
+    let email = normalize_profile_field(&req.email, false);
+    let display_name = normalize_profile_field(&req.display_name, false);
+    let comment = normalize_profile_field(&req.comment, false);
+    let phone = normalize_profile_field(&req.phone, false);
+    let tg = normalize_profile_field(&req.tg, true);
+    sqlx::query(
+        "UPDATE users SET email = ?, display_name = ?, comment = ?, phone = ?, tg = ?, \
+                          updated_at = datetime('now') WHERE id = ? AND customer_id = ?",
+    )
+    .bind(email)
+    .bind(display_name)
+    .bind(comment)
+    .bind(phone)
+    .bind(tg)
+    .bind(id)
+    .bind(user.customer_id)
+    .execute(&state.db)
+    .await?;
+    Ok(redirect_with_flash(
+        &format!("/users/{id}/edit"),
+        "Профиль пользователя сохранён.",
+    ))
 }
 
 async fn users_toggle_active(
@@ -5667,6 +5799,11 @@ struct ProfileTemplate {
     user_login: String,
     login: String,
     email: String,
+    /// v0.18.16: новые поля профиля.
+    display_name: String,
+    comment: String,
+    phone: String,
+    tg: String,
     role_name: String,
     last_login_at: String,
     created_at: String,
@@ -5692,12 +5829,17 @@ async fn render_profile(
     struct ProfileRaw {
         login: String,
         email: Option<String>,
+        display_name: Option<String>,
+        comment: Option<String>,
+        phone: Option<String>,
+        tg: Option<String>,
         role_name: String,
         last_login_at: Option<String>,
         created_at: String,
     }
     let row: Option<ProfileRaw> = sqlx::query_as::<_, ProfileRaw>(
-        "SELECT u.login, u.email, r.name AS role_name, u.last_login_at, u.created_at \
+        "SELECT u.login, u.email, u.display_name, u.comment, u.phone, u.tg, \
+                r.name AS role_name, u.last_login_at, u.created_at \
          FROM users u JOIN user_roles r ON r.id = u.role_id WHERE u.id = ?",
     )
     .bind(user.id)
@@ -5706,6 +5848,10 @@ async fn render_profile(
     let Some(ProfileRaw {
         login,
         email,
+        display_name,
+        comment,
+        phone,
+        tg,
         role_name,
         last_login_at,
         created_at,
@@ -5717,6 +5863,10 @@ async fn render_profile(
         user_login: user.login.clone(),
         login,
         email: email.unwrap_or_default(),
+        display_name: display_name.unwrap_or_default(),
+        comment: comment.unwrap_or_default(),
+        phone: phone.unwrap_or_default(),
+        tg: tg.unwrap_or_default(),
         role_name,
         last_login_at: last_login_at.as_deref().map(|s| state.fmt_ts(s)).unwrap_or_else(|| "—".into()),
         created_at: state.fmt_ts(&created_at),
@@ -5730,6 +5880,29 @@ async fn render_profile(
 #[derive(Debug, Deserialize)]
 struct ProfileForm {
     email: Option<String>,
+    display_name: Option<String>,
+    comment: Option<String>,
+    phone: Option<String>,
+    tg: Option<String>,
+}
+
+/// Normalize строку из form: trim, empty → None (хранится NULL в БД).
+/// Также для tg отрезает ведущий `@` (юзер может ввести `@username` или
+/// просто `username` — нормализуем к одному виду).
+fn normalize_profile_field(raw: &Option<String>, strip_at: bool) -> Option<String> {
+    let s = raw.as_deref()?.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let s = if strip_at {
+        s.strip_prefix('@').unwrap_or(s)
+    } else {
+        s
+    };
+    if s.is_empty() {
+        return None;
+    }
+    Some(s.to_string())
 }
 
 async fn profile_save(
@@ -5737,16 +5910,23 @@ async fn profile_save(
     State(state): State<AppState>,
     Form(req): Form<ProfileForm>,
 ) -> Result<Response, ApiError> {
-    let email = req
-        .email
-        .as_deref()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty());
-    sqlx::query("UPDATE users SET email = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(email)
-        .bind(user.id)
-        .execute(&state.db)
-        .await?;
+    let email = normalize_profile_field(&req.email, false);
+    let display_name = normalize_profile_field(&req.display_name, false);
+    let comment = normalize_profile_field(&req.comment, false);
+    let phone = normalize_profile_field(&req.phone, false);
+    let tg = normalize_profile_field(&req.tg, true);
+    sqlx::query(
+        "UPDATE users SET email = ?, display_name = ?, comment = ?, phone = ?, tg = ?, \
+                          updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(email)
+    .bind(display_name)
+    .bind(comment)
+    .bind(phone)
+    .bind(tg)
+    .bind(user.id)
+    .execute(&state.db)
+    .await?;
     Ok(redirect_with_flash("/profile", "Profile saved."))
 }
 
