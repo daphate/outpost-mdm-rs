@@ -58,7 +58,14 @@
       <tbody class="divide-y divide-slate-100">
         {% for c in configs %}
         <tr class="hover:bg-slate-50">
-          <td class="px-4 py-3 font-medium">{{ c.name }}</td>
+          <td class="px-4 py-3 font-medium">
+            <div class="flex items-center gap-2">
+              <span>{{ c.name }}</span>
+              {% if c.is_default %}
+                <span class="inline-block px-2 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800" title="Эта конфигурация назначается новым устройствам автоматически">по умолчанию</span>
+              {% endif %}
+            </div>
+          </td>
           <td class="px-4 py-3 text-sm text-slate-600">{{ c.description }}</td>
           <td class="px-4 py-3 font-mono text-xs">{{ c.kiosk_package }}</td>
           <td class="px-4 py-3">
@@ -69,7 +76,12 @@
             {% endif %}
           </td>
           <td class="px-4 py-3 text-sm text-slate-500">{{ c.updated_at }}</td>
-          <td class="px-4 py-3 text-right text-sm">
+          <td class="px-4 py-3 text-right text-sm space-x-3">
+            {% if !c.is_default %}
+              <form method="POST" action="/configurations/{{ c.id }}/make-default" class="inline" onsubmit="return confirm('Сделать «{{ c.name }}» дефолтной? Новые устройства будут получать её настройки.');">
+                <button class="text-amber-600 hover:text-amber-800">Сделать дефолтной</button>
+              </form>
+            {% endif %}
             <a href="/configurations/{{ c.id }}/edit" class="text-slate-600 hover:text-slate-900">Изменить</a>
           </td>
         </tr>

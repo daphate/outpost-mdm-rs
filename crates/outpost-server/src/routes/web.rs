@@ -101,6 +101,11 @@ pub fn router() -> Router<AppState> {
             "/configurations/{id}/apps/{app_id}/delete",
             post(configuration_app_remove),
         )
+        // v0.18.8: пометить конфигурацию как customer-default.
+        .route(
+            "/configurations/{id}/make-default",
+            post(configuration_make_default),
+        )
         // Push schedule (cross-device / cross-group)
         .route("/push", get(push_page))
         .route("/push/new", post(push_create))
@@ -719,12 +724,26 @@ async fn devices_create(
             .map_err(|e| e.into_response());
     }
     let display_name = req.display_name.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+    // v0.18.8: новые устройства автоматически получают customer-default
+    // configuration. NULL — допустимо (customer без default настроен), тогда
+    // device создаётся с configuration_id = NULL (поведение pre-v0.18.8).
+    // Admin может поменять любой device-config через /devices/{id}/edit.
+    let default_config_id: Option<i64> = sqlx::query_scalar(
+        "SELECT default_configuration_id FROM customers WHERE id = ?",
+    )
+    .bind(user.customer_id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten()
+    .flatten();
     let res = sqlx::query(
-        "INSERT INTO devices (customer_id, serial, display_name) VALUES (?, ?, ?)",
+        "INSERT INTO devices (customer_id, serial, display_name, configuration_id) VALUES (?, ?, ?, ?)",
     )
     .bind(user.customer_id)
     .bind(serial)
     .bind(display_name)
+    .bind(default_config_id)
     .execute(&state.db)
     .await;
     match res {
@@ -1235,6 +1254,9 @@ struct ConfigRow {
     description: String,
     kiosk_package: String,
     is_active: bool,
+    /// v0.18.8: эта конфигурация — `customers.default_configuration_id`.
+    /// При создании новых устройств получают её настройки автоматически.
+    is_default: bool,
     updated_at: String,
 }
 
@@ -1275,6 +1297,17 @@ async fn render_configs(
         "SELECT COUNT(*) FROM configurations WHERE customer_id = ?",
     )
     .await?;
+    // v0.18.8: какой config назначен customer-default. NULL — не назначен,
+    // тогда ни одна из строк не получает is_default=true.
+    let default_config_id: Option<i64> = sqlx::query_scalar(
+        "SELECT default_configuration_id FROM customers WHERE id = ?",
+    )
+    .bind(user.customer_id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten()
+    .flatten();
     let configs = rows
         .into_iter()
         .map(|r| ConfigRow {
@@ -1283,6 +1316,7 @@ async fn render_configs(
             description: r.description.unwrap_or_else(|| "—".into()),
             kiosk_package: r.kiosk_package.unwrap_or_else(|| "—".into()),
             is_active: r.is_active,
+            is_default: Some(r.id) == default_config_id,
             updated_at: fmt_ts(&r.updated_at),
         })
         .collect();
@@ -4373,6 +4407,47 @@ async fn configuration_app_remove(
         &format!("/configurations/{id}/edit"),
         "Application removed.",
     )
+}
+
+/// v0.18.8: пометить конфигурацию как `customers.default_configuration_id`.
+/// Любая существующая default-конфига этого customer'а перестаёт быть
+/// default'ной (default — это **single pointer на customer**, не
+/// флаг per-config).
+///
+/// Existing devices с уже назначенной конфигурацией НЕ перенастраиваются —
+/// admin может это сделать вручную через /devices/{id}/edit или групповым
+/// SQL'ем. Меняется только поведение для **новых** enrollment'ов.
+async fn configuration_make_default(
+    user: WebUser,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Response {
+    // Verify ownership.
+    let owned: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM configurations WHERE id = ? AND customer_id = ?",
+    )
+    .bind(id)
+    .bind(user.customer_id)
+    .fetch_optional(&state.db)
+    .await
+    .unwrap_or(None);
+    if owned.is_none() {
+        return redirect_with_flash("/configurations", "Configuration not found.");
+    }
+    let res = sqlx::query(
+        "UPDATE customers SET default_configuration_id = ?, updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(id)
+    .bind(user.customer_id)
+    .execute(&state.db)
+    .await;
+    match res {
+        Ok(_) => redirect_with_flash("/configurations", "Default configuration updated."),
+        Err(e) => {
+            tracing::error!(error = %e, "configuration_make_default failed");
+            redirect_with_flash("/configurations", "Database error.")
+        }
+    }
 }
 
 // ----- /files generic browser ---------------------------------------------
