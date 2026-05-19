@@ -52,6 +52,14 @@ pub fn router() -> Router<AppState> {
             get(group_edit_view).post(group_edit_post),
         )
         .route("/groups/{id}/delete", post(group_delete))
+        // v0.18.6: добавить/убрать устройство в группе. Membership
+        // mutations не дублируют configuration_app_add/remove pattern
+        // (configurations используют group через apps, не devices напрямую).
+        .route("/groups/{id}/members", post(group_member_add))
+        .route(
+            "/groups/{id}/members/{device_id}/delete",
+            post(group_member_remove),
+        )
         // Applications: APK + asset upload, edit, versions, delete.
         .route("/applications", get(applications_page))
         .route("/applications/upload", post(applications_upload))
@@ -604,6 +612,9 @@ struct DeviceRow {
     battery: String,
     app_version: String,
     last_seen: String,
+    /// v0.18.6: members groups, comma-rendered into UI as Tailwind badges.
+    /// Empty Vec → ячейка показывает «—».
+    groups: Vec<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -616,6 +627,9 @@ struct DeviceRowRaw {
     battery_pct: Option<i64>,
     app_version: Option<String>,
     last_seen_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// SQLite GROUP_CONCAT of group names (LEFT JOIN device_groups +
+    /// groups). NULL if device is in no groups.
+    group_names: Option<String>,
 }
 
 async fn devices_page(
@@ -632,9 +646,16 @@ async fn render_devices(
     flash: Option<String>,
     create_error: Option<String>,
 ) -> Result<Response, ApiError> {
+    // v0.18.6: LEFT JOIN device_groups + groups, агрегируем имена через
+    // GROUP_CONCAT. Сортировка вторичным ключом по g.name даёт стабильный
+    // порядок tags для одного и того же device.
     let rows: Vec<DeviceRowRaw> = sqlx::query_as::<_, DeviceRowRaw>(
-        "SELECT id, serial, display_name, is_enrolled, is_online, battery_pct, app_version, last_seen_at \
-         FROM devices WHERE customer_id = ? ORDER BY id DESC LIMIT 200",
+        "SELECT d.id, d.serial, d.display_name, d.is_enrolled, d.is_online, \
+                d.battery_pct, d.app_version, d.last_seen_at, \
+                (SELECT GROUP_CONCAT(g.name, '\u{1f}') FROM device_groups dg \
+                 JOIN groups g ON g.id = dg.group_id \
+                 WHERE dg.device_id = d.id ORDER BY g.name) AS group_names \
+         FROM devices d WHERE d.customer_id = ? ORDER BY d.id DESC LIMIT 200",
     )
     .bind(user.customer_id)
     .fetch_all(&state.db)
@@ -660,6 +681,13 @@ async fn render_devices(
                 .last_seen_at
                 .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
                 .unwrap_or_else(|| "—".into()),
+            // U+001F (Unit Separator) — гарантированно не встречается в
+            // именах групп (validated при создании), безопасный delimiter
+            // для GROUP_CONCAT vs запятая (которая может быть в названии).
+            groups: r
+                .group_names
+                .map(|s| s.split('\u{1f}').map(|x| x.to_string()).collect())
+                .unwrap_or_default(),
         })
         .collect();
     let mut resp = render(DevicesTemplate {
@@ -741,6 +769,21 @@ struct GroupRow {
     description: String,
     member_count: i64,
     created_at: String,
+    /// v0.18.6: устройства в этой группе. Используется в expandable
+    /// <details> на /groups для показа состава и удаления membership'а.
+    members: Vec<GroupMemberRow>,
+    /// v0.18.6: устройства этого customer'а НЕ в этой группе — для
+    /// dropdown'а «добавить устройство». Лимит 200 (как `devices_page`),
+    /// если у customer'а будет >200 устройств — этот UI перейдёт на
+    /// search-based вариант, но не на текущей шкале.
+    eligible_devices: Vec<GroupMemberRow>,
+}
+
+#[derive(Clone)]
+struct GroupMemberRow {
+    id: i64,
+    serial: String,
+    display_name: String,
 }
 
 #[derive(sqlx::FromRow)]
@@ -750,6 +793,13 @@ struct GroupRowRaw {
     description: Option<String>,
     member_count: i64,
     created_at: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct GroupMemberRaw {
+    id: i64,
+    serial: String,
+    display_name: Option<String>,
 }
 
 async fn groups_page(
@@ -781,14 +831,56 @@ async fn render_groups(
         "SELECT COUNT(*) FROM groups WHERE customer_id = ?",
     )
     .await?;
+    // v0.18.6: fetch full device list once и распределить per-group.
+    // N+1 queries (по группе на каждый member-fetch) — расточительно,
+    // одним запросом всех customer-devices + одним запросом всего
+    // membership'а получаем O(M+G) вместо O(G·M).
+    let all_devices: Vec<GroupMemberRaw> = sqlx::query_as::<_, GroupMemberRaw>(
+        "SELECT id, serial, display_name FROM devices WHERE customer_id = ? ORDER BY serial LIMIT 200",
+    )
+    .bind(user.customer_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    #[derive(sqlx::FromRow)]
+    struct MembershipRow {
+        group_id: i64,
+        device_id: i64,
+    }
+    let memberships: Vec<MembershipRow> = sqlx::query_as::<_, MembershipRow>(
+        "SELECT dg.group_id, dg.device_id FROM device_groups dg \
+         JOIN groups g ON g.id = dg.group_id \
+         WHERE g.customer_id = ?",
+    )
+    .bind(user.customer_id)
+    .fetch_all(&state.db)
+    .await?;
+
     let groups = rows
         .into_iter()
-        .map(|r| GroupRow {
-            id: r.id,
-            name: r.name,
-            description: r.description.unwrap_or_else(|| "—".into()),
-            member_count: r.member_count,
-            created_at: fmt_ts(&r.created_at),
+        .map(|r| {
+            let member_ids: std::collections::HashSet<i64> = memberships
+                .iter()
+                .filter(|m| m.group_id == r.id)
+                .map(|m| m.device_id)
+                .collect();
+            let (members, eligible_devices): (Vec<_>, Vec<_>) = all_devices
+                .iter()
+                .map(|d| GroupMemberRow {
+                    id: d.id,
+                    serial: d.serial.clone(),
+                    display_name: d.display_name.clone().unwrap_or_else(|| "—".into()),
+                })
+                .partition(|d| member_ids.contains(&d.id));
+            GroupRow {
+                id: r.id,
+                name: r.name,
+                description: r.description.unwrap_or_else(|| "—".into()),
+                member_count: r.member_count,
+                created_at: fmt_ts(&r.created_at),
+                members,
+                eligible_devices,
+            }
         })
         .collect();
     let mut resp = render(GroupsTemplate {
@@ -3132,6 +3224,93 @@ async fn group_delete(
     }
 }
 
+// v0.18.6: per-group device membership mutations. Both check
+// customer_id ownership of BOTH the group AND the device before any
+// row touch — admin of customer A cannot drag devices of customer B
+// into their groups.
+
+#[derive(Debug, Deserialize)]
+struct GroupMemberAddForm {
+    device_id: i64,
+}
+
+async fn group_member_add(
+    user: WebUser,
+    State(state): State<AppState>,
+    Path(group_id): Path<i64>,
+    Form(req): Form<GroupMemberAddForm>,
+) -> Response {
+    // Verify the group belongs to this customer.
+    let group_ok: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM groups WHERE id = ? AND customer_id = ?",
+    )
+    .bind(group_id)
+    .bind(user.customer_id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+    if group_ok.is_none() {
+        return redirect_with_flash("/groups", "Group not found.");
+    }
+    // Verify the device belongs to this customer.
+    let device_ok: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM devices WHERE id = ? AND customer_id = ?",
+    )
+    .bind(req.device_id)
+    .bind(user.customer_id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+    if device_ok.is_none() {
+        return redirect_with_flash("/groups", "Device not found.");
+    }
+    // INSERT OR IGNORE — повторное добавление того же device idempotent.
+    let res = sqlx::query(
+        "INSERT OR IGNORE INTO device_groups(device_id, group_id) VALUES(?, ?)",
+    )
+    .bind(req.device_id)
+    .bind(group_id)
+    .execute(&state.db)
+    .await;
+    match res {
+        Ok(_) => redirect_with_flash("/groups", "Device added to group."),
+        Err(e) => {
+            tracing::error!(error = %e, "group_member_add failed");
+            redirect_with_flash("/groups", "Database error.")
+        }
+    }
+}
+
+async fn group_member_remove(
+    user: WebUser,
+    State(state): State<AppState>,
+    Path((group_id, device_id)): Path<(i64, i64)>,
+) -> Response {
+    // Single DELETE с двойной join-проверкой на customer_id —
+    // и группа, и устройство должны принадлежать тому же customer'у.
+    let res = sqlx::query(
+        "DELETE FROM device_groups \
+         WHERE device_id = ? AND group_id = ? \
+           AND device_id IN (SELECT id FROM devices WHERE customer_id = ?) \
+           AND group_id IN (SELECT id FROM groups WHERE customer_id = ?)",
+    )
+    .bind(device_id)
+    .bind(group_id)
+    .bind(user.customer_id)
+    .bind(user.customer_id)
+    .execute(&state.db)
+    .await;
+    match res {
+        Ok(_) => redirect_with_flash("/groups", "Device removed from group."),
+        Err(e) => {
+            tracing::error!(error = %e, "group_member_remove failed");
+            redirect_with_flash("/groups", "Database error.")
+        }
+    }
+}
+
 // ----- User delete + admin reset password ----------------------------------
 
 async fn users_delete(
@@ -5012,7 +5191,19 @@ struct DeviceLogRow {
     ts: String,
     severity_number: i64,
     severity_text: String,
+    /// Full body (capped at 8 KB чтобы HTML страница оставалась bounded).
     body: String,
+    /// v0.18.7: char-safe preview ~200 символов для <details> summary.
+    /// Раньше template делал `l.body[..200]` — byte-slice через
+    /// границу UTF-8 character'а паниковал на кириллице
+    /// (см. 2026-05-19 panic loop на /devices/9/telemetry, где
+    /// chat.response с русским текстом крашил сервер). Теперь
+    /// preview формируется в Rust через `trim_to` который режет
+    /// по char-границам.
+    body_preview: String,
+    /// Full attrs JSON (untrimmed — обычно небольшой).
+    attrs_full: String,
+    /// Char-safe preview ~100 символов для attrs.
     attrs_preview: String,
 }
 
@@ -5138,19 +5329,26 @@ async fn device_telemetry_view(
     .fetch_all(&state.db)
     .await
     .unwrap_or_default();
-    // v0.18.3: per CLIENT-TELEMETRY-CONTRACT.md client now sends full prompts
-    // and full LLM responses in `body` (beta mode). Cap per record at 8 KB
-    // to keep the rendered HTML page bounded — anything longer is genuinely
-    // exceptional and gets the trailing "…" treatment. `attrs_json` is
-    // typically <500 байт, отдаём целиком чтобы admin видел все labels.
+    // v0.18.7: per CLIENT-TELEMETRY-CONTRACT.md client sends full prompts
+    // and full LLM responses in `body` (beta mode). Cap full body at 8 KB
+    // чтобы HTML страница оставалась bounded. Preview-поля формируются
+    // через trim_to (char-safe) — раньше template делал byte-slice
+    // `l.body[..200]` и панически крашил на кириллических границах.
     let recent_logs: Vec<DeviceLogRow> = l_raw
         .into_iter()
-        .map(|r| DeviceLogRow {
-            ts: fmt_ts(&r.ts),
-            severity_number: r.severity_number,
-            severity_text: r.severity_text,
-            body: trim_to(&r.body, 8192),
-            attrs_preview: r.attrs_json,
+        .map(|r| {
+            let full_body = trim_to(&r.body, 8192);
+            let body_preview = trim_to(&r.body, 200);
+            let attrs_preview = trim_to(&r.attrs_json, 100);
+            DeviceLogRow {
+                ts: fmt_ts(&r.ts),
+                severity_number: r.severity_number,
+                severity_text: r.severity_text,
+                body: full_body,
+                body_preview,
+                attrs_full: r.attrs_json,
+                attrs_preview,
+            }
         })
         .collect();
 

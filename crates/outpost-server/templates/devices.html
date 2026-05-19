@@ -44,6 +44,7 @@
           <th class="px-4 py-3">Статус</th>
           <th class="px-4 py-3">Заряд</th>
           <th class="px-4 py-3">Версия приложения</th>
+          <th class="px-4 py-3">Группы</th>
           <th class="px-4 py-3">Активность</th>
           <th class="px-4 py-3 text-right">Действия</th>
         </tr>
@@ -76,6 +77,17 @@
           </td>
           <td class="px-4 py-3 text-sm">{{ d.battery }}</td>
           <td class="px-4 py-3 text-sm">{{ d.app_version }}</td>
+          <td class="px-4 py-3 text-sm">
+            {% if d.groups.is_empty() %}
+              <span class="text-slate-400">—</span>
+            {% else %}
+              <div class="flex flex-wrap gap-1">
+                {% for g in d.groups %}
+                <span class="inline-block px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 text-xs">{{ g }}</span>
+                {% endfor %}
+              </div>
+            {% endif %}
+          </td>
           <td class="px-4 py-3 text-sm text-slate-500">{{ d.last_seen }}</td>
           <td class="px-4 py-3 text-right text-sm space-x-3">
             <a href="/devices/{{ d.id }}/edit" class="text-slate-600 hover:text-slate-900">Изменить</a>
@@ -85,7 +97,7 @@
         </tr>
         {% endfor %}
         {% if devices.is_empty() %}
-        <tr><td colspan="7" class="px-4 py-8 text-center text-slate-400">Устройства ещё не зарегистрированы.</td></tr>
+        <tr><td colspan="8" class="px-4 py-8 text-center text-slate-400">Устройства ещё не зарегистрированы.</td></tr>
         {% endif %}
       </tbody>
     </table>
