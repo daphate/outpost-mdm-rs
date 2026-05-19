@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use outpost_server::{
     apk_watcher, app, bootstrap, cloudru_signer::CloudRuPresigner, config::Config, db,
-    distribute_gc, rollout_monitor, scheduler, shutdown, state::AppState,
+    distribute_gc, rollout_monitor, scheduler, shutdown, state, state::AppState,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -81,6 +81,10 @@ async fn main() -> Result<()> {
         }
     };
 
+    // v0.18.9: pull saved timezone (defaults to Europe/Moscow per migration 0020).
+    let server_tz = state::load_server_tz(&pool).await;
+    tracing::info!(timezone = %server_tz, "server timezone loaded");
+
     let state = AppState::new(
         pool.clone(),
         cfg.app_secret,
@@ -91,6 +95,7 @@ async fn main() -> Result<()> {
         cfg.secure_cookies,
         cloudru_signer,
         cfg.cloudru_apk_key,
+        server_tz,
     );
     let _scheduler_handle = scheduler::spawn(pool.clone());
     // v0.11: APK upstream watcher. Polls R2 mirror каждые 15 минут,

@@ -896,7 +896,7 @@ async fn render_groups(
                 name: r.name,
                 description: r.description.unwrap_or_else(|| "—".into()),
                 member_count: r.member_count,
-                created_at: fmt_ts(&r.created_at),
+                created_at: state.fmt_ts(&r.created_at),
                 members,
                 eligible_devices,
             }
@@ -1317,7 +1317,7 @@ async fn render_configs(
             kiosk_package: r.kiosk_package.unwrap_or_else(|| "—".into()),
             is_active: r.is_active,
             is_default: Some(r.id) == default_config_id,
-            updated_at: fmt_ts(&r.updated_at),
+            updated_at: state.fmt_ts(&r.updated_at),
         })
         .collect();
     let mut resp = render(ConfigsTemplate {
@@ -1493,11 +1493,11 @@ async fn render_push(
     let messages = rows
         .into_iter()
         .map(|r| PushRow {
-            created_at: fmt_ts(&r.created_at),
+            created_at: state.fmt_ts(&r.created_at),
             device_serial: r.device_serial,
             command: r.command,
             status: r.status,
-            delivered_at: r.delivered_at.as_deref().map(fmt_ts).unwrap_or_else(|| "—".into()),
+            delivered_at: r.delivered_at.as_deref().map(|s| state.fmt_ts(s)).unwrap_or_else(|| "—".into()),
         })
         .collect();
     let mut resp = render(PushTemplate {
@@ -1682,7 +1682,7 @@ async fn render_users(
             role_name: r.role_name,
             is_active: r.is_active,
             must_change_password: r.must_change_password,
-            last_login_at: r.last_login_at.as_deref().map(fmt_ts).unwrap_or_else(|| "—".into()),
+            last_login_at: r.last_login_at.as_deref().map(|s| state.fmt_ts(s)).unwrap_or_else(|| "—".into()),
         })
         .collect();
     let mut resp = render(UsersTemplate {
@@ -1810,14 +1810,10 @@ async fn scalar(state: &AppState, customer_id: i64, sql: &str) -> Result<i64, Ap
         .await?)
 }
 
-/// Best-effort prettifier for the SQLite `datetime('now')` TEXT format
-/// (`YYYY-MM-DD HH:MM:SS`). Anything we can't parse passes through verbatim
-/// so the UI never crashes on a stale row.
-fn fmt_ts(s: &str) -> String {
-    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
-        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
-        .unwrap_or_else(|_| s.to_string())
-}
+// v0.18.9: fmt_ts перенесена в `AppState::fmt_ts` (state.rs) — теперь она
+// конвертирует UTC из БД в server timezone (default Europe/Moscow,
+// настраивается через /settings → server.timezone). Все callsites в этом
+// файле переписаны на `state.fmt_ts(&...)`.
 
 fn render<T: Template>(t: T) -> Response {
     match t.render() {
@@ -3631,7 +3627,7 @@ async fn render_app_versions(
             version_name: r.version_name,
             file_size: format_size(r.file_size_bytes),
             sha256_short: r.sha256.chars().take(12).collect(),
-            uploaded_at: fmt_ts(&r.uploaded_at),
+            uploaded_at: state.fmt_ts(&r.uploaded_at),
             metadata_only: r.file_path.is_empty(),
             source_url: r.source_url,
         })
@@ -3892,8 +3888,8 @@ async fn render_app_rollouts(
             phase: r.phase,
             canary_until_at: r.canary_until_at,
             crash_threshold_pct: r.crash_threshold_pct,
-            created_at: fmt_ts(&r.created_at),
-            rolled_back_at: r.rolled_back_at.map(|s| fmt_ts(&s)),
+            created_at: state.fmt_ts(&r.created_at),
+            rolled_back_at: r.rolled_back_at.map(|s| state.fmt_ts(&s)),
             rolled_back_reason: r.rolled_back_reason,
             notes: r.notes,
         })
@@ -4515,7 +4511,7 @@ async fn render_files(
             kind: r.kind,
             size_human: format_size(r.file_size_bytes),
             sha256_short: r.sha256.chars().take(12).collect(),
-            uploaded_at: fmt_ts(&r.uploaded_at),
+            uploaded_at: state.fmt_ts(&r.uploaded_at),
         })
         .collect();
     let mut resp = render(FilesTemplate {
@@ -4714,6 +4710,14 @@ struct SettingsTemplate {
     default_sync_interval: i64,
     max_upload_mb: i64,
     branding_display_name: String,
+    /// v0.18.9: currently-selected IANA timezone name (e.g. "Europe/Moscow").
+    current_timezone: String,
+    /// v0.18.9: full IANA timezone list для dropdown. ~600 значений из
+    /// chrono_tz::TZ_VARIANTS. Это много, но admin Settings — не страница
+    /// под нагрузкой, render OK. Тип `String` (а не `&'static str`) ради
+    /// Askama equality в template (`tz == current_timezone`) — PartialEq
+    /// между &str и String не реализован.
+    all_timezones: Vec<String>,
     raw_entries: Vec<SettingEntry>,
     flash: Option<String>,
     error: Option<String>,
@@ -4756,6 +4760,7 @@ async fn render_settings(
     let mut default_sync_interval: i64 = 60;
     let mut max_upload_mb: i64 = 200;
     let mut branding_display_name = String::from("Outpost MDM");
+    let mut current_timezone = String::from("Europe/Moscow");
     for r in &raw {
         match r.key.as_str() {
             "server.enrollment_base_url" => {
@@ -4774,6 +4779,9 @@ async fn render_settings(
             "branding.display_name" => {
                 branding_display_name = strip_json_quotes(&r.value_json);
             }
+            "server.timezone" => {
+                current_timezone = strip_json_quotes(&r.value_json);
+            }
             _ => {}
         }
     }
@@ -4782,8 +4790,15 @@ async fn render_settings(
         .map(|r| SettingEntry {
             key: r.key,
             value_json: r.value_json,
-            updated_at: fmt_ts(&r.updated_at),
+            updated_at: state.fmt_ts(&r.updated_at),
         })
+        .collect();
+    // v0.18.9: TZ_VARIANTS — массив из 596 IANA timezone names в Rust 1.85
+    // chrono-tz 0.10. Owned String (а не &'static str) для PartialEq с
+    // current_timezone в Askama template.
+    let all_timezones: Vec<String> = chrono_tz::TZ_VARIANTS
+        .iter()
+        .map(|tz| tz.name().to_string())
         .collect();
     let mut resp = render(SettingsTemplate {
         user_login: user.login.clone(),
@@ -4791,6 +4806,8 @@ async fn render_settings(
         default_sync_interval,
         max_upload_mb,
         branding_display_name,
+        current_timezone,
+        all_timezones,
         raw_entries,
         flash,
         error,
@@ -4818,6 +4835,8 @@ struct SettingsForm {
     default_sync_interval: Option<String>,
     max_upload_mb: Option<String>,
     branding_display_name: Option<String>,
+    /// v0.18.9: IANA timezone (Europe/Moscow, UTC, …).
+    timezone: Option<String>,
 }
 
 async fn settings_save(
@@ -4860,7 +4879,22 @@ async fn settings_save(
         &json_quote(req.branding_display_name.as_deref().unwrap_or("").trim()),
     )
     .await?;
+    // v0.18.9: timezone — валидируем перед сохранением. Невалидное значение
+    // (например 'кириллица' или typo) — flash error, ничего не меняем.
+    let tz_input = req.timezone.as_deref().unwrap_or("").trim();
+    let new_tz: chrono_tz::Tz = tz_input.parse().map_err(|_| {
+        tracing::warn!(
+            invalid_tz = %tz_input,
+            "settings_save: tz парсинг fail — keeping previous"
+        );
+        ApiError::BadRequest(format!(
+            "Часовой пояс «{tz_input}» не распознан. Должно быть IANA-имя, например Europe/Moscow."
+        ))
+    })?;
+    upsert_setting(&mut tx, "server.timezone", &json_quote(tz_input)).await?;
     tx.commit().await?;
+    // Hot-reload tz в AppState — admin UI сразу подхватит без restart'а.
+    state.set_tz(new_tz);
     let _ = user;
     Ok(redirect_with_flash("/settings", "Settings saved."))
 }
@@ -4957,8 +4991,8 @@ async fn render_profile(
         login,
         email: email.unwrap_or_default(),
         role_name,
-        last_login_at: last_login_at.as_deref().map(fmt_ts).unwrap_or_else(|| "—".into()),
-        created_at: fmt_ts(&created_at),
+        last_login_at: last_login_at.as_deref().map(|s| state.fmt_ts(s)).unwrap_or_else(|| "—".into()),
+        created_at: state.fmt_ts(&created_at),
         flash,
         error,
     });
@@ -5100,7 +5134,7 @@ async fn telemetry_overview(
     .await
     .ok()
     .flatten()
-    .map(|s| fmt_ts(&s))
+    .map(|s| state.fmt_ts(&s))
     .unwrap_or_else(|| "—".into());
 
     #[derive(sqlx::FromRow)]
@@ -5135,7 +5169,7 @@ async fn telemetry_overview(
             serial: r.serial,
             logs: r.logs,
             errors: r.errors,
-            last_seen: r.last_seen.as_deref().map(fmt_ts).unwrap_or_else(|| "—".into()),
+            last_seen: r.last_seen.as_deref().map(|s| state.fmt_ts(s)).unwrap_or_else(|| "—".into()),
         })
         .collect();
 
@@ -5160,7 +5194,7 @@ async fn telemetry_overview(
     let recent_errors: Vec<RecentErrorRow> = err_raw
         .into_iter()
         .map(|r| RecentErrorRow {
-            ts: fmt_ts(&r.ts),
+            ts: state.fmt_ts(&r.ts),
             device_id: r.device_id,
             serial: r.serial,
             severity_text: r.severity_text,
@@ -5333,7 +5367,7 @@ async fn device_telemetry_view(
     .await
     .ok()
     .flatten()
-    .map(|s| fmt_ts(&s))
+    .map(|s| state.fmt_ts(&s))
     .unwrap_or_else(|| "—".into());
 
     #[derive(sqlx::FromRow)]
@@ -5359,7 +5393,7 @@ async fn device_telemetry_view(
             name: r.name,
             value: format!("{}", r.value),
             unit: r.unit.unwrap_or_else(|| "".into()),
-            ts: fmt_ts(&r.ts),
+            ts: state.fmt_ts(&r.ts),
         })
         .collect();
 
@@ -5384,7 +5418,7 @@ async fn device_telemetry_view(
             name: r.name,
             duration_ms: r.duration_ms,
             status_code: r.status_code,
-            start_ts: fmt_ts(&r.start_ts),
+            start_ts: state.fmt_ts(&r.start_ts),
         })
         .collect();
 
@@ -5416,7 +5450,7 @@ async fn device_telemetry_view(
             let body_preview = trim_to(&r.body, 200);
             let attrs_preview = trim_to(&r.attrs_json, 100);
             DeviceLogRow {
-                ts: fmt_ts(&r.ts),
+                ts: state.fmt_ts(&r.ts),
                 severity_number: r.severity_number,
                 severity_text: r.severity_text,
                 body: full_body,
@@ -5555,7 +5589,7 @@ async fn device_logs_view(
     let logs: Vec<DeviceLogStreamRow> = stream
         .into_iter()
         .map(|r| DeviceLogStreamRow {
-            ts: fmt_ts(&r.ts),
+            ts: state.fmt_ts(&r.ts),
             severity_number: r.severity_number,
             severity_text: r.severity_text,
             body: trim_to(&r.body, 500),
@@ -5666,7 +5700,7 @@ async fn render_customers(
             is_active: r.is_active,
             device_count: r.device_count,
             user_count: r.user_count,
-            created_at: fmt_ts(&r.created_at),
+            created_at: state.fmt_ts(&r.created_at),
         })
         .collect();
     let mut resp = render(CustomersTemplate {
@@ -6524,4 +6558,53 @@ async fn settings_language(
     }
     set_flash_cookie(&mut resp, &format!("Язык: {}", chosen.label()));
     resp
+}
+
+#[cfg(test)]
+mod tests {
+    //! v0.18.10: regression-тесты для pure helpers в этом файле.
+    //! Полный integration-coverage handler'ов — в `app.rs` и `internal.rs`.
+    use super::*;
+
+    /// v0.18.7 regression: byte-slicing на multi-byte UTF-8 character
+    /// раньше панически валил сервер. trim_to должен корректно резать
+    /// по char-boundary, не байтам.
+    #[test]
+    fn trim_to_cyrillic_does_not_panic_at_byte_boundary() {
+        // Строка где 100-й байт находится ВНУТРИ 2-байтовой кириллической 'н'.
+        // 99 байт 'x' + 'н' (байты 99..101) + ещё текст.
+        let s = format!("{}{}", "x".repeat(99), "ного хвоста для проверки границы");
+        // На v0.18.6 это была бы паника `end byte index 100 is not a char boundary`.
+        let result = trim_to(&s, 100);
+        // 100 chars + '…' маркер.
+        assert!(
+            result.chars().count() <= 101,
+            "trim_to обрезал больше 101 char'а: {} chars",
+            result.chars().count()
+        );
+        assert!(result.ends_with('…'), "expected '…' suffix at truncation");
+    }
+
+    #[test]
+    fn trim_to_short_string_passes_through() {
+        assert_eq!(trim_to("hello", 100), "hello");
+        assert_eq!(trim_to("", 100), "");
+    }
+
+    #[test]
+    fn trim_to_exact_boundary_no_ellipsis() {
+        // Если ровно max chars — обрезки нет, '…' не добавляется.
+        let s = "x".repeat(50);
+        let result = trim_to(&s, 50);
+        assert_eq!(result, s);
+        assert!(!result.ends_with('…'));
+    }
+
+    #[test]
+    fn trim_to_pure_cyrillic_at_max() {
+        // Полностью кириллический body — типичный случай chat.response.
+        let s = "Привет, боец! Используй жгут CAT на 10-15 см проксимальнее ".repeat(10);
+        let result = trim_to(&s, 200);
+        assert_eq!(result.chars().count(), 201, "200 chars + '…'");
+    }
 }

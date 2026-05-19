@@ -45,6 +45,16 @@ $buildCmd = '. $HOME/.cargo/env && cd /root/outpost-mdm-rs && cargo build --rele
 wsl -d $WslDistro -- bash -lc $buildCmd
 if ($LASTEXITCODE -ne 0) { throw 'cargo build failed inside WSL' }
 
+# v0.18.11: gate deploy on the unit-test suite. Catches regressions
+# before they hit prod (e.g. v0.18.7 byte-slicing panic, v0.18.9 TZ
+# parsing). Release-profile tests compile slowly first time but reuse
+# the same target/release artifacts from the build above on subsequent
+# runs, so the typical overhead is ~5 seconds.
+Write-Host '==> cargo test --release (in WSL)' -ForegroundColor Cyan
+$testCmd = '. $HOME/.cargo/env && cd /root/outpost-mdm-rs && cargo test --release --lib -p outpost-server --quiet'
+wsl -d $WslDistro -- bash -lc $testCmd
+if ($LASTEXITCODE -ne 0) { throw 'cargo test failed inside WSL — fix tests before deploying' }
+
 Write-Host '==> staging binary to .tmp/' -ForegroundColor Cyan
 $tmpBin = "$repoRoot\.tmp\outpost-server.new"
 wsl -d $WslDistro -- cp /root/outpost-mdm-rs/target/release/outpost-server /mnt/f/projects/outpost-mdm-rs/.tmp/outpost-server.new

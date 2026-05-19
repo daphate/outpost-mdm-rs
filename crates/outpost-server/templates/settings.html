@@ -33,6 +33,15 @@
       <span class="text-xs uppercase tracking-wide text-slate-500">Брендинг — название на странице входа</span>
       <input name="branding_display_name" value="{{ branding_display_name }}" placeholder="Outpost MDM" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
     </label>
+    <label class="block">
+      <span class="text-xs uppercase tracking-wide text-slate-500">Часовой пояс (IANA)</span>
+      <select name="timezone" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm font-mono">
+        {% for tz in all_timezones %}
+          <option value="{{ tz }}"{% if tz.as_str() == current_timezone.as_str() %} selected{% endif %}>{{ tz }}</option>
+        {% endfor %}
+      </select>
+      <span class="text-xs text-slate-500">Все даты/время в admin UI отображаются в этом часовом поясе. В БД хранится UTC. По умолчанию <code>Europe/Moscow</code>. Применяется сразу, без рестарта сервера.</span>
+    </label>
     <div class="flex items-center justify-between pt-2">
       <p class="text-xs text-slate-500">Хранятся в SQLite-таблице <code>settings</code>; читаются по требованию, рестарт не нужен.</p>
       <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded">Сохранить</button>
