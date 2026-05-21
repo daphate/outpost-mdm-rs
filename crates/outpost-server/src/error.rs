@@ -32,6 +32,18 @@ pub enum ApiError {
     TooManyRequests,
     #[error("internal server error")]
     Internal,
+    /// v0.18.17: feature-disabled endpoint. Используется для ballistics
+    /// routes при `BALLISTICS_ENABLED=false`.
+    #[error("service unavailable: {0}")]
+    ServiceUnavailable(String),
+    /// v0.18.17: optimistic concurrency mismatch (per BALLISTICS-MDM-
+    /// CONTRACT §5.1 ETag conflict).
+    #[error("precondition failed: {0}")]
+    PreconditionFailed(String),
+    /// v0.18.17: internal error с явным message (vs `Internal` который
+    /// маскирует под "internal server error").
+    #[error("internal server error: {0}")]
+    InternalServerError(String),
 }
 
 #[derive(Serialize)]
@@ -56,6 +68,9 @@ impl ApiError {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Self::PreconditionFailed(_) => StatusCode::PRECONDITION_FAILED,
+            Self::InternalServerError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
@@ -71,6 +86,9 @@ impl ApiError {
             Self::BadRequest(_) => "bad_request",
             Self::TooManyRequests => "too_many_requests",
             Self::Internal => "internal",
+            Self::ServiceUnavailable(_) => "service_unavailable",
+            Self::PreconditionFailed(_) => "precondition_failed",
+            Self::InternalServerError(_) => "internal",
         }
     }
 }
@@ -78,7 +96,7 @@ impl ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = self.http_status();
-        if matches!(self, Self::Internal) {
+        if matches!(self, Self::Internal | Self::InternalServerError(_)) {
             tracing::error!(error = %self, "internal server error");
         }
         let body = ErrorBody {

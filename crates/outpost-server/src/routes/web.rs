@@ -5,6 +5,7 @@ use crate::auth_extract::extract_token;
 use crate::client_ip::ClientIp;
 use crate::error::ApiError;
 use crate::i18n;
+use crate::permission::require_permission;
 use crate::session::{self, KIND_USER};
 use crate::state::AppState;
 use askama::Template;
@@ -162,6 +163,17 @@ pub fn router() -> Router<AppState> {
         .route(
             "/devices/{id}/install-apk-form",
             post(device_install_apk_form),
+        )
+        // v0.18.17 (Ballistics M5): admin web UI для push templates per
+        // BALLISTICS-MDM-CONTRACT §3.6. Видимо только когда BALLISTICS_ENABLED=true;
+        // иначе routes возвращают 503 (см. ballistics_templates_page).
+        .route(
+            "/ballistics/templates",
+            get(ballistics_templates_page).post(ballistics_template_create_form),
+        )
+        .route(
+            "/ballistics/templates/{id}/retract",
+            post(ballistics_template_retract_form),
         )
         // Server-wide settings
         .route("/settings", get(settings_page).post(settings_save))
@@ -5928,6 +5940,248 @@ async fn profile_save(
     .execute(&state.db)
     .await?;
     Ok(redirect_with_flash("/profile", "Profile saved."))
+}
+
+// ----- /ballistics/templates (M5 admin web UI) ------------------------------
+// Документ: docs/BALLISTICS-CRYPTO-DESIGN.md §3.6 (admin push).
+//
+// Templates — это plaintext шаблоны оружия (или патронов), которые
+// командование может push'ить в группу устройств. Client при accept'е
+// локально encrypt'ит и POST'ит в /api/v1/ballistics/<kind>. Это не
+// конфликтует с zero-knowledge envelope: template — by design shareable
+// content, admin осознанно публикует.
+
+#[derive(Template)]
+#[template(path = "ballistics_templates.html")]
+struct BallisticsTemplatesPageTemplate {
+    user_login: String,
+    enabled: bool,
+    templates: Vec<BallisticsTemplateRow>,
+    groups: Vec<GroupOption>,
+    flash: Option<String>,
+    error: Option<String>,
+}
+
+struct BallisticsTemplateRow {
+    id: String,
+    kind: String,
+    title: String,
+    target_group_name: String,
+    suggested_by_login: String,
+    created_at: String,
+    retracted: bool,
+    payload_pretty: String,
+}
+
+async fn ballistics_templates_page(
+    user: WebUser,
+    State(state): State<AppState>,
+    flash: FlashCookie,
+) -> Result<Response, ApiError> {
+    render_ballistics_templates(&user, &state, flash.0, None).await
+}
+
+async fn render_ballistics_templates(
+    user: &WebUser,
+    state: &AppState,
+    flash: Option<String>,
+    error: Option<String>,
+) -> Result<Response, ApiError> {
+    #[derive(sqlx::FromRow)]
+    struct Raw {
+        id: String,
+        kind: String,
+        title: Option<String>,
+        target_group_name: Option<String>,
+        suggested_by_login: Option<String>,
+        created_at: String,
+        retracted_at: Option<String>,
+        payload_json: String,
+    }
+    let raws: Vec<Raw> = sqlx::query_as::<_, Raw>(
+        "SELECT t.id, t.kind, t.title, g.name AS target_group_name, \
+                u.login AS suggested_by_login, t.created_at, t.retracted_at, t.payload_json \
+         FROM ballistics_admin_templates t \
+         LEFT JOIN groups g ON g.id = t.target_group_id \
+         LEFT JOIN users u ON u.id = t.suggested_by_user \
+         WHERE t.customer_id = ? \
+         ORDER BY t.created_at DESC LIMIT 500",
+    )
+    .bind(user.customer_id)
+    .fetch_all(&state.db)
+    .await?;
+    let templates: Vec<BallisticsTemplateRow> = raws
+        .into_iter()
+        .map(|r| {
+            let payload_pretty = serde_json::from_str::<serde_json::Value>(&r.payload_json)
+                .ok()
+                .and_then(|v| serde_json::to_string_pretty(&v).ok())
+                .unwrap_or(r.payload_json);
+            BallisticsTemplateRow {
+                id: r.id,
+                kind: r.kind,
+                title: r.title.unwrap_or_default(),
+                target_group_name: r
+                    .target_group_name
+                    .unwrap_or_else(|| "(весь парк)".to_string()),
+                suggested_by_login: r.suggested_by_login.unwrap_or_else(|| "—".to_string()),
+                created_at: state.fmt_ts(&r.created_at),
+                retracted: r.retracted_at.is_some(),
+                payload_pretty,
+            }
+        })
+        .collect();
+    let groups: Vec<GroupOption> = sqlx::query_as::<_, GroupOption>(
+        "SELECT id, name FROM groups WHERE customer_id = ? ORDER BY name LIMIT 200",
+    )
+    .bind(user.customer_id)
+    .fetch_all(&state.db)
+    .await?;
+    let mut resp = render(BallisticsTemplatesPageTemplate {
+        user_login: user.login.clone(),
+        enabled: state.ballistics_enabled,
+        templates,
+        groups,
+        flash,
+        error,
+    });
+    clear_flash_cookie(&mut resp);
+    Ok(resp)
+}
+
+async fn ballistics_template_create_form(
+    user: WebUser,
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> Result<Response, ApiError> {
+    require_permission(&state.db, user.role_id, "ballistics.admin").await?;
+    if !state.ballistics_enabled {
+        return Ok(redirect_with_flash(
+            "/ballistics/templates",
+            "Ballistics endpoints disabled (BALLISTICS_ENABLED=false) — template не создан.",
+        ));
+    }
+    let form = parse_form(&body);
+    let kind = form.first("kind").unwrap_or("").trim().to_string();
+    if !matches!(kind.as_str(), "weapon" | "cartridge") {
+        return Ok(redirect_with_flash(
+            "/ballistics/templates",
+            "kind должен быть weapon или cartridge.",
+        ));
+    }
+    let title = form
+        .first("title")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let target_group_id = form
+        .first("target_group_id")
+        .and_then(|s| s.trim().parse::<i64>().ok());
+    let payload_text = form.first("payload_json").unwrap_or("").trim();
+    if payload_text.is_empty() {
+        return Ok(redirect_with_flash(
+            "/ballistics/templates",
+            "payload_json не может быть пустым.",
+        ));
+    }
+    let parsed: serde_json::Value = match serde_json::from_str(payload_text) {
+        Ok(v) => v,
+        Err(e) => {
+            return Ok(redirect_with_flash(
+                "/ballistics/templates",
+                &format!("payload_json не парсится как JSON: {e}"),
+            ));
+        }
+    };
+    if !parsed.is_object() {
+        return Ok(redirect_with_flash(
+            "/ballistics/templates",
+            "payload_json должен быть JSON object.",
+        ));
+    }
+    if let Some(gid) = target_group_id {
+        let row: Option<(i64,)> = sqlx::query_as(
+            "SELECT id FROM groups WHERE id = ? AND customer_id = ?",
+        )
+        .bind(gid)
+        .bind(user.customer_id)
+        .fetch_optional(&state.db)
+        .await?;
+        if row.is_none() {
+            return Ok(redirect_with_flash(
+                "/ballistics/templates",
+                "Целевая группа не найдена в вашем customer'е.",
+            ));
+        }
+    }
+    let id = {
+        use rand::Rng;
+        use rand::distributions::Alphanumeric;
+        let suffix: String = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(16)
+            .map(char::from)
+            .collect();
+        format!("tmpl_{suffix}")
+    };
+    let payload_canon = serde_json::to_string(&parsed).unwrap_or_else(|_| "{}".into());
+
+    let mut tx = state.db.begin().await?;
+    sqlx::query(
+        "INSERT INTO ballistics_admin_templates \
+            (id, customer_id, kind, target_group_id, payload_json, suggested_by_user, title) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(user.customer_id)
+    .bind(&kind)
+    .bind(target_group_id)
+    .bind(&payload_canon)
+    .bind(user.id)
+    .bind(&title)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO ballistics_audit_log (customer_id, user_id, action, entity_kind, entity_id) \
+         VALUES (?, ?, 'admin_push', ?, ?)",
+    )
+    .bind(user.customer_id)
+    .bind(user.id)
+    .bind(&kind)
+    .bind(&id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    Ok(redirect_with_flash(
+        "/ballistics/templates",
+        &format!("Template {id} создан."),
+    ))
+}
+
+async fn ballistics_template_retract_form(
+    user: WebUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    require_permission(&state.db, user.role_id, "ballistics.admin").await?;
+    let res = sqlx::query(
+        "UPDATE ballistics_admin_templates SET retracted_at = datetime('now') \
+         WHERE id = ? AND customer_id = ? AND retracted_at IS NULL",
+    )
+    .bind(&id)
+    .bind(user.customer_id)
+    .execute(&state.db)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Ok(redirect_with_flash(
+            "/ballistics/templates",
+            "Template не найден или уже retracted.",
+        ));
+    }
+    Ok(redirect_with_flash(
+        "/ballistics/templates",
+        "Template отозван.",
+    ))
 }
 
 // ----- shared formatters ---------------------------------------------------

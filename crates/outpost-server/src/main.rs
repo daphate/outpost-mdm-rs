@@ -89,6 +89,9 @@ async fn main() -> Result<()> {
     let server_dt_format = state::load_server_dt_format(&pool).await;
     tracing::info!(datetime_format = %server_dt_format.as_id(), "server datetime format loaded");
 
+    // v0.18.17: ballistics feature flag.
+    tracing::info!(ballistics_enabled = cfg.ballistics_enabled, "ballistics endpoints feature flag");
+
     let state = AppState::new(
         pool.clone(),
         cfg.app_secret,
@@ -100,6 +103,7 @@ async fn main() -> Result<()> {
         cloudru_signer,
         cfg.cloudru_apk_key,
         server_tz,
+        cfg.ballistics_enabled,
     );
     state.set_dt_format(server_dt_format);
     let _scheduler_handle = scheduler::spawn(pool.clone());

@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+
+{% block title %}Шаблоны баллистики{% endblock %}
+
+{% block body %}
+{% include "_nav.html" %}
+
+<main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
+  <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+    <h2 class="text-2xl font-bold">Шаблоны баллистики</h2>
+    <span class="text-sm text-slate-500">всего: {{ templates.len() }}</span>
+  </div>
+
+  {% if !enabled %}
+    <div class="bg-amber-50 border border-amber-200 text-amber-900 text-sm px-4 py-3 rounded">
+      <p class="font-medium">⚠ Ballistics endpoints выключены (BALLISTICS_ENABLED=false)</p>
+      <p class="mt-1">Страница доступна, но client'ские <code>/api/v1/ballistics/*</code> запросы отвечают 503. Раздел остаётся неактивным до завершения crypto review (см. <code>docs/BALLISTICS-CRYPTO-DESIGN.md §6 Open Questions</code>). Включить через env <code>BALLISTICS_ENABLED=true</code> + restart.</p>
+    </div>
+  {% endif %}
+
+  {% if let Some(msg) = flash %}
+    <div class="bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm px-4 py-2 rounded">{{ msg }}</div>
+  {% endif %}
+  {% if let Some(e) = error %}
+    <div class="bg-red-50 border border-red-200 text-red-800 text-sm px-4 py-2 rounded">{{ e }}</div>
+  {% endif %}
+
+  <details class="bg-white rounded-lg shadow-sm p-4">
+    <summary class="cursor-pointer font-medium text-slate-700">+ Новый шаблон оружия / патрона</summary>
+    <form method="POST" action="/ballistics/templates" class="space-y-3 mt-4">
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <label class="block">
+          <span class="text-xs uppercase tracking-wide text-slate-500">Тип</span>
+          <select name="kind" required class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+            <option value="weapon" selected>weapon</option>
+            <option value="cartridge">cartridge</option>
+          </select>
+        </label>
+        <label class="block">
+          <span class="text-xs uppercase tracking-wide text-slate-500">Группа (опционально)</span>
+          <select name="target_group_id" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+            <option value="">— весь парк customer'а —</option>
+            {% for g in groups %}
+              <option value="{{ g.id }}">{{ g.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="block">
+          <span class="text-xs uppercase tracking-wide text-slate-500">Заголовок (для list view)</span>
+          <input name="title" placeholder="Soldier rifle profile, batch B" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+        </label>
+      </div>
+      <label class="block">
+        <span class="text-xs uppercase tracking-wide text-slate-500">Payload (JSON по схеме <code>WeaponProfile</code> или <code>CartridgeProfile</code>)</span>
+        <textarea name="payload_json" rows="10" required
+                  placeholder='{"id":"weapon-uuid","name_ru":"AK-12 7.62x39","cartridge_id":"user_762x39_default","scope":{...},...}'
+                  class="mt-1 w-full font-mono text-xs rounded border-slate-300 px-2 py-1"></textarea>
+        <span class="text-xs text-slate-500">Schema — <code>tactical-ar-hud/tools/BALLISTICS-MDM-CONTRACT.md §4</code>. Server хранит payload as-is (plaintext, by design — это командование явно публикует).</span>
+      </label>
+      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+        <p class="text-xs text-slate-500">После создания template видна устройствам группы через <code>GET /api/v1/ballistics/admin/templates</code>. Client'у выбирать accept (создать локальный record) или ignore.</p>
+        <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded">Опубликовать шаблон</button>
+      </div>
+    </form>
+  </details>
+
+  <div class="bg-white rounded-lg shadow-sm overflow-x-auto">
+    <table class="min-w-full divide-y divide-slate-200">
+      <thead class="bg-slate-50">
+        <tr class="text-xs uppercase tracking-wide text-slate-500 text-left">
+          <th class="px-4 py-3">ID</th>
+          <th class="px-4 py-3">Тип</th>
+          <th class="px-4 py-3">Заголовок</th>
+          <th class="px-4 py-3">Группа</th>
+          <th class="px-4 py-3">Создал</th>
+          <th class="px-4 py-3">Когда</th>
+          <th class="px-4 py-3">Статус</th>
+          <th class="px-4 py-3 text-right">Действия</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-100">
+        {% for t in templates %}
+        <tr class="hover:bg-slate-50">
+          <td class="px-4 py-3 font-mono text-sm">{{ t.id }}</td>
+          <td class="px-4 py-3 text-sm">
+            <span class="inline-block px-2 py-0.5 text-xs font-medium rounded bg-slate-100 text-slate-700">{{ t.kind }}</span>
+          </td>
+          <td class="px-4 py-3 text-sm">{{ t.title }}</td>
+          <td class="px-4 py-3 text-sm">{{ t.target_group_name }}</td>
+          <td class="px-4 py-3 text-sm">{{ t.suggested_by_login }}</td>
+          <td class="px-4 py-3 text-sm text-slate-500">{{ t.created_at }}</td>
+          <td class="px-4 py-3 text-sm">
+            {% if t.retracted %}
+              <span class="inline-block px-2 py-0.5 text-xs rounded bg-slate-200 text-slate-600">retracted</span>
+            {% else %}
+              <span class="inline-block px-2 py-0.5 text-xs rounded bg-emerald-100 text-emerald-700">active</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3 text-right text-sm">
+            {% if !t.retracted %}
+              <form method="POST" action="/ballistics/templates/{{ t.id }}/retract" class="inline"
+                    onsubmit="return confirm('Retract template {{ t.id }}? Устройства, ещё не accept'нувшие, скроют suggestion.')">
+                <button class="text-amber-700 hover:text-amber-900">Retract</button>
+              </form>
+            {% endif %}
+          </td>
+        </tr>
+        <tr class="bg-slate-50">
+          <td colspan="8" class="px-4 py-2">
+            <details class="text-xs">
+              <summary class="cursor-pointer text-slate-600 hover:text-slate-900">показать payload JSON</summary>
+              <pre class="mt-2 font-mono text-xs bg-white p-2 rounded overflow-x-auto">{{ t.payload_pretty }}</pre>
+            </details>
+          </td>
+        </tr>
+        {% endfor %}
+        {% if templates.is_empty() %}
+          <tr><td colspan="8" class="px-4 py-8 text-center text-slate-400">Шаблонов ещё нет.</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+  <section class="bg-slate-50 border border-slate-200 rounded-lg p-4 text-sm text-slate-600 space-y-2">
+    <p class="font-medium">Как это работает</p>
+    <ul class="list-disc list-inside text-slate-700 space-y-1 text-xs">
+      <li><strong>Template</strong> — plaintext шаблон оружия (или патрона) от командования. By design shareable content (admin осознанно публикует) — хранится в БД без encryption.</li>
+      <li><strong>Personal user records</strong> (создаваемые на устройстве) — encrypted-at-rest с per-record DEK. Server opaque (zero-knowledge envelope).</li>
+      <li>Когда client получает template (<code>GET /api/v1/ballistics/admin/templates</code>) и user accept'ит — client локально encrypt'ит и POST'ит в <code>/api/v1/ballistics/&lt;kind&gt;</code> как обычный personal record.</li>
+      <li><strong>Retract</strong> — soft-cancel. Устройства, ещё не получившие/accept'нувшие, скроют suggestion. Уже accept'нутые остаются (personal record уже у user'а).</li>
+    </ul>
+    <p class="text-xs text-slate-500 mt-2">Контракт — <code>tactical-ar-hud/tools/BALLISTICS-MDM-CONTRACT.md §3.6</code>. Server design — <code>outpost-mdm-rs/docs/BALLISTICS-CRYPTO-DESIGN.md</code>.</p>
+  </section>
+</main>
+{% endblock %}

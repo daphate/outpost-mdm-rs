@@ -103,6 +103,11 @@ pub struct AppState {
     /// v0.18.16: формат отображения дат в admin UI. Hot-reloadable
     /// аналогично server_tz. Default — DateFormat::Ru.
     pub server_dt_format: Arc<RwLock<DateFormat>>,
+    /// v0.18.17: feature flag для ballistics-sync endpoint'ов
+    /// (BALLISTICS-MDM-CONTRACT v1). Default `false` — production safe.
+    /// См. config::Config::ballistics_enabled + middleware
+    /// `routes/ballistics.rs::feature_flag_layer`.
+    pub ballistics_enabled: bool,
 }
 
 impl AppState {
@@ -118,6 +123,7 @@ impl AppState {
         cloudru_signer: Option<CloudRuPresigner>,
         cloudru_apk_key: String,
         server_tz: Tz,
+        ballistics_enabled: bool,
     ) -> Self {
         Self {
             db,
@@ -132,6 +138,7 @@ impl AppState {
             cloudru_apk_key: Arc::new(cloudru_apk_key),
             server_tz: Arc::new(RwLock::new(server_tz)),
             server_dt_format: Arc::new(RwLock::new(DateFormat::Ru)),
+            ballistics_enabled,
         }
     }
 
@@ -274,6 +281,7 @@ pub async fn test_state() -> AppState {
         None,
         cfg.cloudru_apk_key,
         chrono_tz::UTC,
+        true, // tests включают ballistics — основной payload тестируется при flag=on
     )
 }
 
@@ -312,6 +320,7 @@ mod tests {
             None,
             "apks/outpost-latest-debug.apk".to_string(),
             tz,
+            false,
         )
     }
 

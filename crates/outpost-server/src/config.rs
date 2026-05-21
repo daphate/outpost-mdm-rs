@@ -38,6 +38,19 @@ pub struct Config {
     /// (b44 schema, 2026-05-18). Legacy key `apks/latest/app-debug.apk` всё ещё
     /// supported при ручном override через env CLOUDRU_APK_KEY.
     pub cloudru_apk_key: String,
+    /// v0.18.17: feature flag для ballistics-sync endpoint'ов (BALLISTICS-MDM-
+    /// CONTRACT v1). **Default `false`** — production safe.
+    ///
+    /// Пока flag = false, все `/api/v1/ballistics/*` endpoints (кроме /health
+    /// для preflight diagnostic) возвращают `503 Service Unavailable` с
+    /// reason `"ballistics endpoints disabled — pending crypto review"`.
+    ///
+    /// Включать (`BALLISTICS_ENABLED=true`) **только** после expert crypto
+    /// review per `docs/BALLISTICS-CRYPTO-DESIGN.md §6 Open Questions`.
+    /// Server-side endpoint'ы opaque (не выполняют crypto operations),
+    /// но client-side encryption (AR Hud team) должна быть verified
+    /// независимо.
+    pub ballistics_enabled: bool,
 }
 
 impl Config {
@@ -100,6 +113,11 @@ impl Config {
             env::var("CLOUDRU_BUCKET").unwrap_or_else(|_| "outpost".to_string());
         let cloudru_apk_key = env::var("CLOUDRU_APK_KEY")
             .unwrap_or_else(|_| "apks/outpost-latest-debug.apk".to_string());
+        // v0.18.17: ballistics feature flag — default false (production safe).
+        let ballistics_enabled = env::var("BALLISTICS_ENABLED")
+            .ok()
+            .map(|s| matches!(s.as_str(), "1" | "true" | "TRUE" | "yes"))
+            .unwrap_or(false);
 
         Ok(Self {
             bind_addr: env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string()),
@@ -119,6 +137,7 @@ impl Config {
             cloudru_secret,
             cloudru_bucket,
             cloudru_apk_key,
+            ballistics_enabled,
         })
     }
 
@@ -138,6 +157,8 @@ impl Config {
             cloudru_secret: None,
             cloudru_bucket: "outpost".to_string(),
             cloudru_apk_key: "apks/outpost-latest-debug.apk".to_string(),
+            // Tests могут опт-инить через явный override; default OFF.
+            ballistics_enabled: false,
         }
     }
 }

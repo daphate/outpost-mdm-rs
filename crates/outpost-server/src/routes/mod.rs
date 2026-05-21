@@ -6,6 +6,7 @@
 
 pub mod applications;
 pub mod auth;
+pub mod ballistics;
 pub mod configurations;
 pub mod devices;
 pub mod distribute;
@@ -43,6 +44,11 @@ pub fn api_v1(state: AppState) -> Router {
         .merge(prom::router())
         // v0.18.2: nginx auth_request endpoint (Grafana SSO via MDM cookie).
         .merge(internal::router())
+        // v0.18.17: ballistics endpoints (BALLISTICS-MDM-CONTRACT v1).
+        // Все routes за feature flag (require_enabled() в каждом handler'е).
+        // Production deploys должны держать BALLISTICS_ENABLED=false пока
+        // expert crypto review per docs/BALLISTICS-CRYPTO-DESIGN.md §6.
+        .merge(ballistics::router())
         .merge(web::router())
         .with_state(state)
 }
