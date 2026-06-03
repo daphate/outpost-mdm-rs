@@ -7,6 +7,7 @@
 pub mod applications;
 pub mod auth;
 pub mod ballistics;
+pub mod bundles;
 pub mod configurations;
 pub mod devices;
 pub mod distribute;
@@ -49,6 +50,9 @@ pub fn api_v1(state: AppState) -> Router {
         // Production deploys должны держать BALLISTICS_ENABLED=false пока
         // expert crypto review per docs/BALLISTICS-CRYPTO-DESIGN.md §6.
         .merge(ballistics::router())
+        // 2026-06-03: bundle assignment endpoints (CONTENT-DISTRIBUTION-CONTRACT
+        // §«Канал 2» + INSIGHT-054 soldier-v31).
+        .merge(bundles::router())
         .merge(web::router())
         .with_state(state)
 }
