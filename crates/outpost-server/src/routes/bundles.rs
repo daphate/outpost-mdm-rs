@@ -11,7 +11,7 @@
 //!
 //! Permission gates: `bundles.read` / `bundles.write`.
 
-use crate::auth_extract::AuthUser;
+use crate::auth_extract::{AuthDevice, AuthUser};
 use crate::error::ApiError;
 use crate::page::{Page, PageParams};
 use crate::permission::require_permission;
@@ -33,10 +33,20 @@ pub fn router() -> Router<AppState> {
             "/api/v1/bundles/assignments/{id}",
             axum_delete(delete_assignment),
         )
+        // Admin-facing: AuthUser + bundles.read. Used by admin Web UI и
+        // operations tooling. Возвращает rich shape (EffectiveBundle с
+        // source/priority/assigned_at).
         .route(
             "/api/v1/devices/{device_id}/bundles",
             get(list_effective_for_device),
         )
+        // Device-facing (rc43-b47+ AR Hud client per INSIGHT-055 §5.4):
+        // AuthDevice via X-MDM-Token/Bearer. Device берёт свой ID из token,
+        // permission check не требуется (device может request свои bundles).
+        // Response wrapped в {"bundles": [...], "server_ts": "..."} — matches
+        // AR Hud's defensive parser form 3 (object with `bundles` key, array
+        // of objects with `bundle_id`).
+        .route("/api/v1/device/bundles", get(list_effective_for_self_device))
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -221,9 +231,110 @@ pub struct EffectiveBundle {
     pub assigned_at: DateTime<Utc>,
 }
 
-/// Resolve **effective** bundle assignments for a device, walking through
-/// device → group(s) → customer chain. Higher specificity wins; within
-/// same specificity, higher `priority` wins.
+/// Device-facing response wrapper. Matches AR Hud's defensive parser
+/// «form 3» (object with `bundles` key, array of objects with `bundle_id`).
+/// `server_ts` — для future incremental sync (если потребуется).
+#[derive(Debug, Serialize)]
+pub struct DeviceBundlesResponse {
+    pub bundles: Vec<EffectiveBundle>,
+    pub server_ts: DateTime<Utc>,
+}
+
+/// Device-facing: device запрашивает свои **effective** bundle'ы. Auth
+/// через `AuthDevice` extractor (X-MDM-Token/Bearer device_token,
+/// тот же что и для `/api/v1/sync`). Customer scope автоматически
+/// привязан к device. Permission check НЕ требуется — device может
+/// читать свои собственные assignments.
+///
+/// Response wrapped в {"bundles": [...], "server_ts": "..."} per
+/// INSIGHT-055 §5.4.
+async fn list_effective_for_self_device(
+    device: AuthDevice,
+    State(state): State<AppState>,
+) -> Result<Json<DeviceBundlesResponse>, ApiError> {
+    let bundles = resolve_effective_bundles(&state, device.customer_id, device.id).await?;
+    Ok(Json(DeviceBundlesResponse {
+        bundles,
+        server_ts: Utc::now(),
+    }))
+}
+
+/// Shared internal resolver — device → groups → customer chain.
+/// Higher specificity wins; within same specificity, higher `priority`
+/// wins. Используется обоими endpoint'ами (admin и device-facing).
+async fn resolve_effective_bundles(
+    state: &AppState,
+    customer_id: i64,
+    device_id: i64,
+) -> Result<Vec<EffectiveBundle>, ApiError> {
+    let device_rows: Vec<(String, i64, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT bundle_id, priority, assigned_at FROM bundle_assignments \
+         WHERE customer_id = ? AND target_type = 'device' AND target_id = ?",
+    )
+    .bind(customer_id)
+    .bind(device_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    let group_rows: Vec<(String, i64, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT ba.bundle_id, ba.priority, ba.assigned_at \
+         FROM bundle_assignments ba \
+         WHERE ba.customer_id = ? \
+           AND ba.target_type = 'group' \
+           AND ba.target_id IN (SELECT group_id FROM device_groups WHERE device_id = ?)",
+    )
+    .bind(customer_id)
+    .bind(device_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    let customer_rows: Vec<(String, i64, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT bundle_id, priority, assigned_at FROM bundle_assignments \
+         WHERE customer_id = ? AND target_type = 'customer' AND target_id = ?",
+    )
+    .bind(customer_id)
+    .bind(customer_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    let mut out: std::collections::HashMap<String, EffectiveBundle> =
+        std::collections::HashMap::new();
+    let push = |out: &mut std::collections::HashMap<String, EffectiveBundle>,
+                rows: Vec<(String, i64, DateTime<Utc>)>,
+                source: &str| {
+        for (bid, prio, ts) in rows {
+            out.entry(bid.clone()).or_insert(EffectiveBundle {
+                bundle_id: bid,
+                source: source.to_string(),
+                priority: prio,
+                assigned_at: ts,
+            });
+        }
+    };
+    push(&mut out, device_rows, "device");
+    push(&mut out, group_rows, "group");
+    push(&mut out, customer_rows, "customer");
+
+    let mut result: Vec<EffectiveBundle> = out.into_values().collect();
+    result.sort_by(|a, b| {
+        b.priority
+            .cmp(&a.priority)
+            .then_with(|| b.assigned_at.cmp(&a.assigned_at))
+    });
+    Ok(result)
+}
+
+/// Admin-facing: Resolve **effective** bundle assignments for a device,
+/// walking through device → group(s) → customer chain. Higher specificity
+/// wins; within same specificity, higher `priority` wins.
+///
+/// Auth: `AuthUser` + `bundles.read` permission. Используется Admin Web UI
+/// и operations tooling. Response — top-level array `Vec<EffectiveBundle>`
+/// (backward-compat для существующих consumers).
+///
+/// **Если ты — устройство** (X-MDM-Token / Bearer device_token), используй
+/// `GET /api/v1/device/bundles` (без `{device_id}` в path — device ID
+/// берётся из token; response wrapped в `{"bundles":[...],"server_ts":...}`).
 async fn list_effective_for_device(
     user: AuthUser,
     State(state): State<AppState>,
@@ -245,65 +356,6 @@ async fn list_effective_for_device(
         return Err(ApiError::Forbidden);
     }
 
-    // Union: device + groups + customer. SQLite has no CTE-friendly OR
-    // resolver, fetch each tier and merge in Rust — preserves explicit
-    // specificity ordering (device > group > customer).
-    let device_rows: Vec<(String, i64, DateTime<Utc>)> = sqlx::query_as(
-        "SELECT bundle_id, priority, assigned_at FROM bundle_assignments \
-         WHERE customer_id = ? AND target_type = 'device' AND target_id = ?",
-    )
-    .bind(user.customer_id)
-    .bind(device_id)
-    .fetch_all(&state.db)
-    .await?;
-
-    let group_rows: Vec<(String, i64, DateTime<Utc>)> = sqlx::query_as(
-        "SELECT ba.bundle_id, ba.priority, ba.assigned_at \
-         FROM bundle_assignments ba \
-         WHERE ba.customer_id = ? \
-           AND ba.target_type = 'group' \
-           AND ba.target_id IN (SELECT group_id FROM device_groups WHERE device_id = ?)",
-    )
-    .bind(user.customer_id)
-    .bind(device_id)
-    .fetch_all(&state.db)
-    .await?;
-
-    let customer_rows: Vec<(String, i64, DateTime<Utc>)> = sqlx::query_as(
-        "SELECT bundle_id, priority, assigned_at FROM bundle_assignments \
-         WHERE customer_id = ? AND target_type = 'customer' AND target_id = ?",
-    )
-    .bind(user.customer_id)
-    .bind(user.customer_id)
-    .fetch_all(&state.db)
-    .await?;
-
-    // Merge with specificity-priority — keep highest-tier source per bundle_id.
-    let mut out: std::collections::HashMap<String, EffectiveBundle> =
-        std::collections::HashMap::new();
-    let push = |out: &mut std::collections::HashMap<String, EffectiveBundle>,
-                rows: Vec<(String, i64, DateTime<Utc>)>,
-                source: &str| {
-        for (bid, prio, ts) in rows {
-            // Insert if not present (higher-tier-iterated-first means we keep first).
-            out.entry(bid.clone()).or_insert(EffectiveBundle {
-                bundle_id: bid,
-                source: source.to_string(),
-                priority: prio,
-                assigned_at: ts,
-            });
-        }
-    };
-    push(&mut out, device_rows, "device");
-    push(&mut out, group_rows, "group");
-    push(&mut out, customer_rows, "customer");
-
-    let mut result: Vec<EffectiveBundle> = out.into_values().collect();
-    result.sort_by(|a, b| {
-        // Higher priority first; tie-break by assigned_at desc.
-        b.priority
-            .cmp(&a.priority)
-            .then_with(|| b.assigned_at.cmp(&a.assigned_at))
-    });
+    let result = resolve_effective_bundles(&state, user.customer_id, device_id).await?;
     Ok(Json(result))
 }
