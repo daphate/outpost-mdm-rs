@@ -402,6 +402,20 @@ pub struct SyncResponse {
     /// v0.12 Tier-2. `None` если устройство on-target.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub update_available: Option<SyncUpdateAvailable>,
+    /// v0.18.19 (per INSIGHT-055 §7.1.4): ETag-style hint для bundle
+    /// assignments. SHA-256 hex от canonical concat всех effective
+    /// bundles этого device'а (см. `compute_bundles_etag`).
+    ///
+    /// **Client usage**: запомнить etag из last sync; на новом sync —
+    /// сравнить server's `bundles_etag` с локальным. Если equal — skip
+    /// `GET /api/v1/device/bundles` (assignments не изменились). Если
+    /// different — fetch + update local state + persist new etag.
+    ///
+    /// `None` если device без enrollment'а ИЛИ ошибка вычисления (client
+    /// должен трактовать None как «не знаю, fetch на всякий случай»).
+    /// `"sha256:<hex>"` префикс для будущей миграции на другие hash'и.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bundles_etag: Option<String>,
 }
 
 /// Query-string параметры для `/api/v1/sync`. v0.17: добавлен
@@ -596,11 +610,113 @@ async fn sync(
     let update_available =
         resolve_update_for_device(&state.db, device.id, device.customer_id).await;
 
+    // ---------- v0.18.19: bundles ETag hint (INSIGHT-055 §7.1.4) -----------
+    // Cheap sha256 hash от canonical concat effective bundles этого device'а.
+    // Client сравнивает с локально-сохранённым; equal → skip GET /device/bundles.
+    let bundles_etag = compute_bundles_etag(&state.db, device.id, device.customer_id)
+        .await
+        .ok();
+
     Ok(Json(SyncResponse {
         commands,
         server_time: Utc::now(),
         update_available,
+        bundles_etag,
     }))
+}
+
+/// v0.18.19 (per INSIGHT-055 §7.1.4): compute ETag-style hint от effective
+/// bundles этого device'а. SHA-256 hex от canonical concat:
+/// ```
+/// {bundle_id_1}:{source_1}:{priority_1}:{assigned_at_1}\n
+/// {bundle_id_2}:{source_2}:{priority_2}:{assigned_at_2}\n
+/// ...
+/// ```
+/// где строки отсортированы lexicographically по `{bundle_id}:{source}`,
+/// что гарантирует одинаковый hash для одинакового set'а (независимо от
+/// порядка query'я).
+///
+/// Returns `"sha256:<hex>"` (с префиксом — для будущей миграции на
+/// другие hash'и). При DB error возвращает `Err` (caller treats as `None`).
+async fn compute_bundles_etag(
+    pool: &sqlx::SqlitePool,
+    device_id: i64,
+    customer_id: i64,
+) -> Result<String, sqlx::Error> {
+    use sha2::{Digest, Sha256};
+
+    // Union: device + groups + customer. Same logic как
+    // `routes::bundles::resolve_effective_bundles`, но возвращаем только
+    // (bundle_id, source, priority, assigned_at) — без full EffectiveBundle DTO.
+    let device_rows: Vec<(String, i64, String)> = sqlx::query_as(
+        "SELECT bundle_id, priority, assigned_at FROM bundle_assignments \
+         WHERE customer_id = ? AND target_type = 'device' AND target_id = ?",
+    )
+    .bind(customer_id)
+    .bind(device_id)
+    .fetch_all(pool)
+    .await?;
+
+    let group_rows: Vec<(String, i64, String)> = sqlx::query_as(
+        "SELECT ba.bundle_id, ba.priority, ba.assigned_at \
+         FROM bundle_assignments ba \
+         WHERE ba.customer_id = ? \
+           AND ba.target_type = 'group' \
+           AND ba.target_id IN (SELECT group_id FROM device_groups WHERE device_id = ?)",
+    )
+    .bind(customer_id)
+    .bind(device_id)
+    .fetch_all(pool)
+    .await?;
+
+    let customer_rows: Vec<(String, i64, String)> = sqlx::query_as(
+        "SELECT bundle_id, priority, assigned_at FROM bundle_assignments \
+         WHERE customer_id = ? AND target_type = 'customer' AND target_id = ?",
+    )
+    .bind(customer_id)
+    .bind(customer_id)
+    .fetch_all(pool)
+    .await?;
+
+    // Merge with same specificity rules: device > group > customer per bundle_id.
+    use std::collections::HashMap;
+    let mut effective: HashMap<String, (String, i64, String)> = HashMap::new();
+    for (bid, prio, ts) in device_rows {
+        effective
+            .entry(bid.clone())
+            .or_insert((String::from("device"), prio, ts));
+    }
+    for (bid, prio, ts) in group_rows {
+        effective
+            .entry(bid.clone())
+            .or_insert((String::from("group"), prio, ts));
+    }
+    for (bid, prio, ts) in customer_rows {
+        effective
+            .entry(bid.clone())
+            .or_insert((String::from("customer"), prio, ts));
+    }
+
+    // Canonical sort: by bundle_id ascending (lexicographic).
+    let mut entries: Vec<(String, String, i64, String)> = effective
+        .into_iter()
+        .map(|(bid, (src, prio, ts))| (bid, src, prio, ts))
+        .collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+    let mut hasher = Sha256::new();
+    for (bid, src, prio, ts) in &entries {
+        hasher.update(bid.as_bytes());
+        hasher.update(b":");
+        hasher.update(src.as_bytes());
+        hasher.update(b":");
+        hasher.update(prio.to_string().as_bytes());
+        hasher.update(b":");
+        hasher.update(ts.as_bytes());
+        hasher.update(b"\n");
+    }
+    let digest = hasher.finalize();
+    Ok(format!("sha256:{:x}", digest))
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -754,5 +870,163 @@ mod tests {
         assert_eq!(creds["key_id"], "akid");
         assert_eq!(creds["secret"], "secret-bytes");
         assert_eq!(v["device_pubkey_acknowledged"], true);
+    }
+
+    // v0.18.19 — bundles_etag hint в SyncResponse (per INSIGHT-055 §7.1.4).
+
+    #[tokio::test]
+    async fn bundles_etag_empty_when_no_assignments() {
+        let pool = crate::db::open_pool(":memory:").await.unwrap();
+        // Seed minimal customer + device. customer_id=1 уже есть seed'нут в migrations.
+        sqlx::query(
+            "INSERT INTO devices (customer_id, serial, is_enrolled) VALUES (1, 'TEST', 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let device_id: i64 = sqlx::query_scalar("SELECT id FROM devices WHERE serial='TEST'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        let etag = compute_bundles_etag(&pool, device_id, 1).await.unwrap();
+        // Empty effective set → sha256 от пустой строки (e3b0c4...).
+        assert_eq!(
+            etag,
+            "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[tokio::test]
+    async fn bundles_etag_stable_for_same_assignments() {
+        let pool = crate::db::open_pool(":memory:").await.unwrap();
+        sqlx::query(
+            "INSERT INTO devices (customer_id, serial, is_enrolled) VALUES (1, 'TEST', 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let device_id: i64 = sqlx::query_scalar("SELECT id FROM devices WHERE serial='TEST'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        sqlx::query(
+            "INSERT INTO bundle_assignments(customer_id, bundle_id, target_type, target_id, \
+                                            priority, assigned_at) \
+             VALUES (1, 'soldier-v31', 'device', ?, 100, '2026-06-04T10:00:00Z')",
+        )
+        .bind(device_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let etag1 = compute_bundles_etag(&pool, device_id, 1).await.unwrap();
+        let etag2 = compute_bundles_etag(&pool, device_id, 1).await.unwrap();
+        assert_eq!(etag1, etag2, "etag must be stable for unchanged state");
+        assert!(etag1.starts_with("sha256:"));
+    }
+
+    #[tokio::test]
+    async fn bundles_etag_changes_on_new_assignment() {
+        let pool = crate::db::open_pool(":memory:").await.unwrap();
+        sqlx::query(
+            "INSERT INTO devices (customer_id, serial, is_enrolled) VALUES (1, 'TEST', 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let device_id: i64 = sqlx::query_scalar("SELECT id FROM devices WHERE serial='TEST'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        let etag_before = compute_bundles_etag(&pool, device_id, 1).await.unwrap();
+        sqlx::query(
+            "INSERT INTO bundle_assignments(customer_id, bundle_id, target_type, target_id, \
+                                            priority, assigned_at) \
+             VALUES (1, 'minimum', 'device', ?, 50, '2026-06-04T10:00:00Z')",
+        )
+        .bind(device_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let etag_after = compute_bundles_etag(&pool, device_id, 1).await.unwrap();
+        assert_ne!(
+            etag_before, etag_after,
+            "etag must change after new assignment"
+        );
+    }
+
+    #[tokio::test]
+    async fn bundles_etag_changes_on_delete() {
+        let pool = crate::db::open_pool(":memory:").await.unwrap();
+        sqlx::query(
+            "INSERT INTO devices (customer_id, serial, is_enrolled) VALUES (1, 'TEST', 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let device_id: i64 = sqlx::query_scalar("SELECT id FROM devices WHERE serial='TEST'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO bundle_assignments(customer_id, bundle_id, target_type, target_id, \
+                                            priority, assigned_at) \
+             VALUES (1, 'soldier-v31', 'device', ?, 100, '2026-06-04T10:00:00Z')",
+        )
+        .bind(device_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let etag_with = compute_bundles_etag(&pool, device_id, 1).await.unwrap();
+        sqlx::query("DELETE FROM bundle_assignments WHERE bundle_id = 'soldier-v31'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let etag_without = compute_bundles_etag(&pool, device_id, 1).await.unwrap();
+        assert_ne!(
+            etag_with, etag_without,
+            "etag must change after assignment delete"
+        );
+    }
+
+    #[tokio::test]
+    async fn bundles_etag_changes_on_priority_update() {
+        let pool = crate::db::open_pool(":memory:").await.unwrap();
+        sqlx::query(
+            "INSERT INTO devices (customer_id, serial, is_enrolled) VALUES (1, 'TEST', 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let device_id: i64 = sqlx::query_scalar("SELECT id FROM devices WHERE serial='TEST'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO bundle_assignments(customer_id, bundle_id, target_type, target_id, \
+                                            priority, assigned_at) \
+             VALUES (1, 'soldier-v31', 'device', ?, 100, '2026-06-04T10:00:00Z')",
+        )
+        .bind(device_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let etag_low = compute_bundles_etag(&pool, device_id, 1).await.unwrap();
+        sqlx::query(
+            "UPDATE bundle_assignments SET priority = 200 WHERE bundle_id = 'soldier-v31'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let etag_high = compute_bundles_etag(&pool, device_id, 1).await.unwrap();
+        assert_ne!(
+            etag_low, etag_high,
+            "etag must change after priority update (affects tie-break ordering)"
+        );
     }
 }

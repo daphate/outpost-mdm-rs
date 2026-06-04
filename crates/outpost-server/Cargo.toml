@@ -1,6 +1,6 @@
 [package]
 name = "outpost-server"
-version = "0.18.18"
+version = "0.18.19"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
