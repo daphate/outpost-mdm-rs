@@ -2,6 +2,114 @@
 
 Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.20] — 2026-06-15
+
+### Security hardening pass (security review + adversarial audit + follow-ups)
+
+Комплексный security-проход: ответный security review, адверсарный аудит
+(независимая перепроверка каждого фикса + охота за пропущенными инстансами
+тех же классов уязвимостей по всему коду) и три follow-up задачи. Полная
+test-suite зелёная (116 unit + 9 migration + integration + doctests). Для
+legitimate clients поведение не меняется, кроме явно отмеченных пунктов
+(owner-immutable, logout-on-error).
+
+**Тенант-изоляция — устранение existence-oracle'ов**
+
+- **Cross-tenant 403 → 404** (инвариант P1 «не leak'аем existence»): admin
+  bundle-endpoint `list_effective_for_device`, ballistics `put_entity` /
+  `delete_entity` (cross-owner), encrypted-distribution `fetch_blob`
+  (sibling-device в своём же тенанте) — раньше отдавали 403 для чужого-но-
+  существующего id, что было existence-oracle по global id space. Теперь
+  единый 404, консистентно с read-path `load_entity_row`.
+- **Composite PK для `ballistics_entities`** ([миграция 0028](crates/outpost-migrations/migrations/0028_ballistics_entities_tenant_pk.sql))
+  — корневой фикс structural-оракула, который response-level 403→404 закрыть
+  не мог. Было `id TEXT PRIMARY KEY` (global unique): create с id, занятым
+  ДРУГИМ тенантом, давал 409 (vs 201) → различал существование fleet-wide.
+  Стало `PRIMARY KEY (id, customer_id)` — один id сосуществует в разных
+  тенантах, cross-tenant create-collision невозможен, 409 теперь только при
+  same-tenant гонке. SQLite table-rebuild сохраняет данные + FK `ballistics_
+  wraps` (backup → drop child → rebuild parent → restore; безопасно и при FK
+  ON в проде, и при FK OFF в тестах). Запросы `load_wrap_for_device` и list
+  EXISTS-подзапрос доскоуплены `customer_id` (под не-уникальным id).
+- **Device auth gating** — `AuthDevice` теперь требует `is_enrolled` AND
+  `devices.is_active` AND `customers.is_active`; раньше soft-disabled device
+  или device деактивированного тенанта продолжал аутентифицироваться по
+  валидному 90-дневному токену (и sliding-refresh продлевал его бесконечно).
+
+**DoS-hardening — per-route body limits**
+
+Глобальный `DefaultBodyLimit` = 200 MiB (нужен для APK-аплоадов) позволял
+любому authenticated/enrolled клиенту прислать ~200 MiB и OOM-killed процесс
+(`MemoryMax=256M`). Добавлены tight per-route лимиты:
+
+- ballistics router 1 MiB, bundles 64 KiB, enrollment (`/sync`) 256 KiB,
+  devices 256 KiB, settings 256 KiB, configurations 1 MiB, push 256 KiB.
+- **otel** (`/v1/logs|metrics|traces`) — хендлеры читают сырой `Request<Body>`
+  через `to_bytes(body, …)` (минуя layer), поэтому лимит передан прямо в
+  `to_bytes` = 4 MiB.
+- **web-формы** — split-роутер: 2 Multipart-upload'а (`/applications/upload`,
+  `/files/upload`) вынесены в отдельный sub-router без тугого лимита (axum 0.8
+  `Multipart` уважает `DefaultBodyLimit`); остальные admin-формы → 1 MiB.
+- `/sync` `applied_commands` / `acks` — cap 256 элементов (write-амплификация
+  на single-writer SQLite). Admin template `payload_json` — cap 256 KiB.
+
+**Crypto / GDPR / integrity**
+
+- **`compute_bundles_etag`** — length-prefix (u32-LE на каждое поле) вместо
+  in-band разделителей `:`/`\n`. `bundle_id` мог содержать эти байты →
+  raw-concat был НЕ инъективен → две разных конфигурации могли дать один hash →
+  device пропустил бы реальный update. Теперь сериализация bijective.
+- **GDPR export** — bounded LIMIT (10000 entities / 5000 audit) теперь с
+  **явным сигналом обрезки**: поля `truncated` + `entities_total` /
+  `audit_total`, `schema_version` 1 → 2; сортировка по `(created_ts, id)`
+  вместо lexicographic-по-client-TEXT-`id` (произвольное подмножество).
+  Молчаливое обрезание нарушало бы GDPR Art.15/20 completeness.
+- **export audit row** пишется через `.await?` (а не `.ok()`) — полный дамп
+  персональных данных больше не проходит без audit-следа (§8.4 guarantee).
+- **`owner_user_id` immutable на update** `put_entity` — не перезаписывается из
+  request (personal record принадлежит одному user'у; admin push создаёт
+  ОТДЕЛЬНЫЕ entity per recipient). Чинит и opaque-500 при omit, и silent
+  owner-reassignment. ⚠ Поведенческое изменение: update с другим
+  `owner_user_id` теперь игнорирует его (контракт молчит про mutability —
+  выбран консервативный immutable).
+- **version overflow** — `checked_add(1)` (update) + `clamp(1, 1_000_000)`
+  (create) на client-controlled version вместо raw `+1` / `.max(1)`.
+- **logout** ([`auth.rs`](crates/outpost-server/src/routes/auth.rs) +
+  [`web.rs`](crates/outpost-server/src/routes/web.rs)) — ошибка
+  `session::revoke` больше не глотается `let _ =`: API logout → 500, web →
+  `tracing::error`. Иначе при тихом фейле revoke токен оставался валиден до
+  TTL = 24ч, а клиент видел «logged out».
+
+**Permissions**
+
+- **[Миграция 0027](crates/outpost-migrations/migrations/0027_bundle_permissions_seed.sql)**
+  — seed `bundles.read` / `bundles.write` permissions + grants. 0026 оставила
+  их только в SQL-комменте со ссылками на несуществующие таблицы
+  (`role_permissions`, `roles`), поэтому `require_permission()` никогда не
+  матчил → все 4 admin bundle-endpoint'а возвращали 403 для ВСЕХ ролей,
+  включая super-admin (dead-on-arrival). Идемпотентна (`WHERE NOT EXISTS`):
+  super-admin/admin/operator → read+write, viewer → read.
+
+**Прочее**
+
+- Error-тип `ApiError::Conflict` (409) — для PK-collision на create
+  (`is_unique_violation` → 409 вместо opaque 500).
+- Починены 2 pre-existing устаревших web-теста (форма `/settings` требует
+  обязательный `timezone`; шаблон enroll рендерит «полезная» строчной после
+  i18n-рефактора) и pre-existing сломанный doctest `compute_bundles_etag`
+  (голый ```` ``` ```` fence → ```` ```text ````).
+
+**Файлы:**
+- Новые миграции: `0027_bundle_permissions_seed.sql`,
+  `0028_ballistics_entities_tenant_pk.sql`.
+- Routes: `ballistics.rs`, `bundles.rs`, `enrollment.rs`, `distribute.rs`,
+  `otel.rs`, `devices.rs`, `settings.rs`, `configurations.rs`, `push.rs`,
+  `web.rs`, `auth.rs`.
+- `auth_extract.rs` (device gating), `error.rs` (Conflict variant).
+- Тесты: `tests/migrate.rs` (cross-tenant PK), `ballistics.rs::tests`
+  (owner immutable), `tests/security.rs`, `tests/web.rs`.
+- `crates/outpost-server/Cargo.toml` → `0.18.20`.
+
 ## [0.18.15] — 2026-05-19
 
 ### Phase 27 — «Настроить устройство»: structured update-config + install-apk push

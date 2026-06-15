@@ -16,6 +16,11 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/settings", get(list))
         .route("/api/v1/settings/{key}", get(get_one).put(set_one))
+        // v0.18.20 (security review DOS-1 follow-up, missed-instance sweep):
+        // set_one берёт `Json<SetSettingRequest>` с `value_json: String`
+        // (unbounded) + re-parse в Value. Без per-route лимита наследовал
+        // глобальный 200 MiB → auth-gated OOM + unbounded запись в settings.
+        .layer(axum::extract::DefaultBodyLimit::max(256 * 1024))
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]

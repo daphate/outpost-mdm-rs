@@ -51,6 +51,10 @@ const MAX_CIPHERTEXT_BYTES: usize = 64 * 1024;
 /// разумный upper bound (parka обычно ≤10 devices per user).
 const MAX_WRAPS_PER_RECORD: usize = 50;
 
+/// v0.18.20 (security review DOS-4): max размер admin-template payload_json.
+/// Weapon/cartridge профиль — единицы КБ; 256 KiB с большим запасом.
+const MAX_TEMPLATE_PAYLOAD_BYTES: usize = 256 * 1024;
+
 /// AES-GCM nonce length (per NIST SP 800-38D recommendation §5.2.1.1).
 const NONCE_LEN: usize = 12;
 
@@ -304,6 +308,14 @@ pub fn router() -> Router<AppState> {
             "/api/v1/ballistics/admin/templates/{id}/retract",
             post(retract_admin_template),
         )
+        // v0.18.20 (security review DOS-1): tight per-route body limit. Без
+        // этого глобальный 200MB DefaultBodyLimit позволял device прислать
+        // 200MB body → axum буферит+десериализует ВЕСЬ body (Json extractor
+        // бежит до require_enabled), wraps-Vec и base64-ciphertext аллоцируются
+        // целиком до 64KB/50-cap → OOM (при MemoryMax=256MB — kill процесса).
+        // 1 MiB покрывает ciphertext(64KB×1.34) + 50 wraps + admin template
+        // JSON с большим запасом.
+        .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
 }
 
 // =====================================================================
@@ -356,7 +368,8 @@ async fn list_entities(
          WHERE e.customer_id = ? AND e.kind = ? \
            AND (e.owner_device_id = ? \
                 OR EXISTS (SELECT 1 FROM ballistics_wraps w \
-                           WHERE w.entity_id = e.id AND w.recipient_device_id = ?))",
+                           WHERE w.entity_id = e.id AND w.customer_id = e.customer_id \
+                             AND w.recipient_device_id = ?))",
     );
     if q.modified_since.is_some() {
         sql.push_str(" AND e.modified_ts > ?");
@@ -381,7 +394,7 @@ async fn list_entities(
 
     let mut items = Vec::with_capacity(raws.len());
     for raw in raws {
-        let wrap = load_wrap_for_device(&state, &raw.id, device.id).await?;
+        let wrap = load_wrap_for_device(&state, device.customer_id, &raw.id, device.id).await?;
         items.push(raw_to_row(raw, wrap));
     }
     Ok(Json(ListResponse {
@@ -544,22 +557,43 @@ async fn put_entity(
             .await?;
             if let Some((Some(owner_id),)) = owner_check {
                 if owner_id != device.id {
-                    return Err(ApiError::Forbidden);
+                    // v0.18.20 (security review LEAK-2): 404 не 403 — non-owner
+                    // device не должен отличать «id чужой» от «id не существует»
+                    // (consistency с read-path load_entity_row).
+                    return Err(ApiError::NotFound);
                 }
             }
             // Если record был soft-deleted — re-create (un-delete).
             let _ = deleted_ts;
             is_create = false;
-            current_version + 1
+            // v0.18.20 (security review rust-MT-1/F4): checked_add чтобы
+            // client-controlled version=i64::MAX не давал silent wrap (release)
+            // / panic (debug). Overflow → 400, не corrupt state.
+            current_version
+                .checked_add(1)
+                .ok_or_else(|| ApiError::BadRequest("version counter overflow".into()))?
         }
         None => {
+            // v0.18.20 (security review DL-3): owner_user_id обязателен на
+            // create (колонка NOT NULL). Раньше omit давал opaque 500 на
+            // constraint violation вместо чистого 400.
+            if req.metadata.owner_user_id.is_none() {
+                return Err(ApiError::BadRequest(
+                    "owner_user_id required on create".to_string(),
+                ));
+            }
             is_create = true;
-            req.metadata.expected_version.unwrap_or(1).max(1)
+            // F4: clamp ceiling — client не должен задавать произвольно большой
+            // стартовый version.
+            req.metadata
+                .expected_version
+                .unwrap_or(1)
+                .clamp(1, 1_000_000)
         }
     };
 
     if is_create {
-        sqlx::query(
+        let insert_res = sqlx::query(
             "INSERT INTO ballistics_entities (id, customer_id, owner_user_id, owner_device_id, \
                 kind, parent_id, name_hint, version, ciphertext, ciphertext_iv, ciphertext_tag) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -576,16 +610,41 @@ async fn put_entity(
         .bind(&ct_iv)
         .bind(&ct_tag)
         .execute(&mut *tx)
-        .await?;
+        .await;
+        // v0.18.20 (security review MT-3 + migration 0028): PK теперь composite
+        // (id, customer_id) — НЕ глобальный. До этой ветки `existing` (scoped
+        // by customer_id) уже показал, что id свободен в ЭТОМ тенанте, так что
+        // unique-violation здесь возможна только при same-tenant гонке двух
+        // одновременных create'ов того же id → 409 Conflict (легитимный
+        // same-tenant конфликт, НЕ cross-tenant existence-oracle, который
+        // закрыт схемой в 0028). Не-unique ошибки → 500.
+        if let Err(e) = insert_res {
+            if let sqlx::Error::Database(db) = &e {
+                if db.is_unique_violation() {
+                    return Err(ApiError::Conflict("entity id already in use".to_string()));
+                }
+            }
+            return Err(ApiError::from(e));
+        }
     } else {
+        // v0.18.20 (security review follow-up): owner_user_id IMMUTABLE после
+        // create — НЕ перезаписывается на update. Personal record принадлежит
+        // одному user'у; admin push создаёт ОТДЕЛЬНЫЕ entity per recipient, а не
+        // переназначает owner'а существующих. Раньше UPDATE безусловно bind'ил
+        // req.metadata.owner_user_id, что давало два дефекта: (а) omit
+        // owner_user_id на update → NULL в NOT NULL колонку → opaque 500
+        // (асимметрия с create-веткой DL-3); (б) другой owner_user_id молча
+        // перезаписывал владельца записи. Теперь колонка не входит в SET —
+        // owner сохраняется как был. (BALLISTICS-MDM-CONTRACT молчит про
+        // mutability; immutable — консервативный безопасный дефолт,
+        // согласующийся с его принципом «не silent overwrite».)
         sqlx::query(
             "UPDATE ballistics_entities SET \
-                owner_user_id = ?, parent_id = ?, name_hint = ?, version = ?, \
+                parent_id = ?, name_hint = ?, version = ?, \
                 modified_ts = datetime('now'), deleted_ts = NULL, \
                 ciphertext = ?, ciphertext_iv = ?, ciphertext_tag = ? \
              WHERE id = ? AND customer_id = ?",
         )
-        .bind(req.metadata.owner_user_id)
         .bind(&req.metadata.parent_id)
         .bind(&req.metadata.name_hint)
         .bind(new_version)
@@ -672,7 +731,9 @@ async fn delete_entity(
         return Err(ApiError::NotFound);
     };
     if owner_id != Some(device.id) {
-        return Err(ApiError::Forbidden);
+        // v0.18.20 (security review LEAK-2): 404 не 403 — не leak'аем
+        // existence/ownership чужой записи.
+        return Err(ApiError::NotFound);
     }
 
     // Soft-delete; через 90 дней GC hard-purge'ит.
@@ -730,11 +791,28 @@ async fn get_audit_log(
 // Handlers — GDPR / ФЗ-152 (export + delete-all)
 // =====================================================================
 
+/// v0.18.20 (security review DOS-2): per-export потолки. Защищают пул от
+/// unbounded fetch_all, но обрезка ОБЯЗАНА сигналиться (см. `ExportBundle.
+/// truncated`). Щедрые — реальный device держит десятки-сотни записей.
+const ENTITY_EXPORT_LIMIT: i64 = 10_000;
+const AUDIT_EXPORT_LIMIT: i64 = 5_000;
+
 #[derive(Debug, Serialize)]
 pub struct ExportBundle {
     /// ISO 8601 UTC момент export'а.
     pub exported_at: String,
+    /// v0.18.20: bumped 1→2 (добавлены truncated / *_total поля).
     pub schema_version: u32,
+    /// v0.18.20 (security review DOS-2): `true` если scope превысил
+    /// ENTITY_EXPORT_LIMIT / AUDIT_EXPORT_LIMIT и bundle НЕ полон. Без этого
+    /// поля обрезанный GDPR-экспорт был неотличим от полного (нарушение
+    /// Art.15/20 completeness). При `true` клиент обязан дозапросить остаток
+    /// (пагинация — follow-up).
+    pub truncated: bool,
+    /// Полное число entity-записей в scope (до LIMIT).
+    pub entities_total: i64,
+    /// Полное число audit-записей в scope (до LIMIT).
+    pub audit_total: i64,
     pub entities: Vec<EntityRow>,
     pub audit_log: Vec<AuditLogRow>,
 }
@@ -745,34 +823,68 @@ async fn export_user_data(
 ) -> Result<Json<ExportBundle>, ApiError> {
     require_enabled(&state)?;
 
-    let raws = sqlx::query_as::<_, EntityRawRow>(
-        "SELECT id, kind, owner_user_id, owner_device_id, parent_id, name_hint, version, \
-                created_ts, modified_ts, deleted_ts, ciphertext, ciphertext_iv, ciphertext_tag \
-         FROM ballistics_entities \
+    // v0.18.20 (security review DOS-2): bounded export + explicit truncation
+    // signal. LIMIT защищает пул от unbounded fetch_all + N+1 wrap-queries, но
+    // обрезка ОБЯЗАНА сигналиться (GDPR completeness) — считаем total отдельным
+    // COUNT и выставляем `truncated`. Сортировка по (created_ts, id), НЕ по
+    // голому TEXT-`id` (id — client-generated UUID → lexicographic order при
+    // обрезке = произвольное подмножество; created_ts даёт осмысленный
+    // хронологический префикс, id — детерминированный tiebreak).
+    let entities_total: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM ballistics_entities \
          WHERE customer_id = ? AND owner_device_id = ?",
     )
     .bind(device.customer_id)
     .bind(device.id)
+    .fetch_one(&state.db)
+    .await?;
+
+    let raws = sqlx::query_as::<_, EntityRawRow>(
+        "SELECT id, kind, owner_user_id, owner_device_id, parent_id, name_hint, version, \
+                created_ts, modified_ts, deleted_ts, ciphertext, ciphertext_iv, ciphertext_tag \
+         FROM ballistics_entities \
+         WHERE customer_id = ? AND owner_device_id = ? \
+         ORDER BY created_ts, id LIMIT ?",
+    )
+    .bind(device.customer_id)
+    .bind(device.id)
+    .bind(ENTITY_EXPORT_LIMIT)
     .fetch_all(&state.db)
     .await?;
 
     let mut entities = Vec::with_capacity(raws.len());
     for raw in raws {
-        let wrap = load_wrap_for_device(&state, &raw.id, device.id).await?;
+        let wrap = load_wrap_for_device(&state, device.customer_id, &raw.id, device.id).await?;
         entities.push(raw_to_row(raw, wrap));
     }
 
-    let audit_raws: Vec<AuditLogRowRaw> = sqlx::query_as::<_, AuditLogRowRaw>(
-        "SELECT id, action, entity_kind, entity_id, ts, user_id, device_id \
-         FROM ballistics_audit_log \
+    let audit_total: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM ballistics_audit_log \
          WHERE customer_id = ? AND device_id = ?",
     )
     .bind(device.customer_id)
     .bind(device.id)
+    .fetch_one(&state.db)
+    .await?;
+
+    let audit_raws: Vec<AuditLogRowRaw> = sqlx::query_as::<_, AuditLogRowRaw>(
+        "SELECT id, action, entity_kind, entity_id, ts, user_id, device_id \
+         FROM ballistics_audit_log \
+         WHERE customer_id = ? AND device_id = ? \
+         ORDER BY id DESC LIMIT ?",
+    )
+    .bind(device.customer_id)
+    .bind(device.id)
+    .bind(AUDIT_EXPORT_LIMIT)
     .fetch_all(&state.db)
     .await?;
 
-    // Audit row of the export itself.
+    let truncated = entities_total > entities.len() as i64 || audit_total > audit_raws.len() as i64;
+
+    // v0.18.20 (security review DL-4): audit row export'а пишется ДО возврата
+    // bundle'а с error-propagation (`?`, не `.ok()`). Раньше swallowed error
+    // → полный дамп персональных данных мог пройти БЕЗ audit-следа (нарушение
+    // §8.4 guarantee). Теперь failed audit → fail request.
     sqlx::query(
         "INSERT INTO ballistics_audit_log (customer_id, device_id, action) \
          VALUES (?, ?, 'export')",
@@ -780,12 +892,14 @@ async fn export_user_data(
     .bind(device.customer_id)
     .bind(device.id)
     .execute(&state.db)
-    .await
-    .ok();
+    .await?;
 
     Ok(Json(ExportBundle {
         exported_at: chrono::Utc::now().to_rfc3339(),
-        schema_version: 1,
+        schema_version: 2,
+        truncated,
+        entities_total,
+        audit_total,
         entities,
         audit_log: audit_raws.into_iter().map(audit_raw_to_row).collect(),
     }))
@@ -922,6 +1036,16 @@ async fn create_admin_template(
         format!("tmpl_{suffix}")
     });
     let payload_json = req.payload.to_string();
+    // v0.18.20 (security review DOS-4): cap payload size. Router-level
+    // DefaultBodyLimit (DOS-1, 1 MiB) уже ограничивает тело, но payload_json
+    // хранится в unbounded TEXT и re-парсится на каждом list view, поэтому
+    // отдельный потолок на СТРОКУ payload'а. Weapon/cartridge профиль << 256 KiB.
+    if payload_json.len() > MAX_TEMPLATE_PAYLOAD_BYTES {
+        return Err(ApiError::BadRequest(format!(
+            "template payload too large: {} bytes (max {MAX_TEMPLATE_PAYLOAD_BYTES})",
+            payload_json.len()
+        )));
+    }
 
     let mut tx = state.db.begin().await?;
     sqlx::query(
@@ -1127,26 +1251,34 @@ async fn load_entity_row(
     };
     // Если device не owner и не recipient — 404 (не leak'аем existence).
     let visible = raw.owner_device_id == Some(requesting_device_id)
-        || load_wrap_for_device(state, &raw.id, requesting_device_id)
+        || load_wrap_for_device(state, customer_id, &raw.id, requesting_device_id)
             .await?
             .is_some();
     if !visible {
         return Err(ApiError::NotFound);
     }
-    let wrap = load_wrap_for_device(state, &raw.id, requesting_device_id).await?;
+    let wrap = load_wrap_for_device(state, customer_id, &raw.id, requesting_device_id).await?;
     Ok(raw_to_row(raw, wrap))
 }
 
 async fn load_wrap_for_device(
     state: &AppState,
+    customer_id: i64,
     entity_id: &str,
     device_id: i64,
 ) -> Result<Option<WrapOutput>, ApiError> {
+    // v0.18.20 (migration 0028): entity_id больше НЕ глобально-уникален
+    // (PK стал (id, customer_id)), поэтому wrap-lookup ОБЯЗАН скоупить
+    // customer_id — иначе под одинаковым id в другом тенанте мог бы
+    // подтянуться чужой wrap. (FK wraps→entities composite, так что
+    // w.customer_id всегда == customer_id энтити.)
     let raw: Option<WrapRawRow> = sqlx::query_as(
         "SELECT recipient_device_id, recipient_key_id, eph_pubkey_der, wrapped_dek, wrapped_dek_iv \
-         FROM ballistics_wraps WHERE entity_id = ? AND recipient_device_id = ?",
+         FROM ballistics_wraps \
+         WHERE entity_id = ? AND customer_id = ? AND recipient_device_id = ?",
     )
     .bind(entity_id)
+    .bind(customer_id)
     .bind(device_id)
     .fetch_optional(&state.db)
     .await?;
@@ -1212,6 +1344,107 @@ mod tests {
     fn etag_format_is_weak_etag_with_version() {
         assert_eq!(etag_for(1), "W/\"1\"");
         assert_eq!(etag_for(42), "W/\"42\"");
+    }
+
+    /// Regression (v0.18.20 security review follow-up): owner_user_id is
+    /// IMMUTABLE after create. An update sending a different owner must be
+    /// ignored (no silent reassignment), and an update OMITTING owner_user_id
+    /// must succeed — not 500 (previously it bound NULL into the NOT NULL
+    /// column). Calls the handler directly (test_state enables ballistics).
+    #[tokio::test]
+    async fn put_update_keeps_owner_user_id_immutable() {
+        use crate::auth_extract::AuthDevice;
+        use axum::Json;
+        use axum::extract::{Path, State};
+
+        let state = crate::state::test_state().await;
+        // Device (customer 1) = auth principal AND wrap recipient. Admin user
+        // (id 1) exists from bootstrap; add a 2nd user to attempt a (rejected)
+        // owner change.
+        sqlx::query("INSERT INTO devices (id, customer_id, serial) VALUES (1, 1, 'dev-1')")
+            .execute(&state.db)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO users (id, customer_id, role_id, login) VALUES (2, 1, 2, 'second-user')",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let device = || AuthDevice {
+            id: 1,
+            customer_id: 1,
+            serial: "dev-1".to_string(),
+        };
+        let b64n = |n: usize| b64_encode(&vec![0u8; n]);
+        let make_req = |owner: Option<i64>| PutEntityRequest {
+            metadata: EntityMetadata {
+                name_hint: None,
+                parent_id: None,
+                owner_user_id: owner,
+                expected_version: None,
+            },
+            ciphertext: b64n(16),
+            ciphertext_iv: b64n(NONCE_LEN),
+            ciphertext_tag: b64n(GCM_TAG_LEN),
+            wraps: vec![WrapInput {
+                recipient_device_id: 1,
+                recipient_key_id: "k1".to_string(),
+                eph_pubkey_der: b64n(SPKI_P256_LEN),
+                wrapped_dek: b64n(WRAPPED_DEK_LEN),
+                wrapped_dek_iv: b64n(NONCE_LEN),
+            }],
+        };
+        let path = || Path(("weapon".to_string(), "w-test-1".to_string()));
+        let owner_of = |state: &AppState| {
+            let pool = state.db.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT owner_user_id FROM ballistics_entities \
+                     WHERE id = 'w-test-1' AND customer_id = 1",
+                )
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+
+        // Create with owner = 1.
+        put_entity(
+            device(),
+            State(state.clone()),
+            path(),
+            Json(make_req(Some(1))),
+        )
+        .await
+        .expect("create should succeed");
+        assert_eq!(owner_of(&state).await, 1);
+
+        // Update sending a DIFFERENT owner (2) — must be ignored (immutable).
+        put_entity(
+            device(),
+            State(state.clone()),
+            path(),
+            Json(make_req(Some(2))),
+        )
+        .await
+        .expect("update with different owner should succeed");
+        assert_eq!(
+            owner_of(&state).await,
+            1,
+            "owner_user_id must NOT be overwritten on update"
+        );
+
+        // Update OMITTING owner_user_id — must succeed, not 500.
+        put_entity(device(), State(state.clone()), path(), Json(make_req(None)))
+            .await
+            .expect("update without owner_user_id must succeed (not 500)");
+        assert_eq!(
+            owner_of(&state).await,
+            1,
+            "owner_user_id must remain after an owner-less update"
+        );
     }
 
     #[tokio::test]

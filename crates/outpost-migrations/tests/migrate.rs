@@ -148,3 +148,62 @@ async fn settings_are_seeded() {
         .unwrap();
     assert!(n >= 5, "expected at least 5 seeded settings, got {n}");
 }
+
+/// Regression test for migration 0028 (security review — root fix for the
+/// ballistics global-id existence oracle): the same client-supplied entity id
+/// must be insertable in TWO different tenants (composite PK (id, customer_id)),
+/// while a duplicate within ONE tenant is still rejected. Before 0028 the
+/// standalone `id TEXT PRIMARY KEY` made id global, so a cross-tenant create
+/// collided (409-vs-201 oracle).
+#[tokio::test]
+async fn ballistics_entity_id_is_unique_per_tenant_not_global() {
+    let pool = fresh_pool().await;
+    // Enable FK to also exercise that 0028 preserved the entity/wrap FKs.
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // A second tenant + an owner user in each (owner_user_id is NOT NULL FK).
+    sqlx::query("INSERT INTO customers (id, name) VALUES (2, 'tenant-b')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO users (id, customer_id, role_id, login) VALUES (100, 1, 2, 'owner-a')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO users (id, customer_id, role_id, login) VALUES (200, 2, 2, 'owner-b')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let insert = |customer: i64, owner: i64| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO ballistics_entities \
+                    (id, customer_id, owner_user_id, kind, ciphertext, ciphertext_iv, ciphertext_tag) \
+                 VALUES ('shared-id-1', ?, ?, 'weapon', X'00', X'00', X'00')",
+            )
+            .bind(customer)
+            .bind(owner)
+            .execute(&pool)
+            .await
+        }
+    };
+
+    insert(1, 100).await.expect("id in tenant 1 should insert");
+    insert(2, 200)
+        .await
+        .expect("the SAME id in tenant 2 must ALSO insert (per-tenant composite PK)");
+    let dup = insert(1, 100).await;
+    assert!(
+        dup.is_err(),
+        "a duplicate (id, customer_id) must still violate the composite PK"
+    );
+}

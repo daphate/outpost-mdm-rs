@@ -355,7 +355,9 @@ async fn device_enrollment_view_then_generate_then_qr_visible() {
     .await;
     assert_eq!(status, 200);
     let body = body_after_headers(&raw);
-    assert!(body.contains("Полезная нагрузка регистрации"));
+    // Template renders this mid-sentence ("Шаг 2 — полезная нагрузка
+    // регистрации."), so the substring is lowercase "полезная".
+    assert!(body.contains("полезная нагрузка регистрации"));
     assert!(body.contains("enrollment_secret"));
     assert!(body.contains("<svg") || body.contains("<rect")); // qrcode SVG
 }
@@ -658,7 +660,10 @@ async fn roles_page_renders_seed_roles_and_permissions() {
 async fn settings_save_then_reflected_in_form_defaults() {
     let app = TestApp::start().await;
     let cookie = web_login_cookie(&app).await;
-    let body = "enrollment_base_url=https%3A%2F%2Fmdm.example.com&default_sync_interval=120&max_upload_mb=300&branding_display_name=Frontier+MDM";
+    // NB: `timezone` is a mandatory field — the real /settings form always
+    // submits its <select> value, and settings_save (v0.18.9+) rejects an
+    // empty/absent timezone with 400. Mirror the real form here.
+    let body = "enrollment_base_url=https%3A%2F%2Fmdm.example.com&default_sync_interval=120&max_upload_mb=300&branding_display_name=Frontier+MDM&timezone=Europe%2FMoscow&datetime_format=ru";
     let (status, _raw) = raw_request_with_cookie(
         "POST",
         &app.url("/settings"),

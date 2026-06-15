@@ -34,6 +34,17 @@ use crate::auth_extract::extract_token;
 use crate::session::{self, KIND_DEVICE};
 use crate::state::AppState;
 
+/// v0.18.20 (security review DOS-1 follow-up, missed-instance otel): per-batch
+/// тело OTLP-ingest. Каждый handler берёт СЫРОЙ `Request<Body>` и сам зовёт
+/// `to_bytes(body, …)` — поэтому `DefaultBodyLimit`-слой их НЕ ограничивает
+/// (raw Body минует limited-body wrapper), лимит обязан передаваться прямо в
+/// `to_bytes`. Раньше передавался `state.max_body_bytes` (глобальный 200 MiB,
+/// нужный для APK-аплоадов), и один enrolled device мог прислать ~200MB → JSON
+/// Value (inflation ×N) + INSERT-per-record loop → OOM-kill (MemoryMax=256M).
+/// 4 MiB — щедро для легитимного device-batch'а телеметрии, на порядок ниже
+/// cgroup-потолка. (Hard per-batch record-cap — follow-up.)
+const OTEL_MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/traces", post(ingest_traces))
@@ -72,7 +83,7 @@ async fn ingest_logs(
         Ok(ids) => ids,
         Err(r) => return r,
     };
-    let bytes = match axum::body::to_bytes(body, state.max_body_bytes).await {
+    let bytes = match axum::body::to_bytes(body, OTEL_MAX_BODY_BYTES).await {
         Ok(b) => b,
         Err(e) => {
             tracing::warn!(error = %e, "otlp logs body read failed");
@@ -185,7 +196,7 @@ async fn ingest_metrics(
         Ok(ids) => ids,
         Err(r) => return r,
     };
-    let bytes = match axum::body::to_bytes(body, state.max_body_bytes).await {
+    let bytes = match axum::body::to_bytes(body, OTEL_MAX_BODY_BYTES).await {
         Ok(b) => b,
         Err(_) => return (StatusCode::PAYLOAD_TOO_LARGE, "body too large").into_response(),
     };
@@ -315,7 +326,7 @@ async fn ingest_traces(
         Ok(ids) => ids,
         Err(r) => return r,
     };
-    let bytes = match axum::body::to_bytes(body, state.max_body_bytes).await {
+    let bytes = match axum::body::to_bytes(body, OTEL_MAX_BODY_BYTES).await {
         Ok(b) => b,
         Err(_) => return (StatusCode::PAYLOAD_TOO_LARGE, "body too large").into_response(),
     };

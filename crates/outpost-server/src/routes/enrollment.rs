@@ -44,6 +44,16 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/devices/{id}/enrollment", post(generate_enrollment))
         .route("/api/v1/enroll", post(enroll))
         .route("/api/v1/sync", post(sync))
+        // v0.18.20 (security review DOS-1 follow-up): per-route body limit.
+        // /sync берёт `Json<SyncRequest>`, у которого `current_state` —
+        // Option<Value> (unbounded), а acks/applied_commands — Vec<String>.
+        // Json-экстрактор уважает DefaultBodyLimit, поэтому слой реально гейтит
+        // тело ДО десериализации. Без него /sync наследовал глобальный 200 MiB
+        // → один enrolled device мог OOM-killed процесс (MemoryMax=256M);
+        // count-cap MT-4 (≤256) проверяется уже ПОСЛЕ буферизации, поэтому
+        // body-limit — обязательное дополнение к нему. /enroll + /enrollment —
+        // крошечный JSON, 256 KiB всем троим с запасом.
+        .layer(axum::extract::DefaultBodyLimit::max(256 * 1024))
 }
 
 // ----------------- admin: generate enrollment payload --------------------
@@ -441,6 +451,18 @@ async fn sync(
     Query(q): Query<SyncQuery>,
     Json(req): Json<SyncRequest>,
 ) -> Result<Json<SyncResponse>, ApiError> {
+    // v0.18.20 (security review MT-4): cap applied_commands / acks lengths.
+    // Каждый элемент → один UPDATE push_messages; без лимита device мог
+    // прислать десятки тысяч элементов (body до 200MB) → write-амплификация
+    // на single-writer SQLite. Реальный pending-drain capped LIMIT 50, так что
+    // 256 — щедрый потолок для legitimate ack batch.
+    const MAX_SYNC_BATCH: usize = 256;
+    if req.applied_commands.len() > MAX_SYNC_BATCH || req.acks.len() > MAX_SYNC_BATCH {
+        return Err(ApiError::BadRequest(format!(
+            "applied_commands/acks too large (max {MAX_SYNC_BATCH} each)"
+        )));
+    }
+
     // v0.17 sliding refresh: продлеваем активную device-session чтобы
     // месяц+ offline scenarios «just work». См. KDoc refresh_if_aging_for_subject.
     // Result игнорируем — false (нет refresh'а) это норма для свежих сессий.
@@ -626,15 +648,25 @@ async fn sync(
 }
 
 /// v0.18.19 (per INSIGHT-055 §7.1.4): compute ETag-style hint от effective
-/// bundles этого device'а. SHA-256 hex от canonical concat:
+/// bundles этого device'а. SHA-256 hex от canonical, length-prefixed
+/// сериализации отсортированного set'а.
+///
+/// v0.18.20 (security review CRYPTO-1): сериализация теперь length-prefixed,
+/// а не concat через in-band разделители `:`/`\n`. `bundle_id` не запрещает
+/// эти байты, поэтому raw-concat был НЕ инъективен (две разных конфигурации
+/// → один hash → device пропустил бы реальный update). Для каждого entry,
+/// в порядке сортировки по `(bundle_id, source)` (`text` — НЕ doctest):
+///
+/// ```text
+/// u32_le(len bundle_id)   ‖ bundle_id_bytes
+/// u32_le(len source)      ‖ source_bytes
+/// i64_le(priority)
+/// u32_le(len assigned_at) ‖ assigned_at_bytes
 /// ```
-/// {bundle_id_1}:{source_1}:{priority_1}:{assigned_at_1}\n
-/// {bundle_id_2}:{source_2}:{priority_2}:{assigned_at_2}\n
-/// ...
-/// ```
-/// где строки отсортированы lexicographically по `{bundle_id}:{source}`,
-/// что гарантирует одинаковый hash для одинакового set'а (независимо от
-/// порядка query'я).
+///
+/// Сортировка по `(bundle_id, source)` гарантирует одинаковый hash для
+/// одинакового set'а независимо от порядка query'я. Пустой set → SHA-256 от
+/// пустого входа.
 ///
 /// Returns `"sha256:<hex>"` (с префиксом — для будущей миграции на
 /// другие hash'и). При DB error возвращает `Err` (caller treats as `None`).
@@ -706,14 +738,22 @@ async fn compute_bundles_etag(
 
     let mut hasher = Sha256::new();
     for (bid, src, prio, ts) in &entries {
-        hasher.update(bid.as_bytes());
-        hasher.update(b":");
-        hasher.update(src.as_bytes());
-        hasher.update(b":");
-        hasher.update(prio.to_string().as_bytes());
-        hasher.update(b":");
-        hasher.update(ts.as_bytes());
-        hasher.update(b"\n");
+        // v0.18.20 (security review CRYPTO-1): length-prefix каждое
+        // variable-length поле вместо in-band разделителей `:`/`\n`. bundle_id
+        // не запрещает `:` и `\n`, поэтому raw-concat был НЕ инъективен —
+        // два разных набора могли дать одинаковый hash → device пропустил бы
+        // реальный update. Length-prefix (u32 LE) делает сериализацию
+        // bijective. prio — fixed-width i64 LE.
+        let bid_b = bid.as_bytes();
+        let src_b = src.as_bytes();
+        let ts_b = ts.as_bytes();
+        hasher.update((bid_b.len() as u32).to_le_bytes());
+        hasher.update(bid_b);
+        hasher.update((src_b.len() as u32).to_le_bytes());
+        hasher.update(src_b);
+        hasher.update(prio.to_le_bytes());
+        hasher.update((ts_b.len() as u32).to_le_bytes());
+        hasher.update(ts_b);
     }
     let digest = hasher.finalize();
     Ok(format!("sha256:{:x}", digest))

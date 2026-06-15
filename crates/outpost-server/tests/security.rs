@@ -82,11 +82,19 @@ async fn oversized_body_is_rejected() {
         .to_string();
 
     // Now POST a body larger than 8 KiB. Server should reject with 413.
+    // NB: target /api/v1/groups, NOT /api/v1/devices. As of v0.18.20 several
+    // device/admin routers (devices, settings, configurations, push, bundles,
+    // ballistics, enrollment) carry their own tighter per-route
+    // DefaultBodyLimit that OVERRIDES the global cap, so they no longer
+    // exercise `state.max_body_bytes`. /groups deliberately has no per-route
+    // override, so it still reflects the global limit under test here. The
+    // body is rejected at the body-buffering layer before the handler runs,
+    // so its field shape is irrelevant.
     let big = "x".repeat(16 * 1024);
-    let body = serde_json::json!({"serial": big}).to_string();
+    let body = serde_json::json!({"name": big}).to_string();
     let (status, _) = http_request(
         "POST",
-        &format!("http://{addr}/api/v1/devices"),
+        &format!("http://{addr}/api/v1/groups"),
         Some(&token),
         None,
         Some(&body),

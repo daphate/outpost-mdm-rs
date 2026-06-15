@@ -44,6 +44,11 @@ pub enum ApiError {
     /// маскирует под "internal server error").
     #[error("internal server error: {0}")]
     InternalServerError(String),
+    /// v0.18.20: resource conflict (409) — например попытка создать запись
+    /// с уже занятым глобальным id. Используется чтобы не отдавать opaque 500
+    /// на unique-violation (security review MT-3).
+    #[error("conflict: {0}")]
+    Conflict(String),
 }
 
 #[derive(Serialize)]
@@ -71,6 +76,7 @@ impl ApiError {
             Self::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::PreconditionFailed(_) => StatusCode::PRECONDITION_FAILED,
             Self::InternalServerError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Conflict(_) => StatusCode::CONFLICT,
         }
     }
 
@@ -89,6 +95,7 @@ impl ApiError {
             Self::ServiceUnavailable(_) => "service_unavailable",
             Self::PreconditionFailed(_) => "precondition_failed",
             Self::InternalServerError(_) => "internal",
+            Self::Conflict(_) => "conflict",
         }
     }
 }

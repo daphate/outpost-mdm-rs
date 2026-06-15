@@ -99,18 +99,28 @@ impl FromRequestParts<AppState> for AuthDevice {
         if s.kind != KIND_DEVICE {
             return Err(ApiError::InvalidToken);
         }
-        let row: Option<(i64, i64, String, i64)> =
-            sqlx::query_as("SELECT id, customer_id, serial, is_enrolled FROM devices WHERE id = ?")
-                .bind(s.subject_id)
-                .fetch_optional(&state.db)
-                .await
-                .map_err(ApiError::from)?;
+        // v0.18.20 (security review AUTH-1): gate on is_enrolled AND
+        // devices.is_active AND customers.is_active. Без этого soft-disabled
+        // device или device деактивированного тенанта продолжал бы
+        // аутентифицироваться по валидному 90-дневному токену (а sliding
+        // refresh в /sync продлевал бы его бесконечно). Mirrors AuthUser
+        // which already rejects inactive users.
+        let row: Option<(i64, i64, String, i64, i64, i64)> = sqlx::query_as(
+            "SELECT d.id, d.customer_id, d.serial, d.is_enrolled, d.is_active, c.is_active \
+             FROM devices d JOIN customers c ON c.id = d.customer_id WHERE d.id = ?",
+        )
+        .bind(s.subject_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(ApiError::from)?;
         match row {
-            Some((id, customer_id, serial, 1)) => Ok(AuthDevice {
+            // enrolled=1, device active=1, customer active=1 — всё ок.
+            Some((id, customer_id, serial, 1, 1, 1)) => Ok(AuthDevice {
                 id,
                 customer_id,
                 serial,
             }),
+            // row есть, но не enrolled / device disabled / tenant disabled.
             Some(_) => Err(ApiError::Forbidden),
             None => Err(ApiError::InvalidToken),
         }

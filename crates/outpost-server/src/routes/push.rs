@@ -32,6 +32,11 @@ pub fn router() -> Router<AppState> {
             "/api/v1/push/schedule/{id}",
             axum::routing::delete(cancel_schedule),
         )
+        // v0.18.20 (security review DOS-1 follow-up, missed-instance sweep):
+        // create_schedule берёт `Json<CreateScheduleRequest>` с command/payload
+        // JSON. Без per-route лимита наследовал глобальный 200 MiB → auth-gated
+        // OOM. 256 KiB — щедро для push-command payload'а.
+        .layer(axum::extract::DefaultBodyLimit::max(256 * 1024))
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]

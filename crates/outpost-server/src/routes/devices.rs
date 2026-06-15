@@ -39,6 +39,12 @@ pub fn router() -> Router<AppState> {
             "/api/v1/devices/{id}/remote-wipe",
             axum::routing::post(post_remote_wipe),
         )
+        // v0.18.20 (security review DOS-1 follow-up, missed-instance sweep):
+        // per-route body limit. post_config берёт `Json<ConfigUpdateRequest>`
+        // с `payload: serde_json::Value` (unbounded); все остальные routes —
+        // мелкий control-plane JSON. Без лимита наследовали глобальный 200 MiB
+        // (нужный для APK-аплоадов на ДРУГИХ роутерах) → auth-gated OOM-вектор.
+        .layer(axum::extract::DefaultBodyLimit::max(256 * 1024))
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]

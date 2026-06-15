@@ -89,13 +89,22 @@ async fn login(
 }
 
 /// `POST /api/v1/auth/logout` — revoke the caller's current session.
-/// Idempotent; returns 204 either way.
+/// Idempotent; returns 204 when revocation succeeds (incl. already-revoked).
 async fn logout(
     State(state): State<AppState>,
     parts: AxumPartsBorrow,
 ) -> Result<StatusCode, ApiError> {
     if let Some(token) = parts.token {
-        let _ = session::revoke(&token, &state.db).await;
+        // v0.18.20 (security review err-swallow): НЕ глотаем ошибку revoke.
+        // Раньше `let _ =` → при DB error session оставалась НЕ отозванной
+        // (revoked_at NULL → verify принимает токен до TTL=24ч), а клиент
+        // видел 204 «logged out». Теперь failed revoke → 500: клиент знает,
+        // что server-side инвалидация не прошла, и может retry'ить. Ok(bool)
+        // игнорируем — false (нечего отзывать) это норма (idempotent).
+        session::revoke(&token, &state.db).await.map_err(|e| {
+            tracing::error!(error = %e, "logout: session revoke failed — token still valid");
+            ApiError::from(e)
+        })?;
     }
     Ok(StatusCode::NO_CONTENT)
 }

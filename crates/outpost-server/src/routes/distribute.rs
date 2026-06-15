@@ -477,7 +477,7 @@ async fn resolve_recipients(
 
 /// `GET /api/v1/encrypted-distributions/{id}/blob` — device-authenticated.
 /// Авторизованный device может скачать ciphertext только своей строки;
-/// другие 403.
+/// чужая строка (даже sibling-device в своём же тенанте) → 404, не 403.
 async fn fetch_blob(
     device: AuthDevice,
     State(state): State<AppState>,
@@ -496,7 +496,12 @@ async fn fetch_blob(
         return Err(ApiError::NotFound);
     };
     if recipient_id != device.id {
-        return Err(ApiError::Forbidden);
+        // v0.18.20 (security review LEAK — продолжение LEAK-2): 404, не 403.
+        // dist_id — INTEGER AUTOINCREMENT (dense global space). 403-vs-404
+        // для строки, адресованной sibling-device в том же тенанте, —
+        // existence-oracle по чужим distribution id. Consistency с
+        // load_entity_row / ballistics put/delete: «exists-but-not-yours → 404».
+        return Err(ApiError::NotFound);
     }
 
     let blob_path = state.app_files_dir.join("encrypted").join(format!("{sha}.bin"));

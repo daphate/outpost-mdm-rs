@@ -19,7 +19,16 @@ use axum::{Json, Router};
 use serde::Deserialize;
 
 pub fn router() -> Router<AppState> {
-    Router::new()
+    // v0.18.20 (security review DOS-1 follow-up): file/APK upload routes use the
+    // streaming `Multipart` extractor, which DOES honor DefaultBodyLimit in
+    // axum 0.8 (extract/multipart.rs uses `with_limited_body`) — so they must
+    // NOT inherit the tight form limit applied to `main` below. Keep them on a
+    // separate sub-router with no per-route cap, leaving only the permissive
+    // app-global limit (config max_body_bytes) for legitimate large uploads.
+    let uploads = Router::new()
+        .route("/applications/upload", post(applications_upload))
+        .route("/files/upload", post(files_upload));
+    let main = Router::new()
         .route("/", get(root))
         .route("/login", get(login_page).post(login_submit))
         .route("/logout", get(logout))
@@ -62,8 +71,9 @@ pub fn router() -> Router<AppState> {
             post(group_member_remove),
         )
         // Applications: APK + asset upload, edit, versions, delete.
+        // (POST /applications/upload — Multipart — lives on the `uploads`
+        // sub-router so it keeps the permissive app-global body limit.)
         .route("/applications", get(applications_page))
-        .route("/applications/upload", post(applications_upload))
         .route(
             "/applications/{id}/edit",
             get(application_edit_view).post(application_edit_post),
@@ -123,8 +133,8 @@ pub fn router() -> Router<AppState> {
         // Roles + per-role permissions
         .route("/roles", get(roles_page))
         // Files (generic uploaded files browser)
+        // (POST /files/upload — Multipart — lives on the `uploads` sub-router.)
         .route("/files", get(files_page))
-        .route("/files/upload", post(files_upload))
         .route("/files/{id}/delete", post(files_delete))
         // v0.15 (MDM-DEVICE-CONTROL-CONTRACT §2): admin web UI для encrypted
         // distribution. GET — форма target picker, POST — translate в JSON
@@ -169,7 +179,14 @@ pub fn router() -> Router<AppState> {
         // иначе routes возвращают 503 (см. ballistics_templates_page).
         .route(
             "/ballistics/templates",
-            get(ballistics_templates_page).post(ballistics_template_create_form),
+            get(ballistics_templates_page)
+                .post(ballistics_template_create_form)
+                // v0.18.20 (security review DOS-4): scoped 256 KiB body limit —
+                // tighter than the router-wide 1 MiB form cap, matching this
+                // route's handler-side payload_json cap (256 KiB). Per-route
+                // (inner) layer wins over the router-wide one and gates the body
+                // before buffering. (GET без тела — не затронут.)
+                .layer(axum::extract::DefaultBodyLimit::max(256 * 1024)),
         )
         .route(
             "/ballistics/templates/{id}/retract",
@@ -209,6 +226,14 @@ pub fn router() -> Router<AppState> {
             "/me/password",
             get(me_password_view).post(me_password_post),
         )
+        // v0.18.20 (security review DOS-1 follow-up): tight body limit for ALL
+        // admin form/page routes. Each handler takes a small Form/Bytes/Json
+        // body (or none, for GET pages); 1 MiB is generous yet ~200x below the
+        // MemoryMax=256M OOM ceiling. Без этого admin-form-хендлеры (берущие
+        // `Bytes`) наследовали глобальный 200 MiB → auth-gated OOM. Multipart
+        // upload routes are merged separately and keep the app-global limit.
+        .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024));
+    main.merge(uploads)
 }
 
 // ----- Web-session extractor: cookie-or-redirect -------------------------
@@ -537,7 +562,18 @@ fn clear_pending_2fa_cookie(resp: &mut Response) {
 
 async fn logout(parts_extractor: LogoutToken, State(state): State<AppState>) -> Response {
     if let Some(token) = parts_extractor.token {
-        let _ = session::revoke(&token, &state.db).await;
+        // v0.18.20 (security review err-swallow): логируем ошибку revoke вместо
+        // молчаливого `let _ =`. Cookie всё равно чистим (браузер выходит), но
+        // при DB-фейле server-side session остаётся валидной до TTL —
+        // захваченная копия cookie продолжит работать, ops должны видеть это в
+        // логах. (Hard-fail не делаем: не блокируем выход из-за транзиентной
+        // ошибки БД; эскалация — follow-up.)
+        if let Err(e) = session::revoke(&token, &state.db).await {
+            tracing::error!(
+                error = %e,
+                "web logout: session revoke failed — cookie cleared but server session valid until TTL"
+            );
+        }
     }
     let mut resp = Redirect::to("/login").into_response();
     clear_session_cookie(&mut resp);
@@ -6081,6 +6117,13 @@ async fn ballistics_template_create_form(
         return Ok(redirect_with_flash(
             "/ballistics/templates",
             "payload_json не может быть пустым.",
+        ));
+    }
+    // v0.18.20 (security review DOS-4): cap payload size (parity с API path).
+    if payload_text.len() > 256 * 1024 {
+        return Ok(redirect_with_flash(
+            "/ballistics/templates",
+            "payload_json слишком большой (макс 256 КиБ).",
         ));
     }
     let parsed: serde_json::Value = match serde_json::from_str(payload_text) {

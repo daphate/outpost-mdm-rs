@@ -369,6 +369,8 @@ Run-environment: live `mdm.secondf8n.tech` с `BALLISTICS_ENABLED=true`
 | F5 | Oversized ciphertext (>64 KB) | 400 |
 | F6 | Invalid kind / wrong id prefix | 400 |
 | F7 | Sequence: DELETE → CREATE с тем же id | succeeds (un-soft-delete via PUT) |
+| F8 | Same-tenant create на уже занятый id (гонка) | 409 Conflict (не opaque 500) |
+| F9 | Update без `owner_user_id` | 200; owner сохраняется (immutable — не 500) |
 
 ### 5.3 Privacy invariants
 
@@ -380,6 +382,9 @@ Run-environment: live `mdm.secondf8n.tech` с `BALLISTICS_ENABLED=true`
 | P4 | GDPR delete-all → последующий GET | 404 (hard purge); compliance row в `ballistics_gdpr_deletion_log` |
 | P5 | Server logs grep на `bullet_mass`/`muzzle_velocity`/`ballistic_coefficient` | **0 hits** (plaintext content никогда не leak'нется через server logs) |
 | P6 | Server logs grep на base64-encoded DEK или wrap_key | 0 hits |
+| P7 | Один и тот же id в двух разных тенантах | оба create succeed — id уникален per-tenant (composite PK `(id, customer_id)`, миграция 0028); cross-tenant create НЕ коллизит → нет existence-oracle |
+| P8 | Update с другим `owner_user_id` | значение игнорируется — owner immutable после create (нет silent reassignment) |
+| P9 | GDPR export превышает per-export LIMIT (10000/5000) | `truncated=true` + `entities_total`/`audit_total` (`schema_version` 2) — обрезка не молчит (Art.15/20 completeness) |
 
 ### 5.4 Stress / chaos
 

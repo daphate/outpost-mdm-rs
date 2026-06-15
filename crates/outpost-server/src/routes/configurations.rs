@@ -29,6 +29,12 @@ pub fn router() -> Router<AppState> {
             "/api/v1/configurations/{id}/applications/{app_id}",
             axum::routing::delete(remove_app),
         )
+        // v0.18.20 (security review DOS-1 follow-up, missed-instance sweep):
+        // create/update берут JSON-тело с `settings_json` (device-config blob).
+        // Без per-route лимита наследовали глобальный 200 MiB → auth-gated OOM.
+        // 1 MiB — щедро даже для крупного config-blob'а, на порядки ниже
+        // cgroup-потолка.
+        .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
