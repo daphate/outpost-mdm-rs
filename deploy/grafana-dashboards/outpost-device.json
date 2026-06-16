@@ -3,7 +3,7 @@
   "uid": "outpost-device",
   "tags": ["outpost", "device"],
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "time": { "from": "now-6h", "to": "now" },
   "templating": {
@@ -160,14 +160,14 @@
     },
     {
       "id": 9,
-      "title": "Краши + ANR (cumulative)",
+      "title": "Активное время приложения (foreground, ms)",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 12, "y": 12, "w": 12, "h": 6 },
       "targets": [
-        { "refId": "A", "expr": "outpost_device_metric_latest{serial=~\"$device\", name=\"app.crashes\"}",   "legendFormat": "{{serial}} crashes" },
-        { "refId": "B", "expr": "outpost_device_metric_latest{serial=~\"$device\", name=\"app.anr_count\"}", "legendFormat": "{{serial}} ANR" }
-      ]
+        { "refId": "A", "expr": "outpost_device_metric_latest{serial=~\"$device\", name=\"app.foreground_ms\"}", "legendFormat": "{{serial}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms" } }
     }
   ]
 }

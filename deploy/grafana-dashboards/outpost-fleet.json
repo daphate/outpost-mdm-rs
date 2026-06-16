@@ -3,7 +3,7 @@
   "uid": "outpost-fleet",
   "tags": ["outpost", "fleet"],
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "time": { "from": "now-6h", "to": "now" },
   "panels": [
@@ -113,6 +113,58 @@
       "targets": [
         { "refId": "A", "expr": "outpost_metric_latest", "legendFormat": "{{name}}" }
       ]
+    },
+    {
+      "id": 9,
+      "title": "Хост: load average (1m)",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 12, "w": 6, "h": 4 },
+      "targets": [
+        { "refId": "A", "expr": "node_load1", "legendFormat": "load1" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 1 },
+            { "color": "red", "value": 2 }
+          ] }
+        }
+      },
+      "options": { "colorMode": "value", "graphMode": "area" }
+    },
+    {
+      "id": 10,
+      "title": "Хост: RAM использовано",
+      "type": "gauge",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 6, "y": 12, "w": 6, "h": 4 },
+      "targets": [
+        { "refId": "A", "expr": "100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)", "legendFormat": "RAM %" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0, "max": 100, "unit": "percent",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 75 },
+            { "color": "red", "value": 90 }
+          ] }
+        }
+      }
+    },
+    {
+      "id": 11,
+      "title": "Версия сервера",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 12, "w": 6, "h": 4 },
+      "targets": [
+        { "refId": "A", "expr": "outpost_build_info", "legendFormat": "{{version}}" }
+      ],
+      "options": { "colorMode": "none", "graphMode": "none", "textMode": "name" }
     }
   ]
 }
