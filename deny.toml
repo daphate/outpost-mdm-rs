@@ -1,5 +1,11 @@
 [advisories]
-ignore = []
+# RUSTSEC-2023-0071 — `rsa` crate "Marvin Attack" (timing sidechannel). The `rsa`
+# crate is NOT compiled into this server: `cargo tree -i rsa -e all` is empty for
+# the deploy target; it appears only in Cargo.lock as a target-gated transitive
+# (sqlx here is sqlite-only — no mysql/postgres, which are what pull `rsa`).
+# No fixed upstream version exists. Not reachable → not exploitable. Re-evaluate
+# if a mysql/postgres sqlx feature is ever enabled.
+ignore = ["RUSTSEC-2023-0071"]
 
 [licenses]
 allow = [
@@ -14,6 +20,7 @@ allow = [
     "Unlicense",
     "CC0-1.0",
     "MPL-2.0",
+    "CDLA-Permissive-2.0", # webpki-roots 1.0.7 — Mozilla CA-cert bundle (data license)
 ]
 confidence-threshold = 0.8
 

@@ -2991,6 +2991,7 @@ async fn render_device_edit(
     flash: Option<String>,
     error: Option<String>,
 ) -> Result<Response, ApiError> {
+    #[allow(clippy::type_complexity)] // local row tuple; a named alias would not aid clarity
     let row: Option<(
         String,
         Option<String>,
@@ -4623,6 +4624,7 @@ struct AppRolloutsTemplate {
     error: Option<String>,
 }
 
+#[allow(dead_code)] // some SELECT columns are mapped but not read in Rust
 struct RolloutRow {
     id: i64,
     target_version_label: String,
@@ -4637,6 +4639,7 @@ struct RolloutRow {
 }
 
 #[derive(sqlx::FromRow)]
+#[allow(dead_code)] // some SELECT columns are mapped but not read in Rust
 struct RolloutRowRaw {
     id: i64,
     target_version_id: i64,

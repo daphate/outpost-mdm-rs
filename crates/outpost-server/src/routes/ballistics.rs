@@ -3,7 +3,7 @@
 //! Архитектура: **server opaque envelope**. Server никогда не пытается
 //! decrypt ciphertext. Хранит metadata (kind/owner/version/timestamps/links)
 //! + ciphertext BLOB + per-recipient ECDH+AES-GCM wrap rows. Decryption —
-//! только на client'е через Android Keystore-backed P-256 private key.
+//!   только на client'е через Android Keystore-backed P-256 private key.
 //!
 //! **Feature flag**: все endpoints (кроме `/health`) за `BALLISTICS_ENABLED`
 //! env var (default false). При flag=off возвращают 503 с reason
@@ -450,6 +450,7 @@ async fn put_entity(
     }
 
     // Pre-validate wrap bytes — fail fast перед DB transaction.
+    #[allow(clippy::type_complexity)] // local decoded-wrap tuple; alias would not aid clarity
     let mut wraps_decoded: Vec<(i64, String, Vec<u8>, Vec<u8>, Vec<u8>)> =
         Vec::with_capacity(req.wraps.len());
     for (idx, w) in req.wraps.iter().enumerate() {

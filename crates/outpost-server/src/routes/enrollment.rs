@@ -760,6 +760,7 @@ async fn compute_bundles_etag(
 }
 
 #[derive(Debug, sqlx::FromRow)]
+#[allow(dead_code)] // some SELECT columns are mapped but not read in Rust
 struct TargetRow {
     version_id: i64,
     version_code: i64,

@@ -1,0 +1,8 @@
+# cargo-audit config — consumed by the `rustsec/audit-check` CI job.
+# Mirrors the [advisories] ignore in deny.toml (single source of rationale there).
+#
+# RUSTSEC-2023-0071 (`rsa` "Marvin Attack"): `rsa` is not compiled into the
+# server (target-gated transitive only present in Cargo.lock; sqlx is
+# sqlite-only). No upstream fix exists. Not reachable → not exploitable.
+[advisories]
+ignore = ["RUSTSEC-2023-0071"]

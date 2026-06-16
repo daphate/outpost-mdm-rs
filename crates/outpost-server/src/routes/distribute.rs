@@ -19,7 +19,7 @@
 //!   4. На следующем /sync шлёт applied_commands[id, status=ok|error].
 
 use crate::auth_extract::{AuthDevice, AuthUser};
-use crate::distribution::{self, BlobCiphertext, RecipientPayload};
+use crate::distribution;
 use crate::error::ApiError;
 use crate::permission::require_permission;
 use crate::state::AppState;
@@ -423,6 +423,7 @@ async fn resolve_recipients(
     customer_id: i64,
     target: &DistributeTarget,
 ) -> Result<ResolvedRecipientList, ApiError> {
+    #[allow(clippy::type_complexity)] // local row tuple; a named type alias would not aid clarity
     let raw: Vec<(i64, Option<i64>, Option<Vec<u8>>, Option<String>)> = match target {
         DistributeTarget::Device { id } => {
             sqlx::query_as(
