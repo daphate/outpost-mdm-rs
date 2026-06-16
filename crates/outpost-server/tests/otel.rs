@@ -15,7 +15,7 @@
 
 mod common;
 
-use common::{http_request, TestApp};
+use common::{TestApp, http_request};
 use serde_json::json;
 
 async fn enroll_a_device(app: &TestApp, serial: &str) -> String {
@@ -46,14 +46,8 @@ async fn enroll_a_device(app: &TestApp, serial: &str) -> String {
     let secret = pay["enrollment_secret"].as_str().unwrap().to_string();
     // 3. device redeems the secret for a device token
     let body = json!({"device_id": did, "enrollment_secret": secret}).to_string();
-    let (status, raw) = http_request(
-        "POST",
-        &app.url("/api/v1/enroll"),
-        None,
-        None,
-        Some(&body),
-    )
-    .await;
+    let (status, raw) =
+        http_request("POST", &app.url("/api/v1/enroll"), None, None, Some(&body)).await;
     assert_eq!(status, 200);
     let resp: serde_json::Value = serde_json::from_str(&raw).unwrap();
     resp["device_token"].as_str().unwrap().to_string()
@@ -248,14 +242,8 @@ async fn empty_otlp_batches_still_return_200() {
     let app = TestApp::start().await;
     let dev_token = enroll_a_device(&app, "OTEL-EMPTY-1").await;
     for path in ["/v1/logs", "/v1/metrics", "/v1/traces"] {
-        let (status, raw) = http_request(
-            "POST",
-            &app.url(path),
-            Some(&dev_token),
-            None,
-            Some("{}"),
-        )
-        .await;
+        let (status, raw) =
+            http_request("POST", &app.url(path), Some(&dev_token), None, Some("{}")).await;
         assert_eq!(status, 200, "{path} body: {raw}");
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(v["inserted"], 0);

@@ -259,14 +259,11 @@ fn validate_kind(kind: &str) -> Result<(), ApiError> {
 /// - other kinds — accept anything non-empty up to 128 chars.
 fn validate_id_shape(kind: &str, id: &str) -> Result<(), ApiError> {
     if id.is_empty() || id.len() > 128 {
-        return Err(ApiError::BadRequest(
-            "id must be 1..=128 chars".to_string(),
-        ));
+        return Err(ApiError::BadRequest("id must be 1..=128 chars".to_string()));
     }
     if kind == "cartridge" && !id.starts_with("user_") {
         return Err(ApiError::BadRequest(
-            "cartridge id must have `user_` prefix (bundled cartridges не sync'ятся)"
-                .to_string(),
+            "cartridge id must have `user_` prefix (bundled cartridges не sync'ятся)".to_string(),
         ));
     }
     Ok(())
@@ -298,7 +295,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/ballistics/audit_log", get(get_audit_log))
         // GDPR (per §8.5).
         .route("/api/v1/ballistics/export", get(export_user_data))
-        .route("/api/v1/ballistics/all", axum::routing::delete(delete_all_user_data))
+        .route(
+            "/api/v1/ballistics/all",
+            axum::routing::delete(delete_all_user_data),
+        )
         // Admin push (per §3.6 + AuthUser scope check).
         .route(
             "/api/v1/ballistics/admin/templates",
@@ -493,10 +493,13 @@ async fn put_entity(
     // Это критический multi-tenant boundary — без этого admin может wrap'ить
     // для device другого customer'а (data exfiltration vector).
     let recipient_ids: Vec<i64> = wraps_decoded.iter().map(|(id, _, _, _, _)| *id).collect();
-    let placeholders = recipient_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    let check_sql = format!(
-        "SELECT COUNT(*) FROM devices WHERE customer_id = ? AND id IN ({placeholders})"
-    );
+    let placeholders = recipient_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
+    let check_sql =
+        format!("SELECT COUNT(*) FROM devices WHERE customer_id = ? AND id IN ({placeholders})");
     let mut q = sqlx::query_scalar::<_, i64>(&check_sql).bind(device.customer_id);
     for rid in &recipient_ids {
         q = q.bind(rid);
@@ -510,13 +513,12 @@ async fn put_entity(
 
     // Verify owner_user_id (если передан) — должен быть user same customer.
     if let Some(uid) = req.metadata.owner_user_id {
-        let user_row: Option<(i64,)> = sqlx::query_as(
-            "SELECT id FROM users WHERE id = ? AND customer_id = ?",
-        )
-        .bind(uid)
-        .bind(device.customer_id)
-        .fetch_optional(&state.db)
-        .await?;
+        let user_row: Option<(i64,)> =
+            sqlx::query_as("SELECT id FROM users WHERE id = ? AND customer_id = ?")
+                .bind(uid)
+                .bind(device.customer_id)
+                .fetch_optional(&state.db)
+                .await?;
         if user_row.is_none() {
             return Err(ApiError::BadRequest(format!(
                 "owner_user_id {uid} не существует в вашем customer'е"
@@ -934,21 +936,17 @@ async fn delete_all_user_data(
     .await?;
 
     // Hard purge. Wraps удалятся cascade'ом через ballistics_entities FK.
-    sqlx::query(
-        "DELETE FROM ballistics_entities WHERE customer_id = ? AND owner_device_id = ?",
-    )
-    .bind(device.customer_id)
-    .bind(device.id)
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query("DELETE FROM ballistics_entities WHERE customer_id = ? AND owner_device_id = ?")
+        .bind(device.customer_id)
+        .bind(device.id)
+        .execute(&mut *tx)
+        .await?;
 
-    sqlx::query(
-        "DELETE FROM ballistics_audit_log WHERE customer_id = ? AND device_id = ?",
-    )
-    .bind(device.customer_id)
-    .bind(device.id)
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query("DELETE FROM ballistics_audit_log WHERE customer_id = ? AND device_id = ?")
+        .bind(device.customer_id)
+        .bind(device.id)
+        .execute(&mut *tx)
+        .await?;
 
     // Insert compliance row (отдельная retention-таблица).
     sqlx::query(
@@ -957,7 +955,7 @@ async fn delete_all_user_data(
          VALUES (?, ?, ?, ?, ?)",
     )
     .bind(device.customer_id)
-    .bind(device.id)            // в этой таблице user_id используется как owner-identifier
+    .bind(device.id) // в этой таблице user_id используется как owner-identifier
     .bind(entity_count)
     .bind(wrap_count)
     .bind(None::<i64>)
@@ -1012,13 +1010,12 @@ async fn create_admin_template(
         ));
     }
     if let Some(gid) = req.target_group_id {
-        let group_row: Option<(i64,)> = sqlx::query_as(
-            "SELECT id FROM groups WHERE id = ? AND customer_id = ?",
-        )
-        .bind(gid)
-        .bind(user.customer_id)
-        .fetch_optional(&state.db)
-        .await?;
+        let group_row: Option<(i64,)> =
+            sqlx::query_as("SELECT id FROM groups WHERE id = ? AND customer_id = ?")
+                .bind(gid)
+                .bind(user.customer_id)
+                .fetch_optional(&state.db)
+                .await?;
         if group_row.is_none() {
             return Err(ApiError::BadRequest(format!(
                 "target_group_id {gid} не существует в вашем customer'е"
@@ -1522,7 +1519,11 @@ mod tests {
         let _ = state;
         let iv = b64_decode(&req.ciphertext_iv, "ciphertext_iv").unwrap();
         assert_eq!(iv.len(), 8, "test setup");
-        assert_ne!(iv.len(), NONCE_LEN, "expected mismatch with required NONCE_LEN");
+        assert_ne!(
+            iv.len(),
+            NONCE_LEN,
+            "expected mismatch with required NONCE_LEN"
+        );
     }
 
     #[test]

@@ -107,7 +107,16 @@ pub async fn create_pending_2fa_session(
 ) -> Result<String, sqlx::Error> {
     // 5-minute TTL — long enough to fish out the phone, short enough that
     // a forgotten browser tab doesn't sit half-authenticated forever.
-    create(db, KIND_PENDING_2FA, user_id, customer_id, role_id, login, 300).await
+    create(
+        db,
+        KIND_PENDING_2FA,
+        user_id,
+        customer_id,
+        role_id,
+        login,
+        300,
+    )
+    .await
 }
 
 /// Create a session for an enrolled device. `role_id` is forced to `0`.
@@ -421,15 +430,9 @@ mod tests {
         let _ = create_device_session(&pool, 8, 1, "DEV-008", 90 * 24 * 3600)
             .await
             .unwrap();
-        let updated = refresh_if_aging_for_subject(
-            &pool,
-            KIND_DEVICE,
-            8,
-            90 * 24 * 3600,
-            50,
-        )
-        .await
-        .unwrap();
+        let updated = refresh_if_aging_for_subject(&pool, KIND_DEVICE, 8, 90 * 24 * 3600, 50)
+            .await
+            .unwrap();
         assert!(!updated, "fresh session must NOT be refreshed");
     }
 
@@ -440,15 +443,9 @@ mod tests {
             .await
             .unwrap();
         revoke(&token, &pool).await.unwrap();
-        let updated = refresh_if_aging_for_subject(
-            &pool,
-            KIND_DEVICE,
-            9,
-            90 * 24 * 3600,
-            50,
-        )
-        .await
-        .unwrap();
+        let updated = refresh_if_aging_for_subject(&pool, KIND_DEVICE, 9, 90 * 24 * 3600, 50)
+            .await
+            .unwrap();
         assert!(!updated, "revoked session must NEVER be resurrected");
     }
 
@@ -459,15 +456,12 @@ mod tests {
         let _ = create_device_session(&pool, 10, 1, "DEV-010", -1)
             .await
             .unwrap();
-        let updated = refresh_if_aging_for_subject(
-            &pool,
-            KIND_DEVICE,
-            10,
-            90 * 24 * 3600,
-            50,
-        )
-        .await
-        .unwrap();
-        assert!(!updated, "expired session must NOT be refreshed — require full re-enroll");
+        let updated = refresh_if_aging_for_subject(&pool, KIND_DEVICE, 10, 90 * 24 * 3600, 50)
+            .await
+            .unwrap();
+        assert!(
+            !updated,
+            "expired session must NOT be refreshed — require full re-enroll"
+        );
     }
 }

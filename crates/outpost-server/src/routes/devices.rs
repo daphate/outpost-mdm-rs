@@ -23,7 +23,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/devices/{id}/telemetry", get(get_telemetry))
         // v0.13 (MDM-DEVICE-CONTROL-CONTRACT §1.4):
         .route("/api/v1/devices/{id}/state", get(get_state))
-        .route("/api/v1/devices/{id}/config", axum::routing::post(post_config))
+        .route(
+            "/api/v1/devices/{id}/config",
+            axum::routing::post(post_config),
+        )
         // v0.15 (MDM-DEVICE-CONTROL-CONTRACT §3): дестрактивные / sensitive
         // command'ы. Все три — push_message based; client'ский
         // SyncCommandDispatcher handles caps по command type.
@@ -324,13 +327,12 @@ async fn post_config(
 ) -> Result<(axum::http::StatusCode, Json<ConfigUpdateResponse>), ApiError> {
     require_permission(&state.db, user.role_id, "devices.write").await?;
     // Verify device exists в этом customer-scope + проверяем app_version_code.
-    let row: Option<(Option<i64>,)> = sqlx::query_as(
-        "SELECT app_version_code FROM devices WHERE id = ? AND customer_id = ?",
-    )
-    .bind(id)
-    .bind(user.customer_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let row: Option<(Option<i64>,)> =
+        sqlx::query_as("SELECT app_version_code FROM devices WHERE id = ? AND customer_id = ?")
+            .bind(id)
+            .bind(user.customer_id)
+            .fetch_optional(&state.db)
+            .await?;
     let Some((app_version_code,)) = row else {
         return Err(ApiError::NotFound);
     };
@@ -352,9 +354,8 @@ async fn post_config(
     // payload — JSON object, e.g. {"preferred_llm": "qwen2-vl-2b-instruct-q4_k_m.gguf"}.
     // Не валидируем ключи здесь — клиент в SyncCommandDispatcher знает
     // mapping; неизвестные ключи возвращаются в ACK как error.
-    let payload_json = serde_json::to_string(&req.payload).map_err(|e| {
-        ApiError::BadRequest(format!("payload not serializable: {e}"))
-    })?;
+    let payload_json = serde_json::to_string(&req.payload)
+        .map_err(|e| ApiError::BadRequest(format!("payload not serializable: {e}")))?;
     let cmd_id: i64 = sqlx::query_scalar(
         "INSERT INTO push_messages (customer_id, device_id, command, payload_json, status) \
          VALUES (?, ?, 'update-config', ?, 'pending') \
@@ -516,14 +517,8 @@ async fn post_remote_wipe(
         "scope": req.scope,
         "reason": req.reason.unwrap_or_else(|| "admin-initiated".into()),
     });
-    let cmd_id = insert_push_command(
-        &state.db,
-        user.customer_id,
-        id,
-        "remote-wipe",
-        &payload,
-    )
-    .await?;
+    let cmd_id =
+        insert_push_command(&state.db, user.customer_id, id, "remote-wipe", &payload).await?;
     tracing::warn!(
         actor_user = user.id,
         target_device = id,
@@ -544,13 +539,12 @@ async fn verify_device_and_get_version(
     customer_id: i64,
     device_id: i64,
 ) -> Result<Option<i64>, ApiError> {
-    let row: Option<(Option<i64>,)> = sqlx::query_as(
-        "SELECT app_version_code FROM devices WHERE id = ? AND customer_id = ?",
-    )
-    .bind(device_id)
-    .bind(customer_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let row: Option<(Option<i64>,)> =
+        sqlx::query_as("SELECT app_version_code FROM devices WHERE id = ? AND customer_id = ?")
+            .bind(device_id)
+            .bind(customer_id)
+            .fetch_optional(&state.db)
+            .await?;
     let Some((av,)) = row else {
         return Err(ApiError::NotFound);
     };
@@ -576,9 +570,8 @@ async fn insert_push_command(
     command: &str,
     payload: &serde_json::Value,
 ) -> Result<i64, ApiError> {
-    let payload_json = serde_json::to_string(payload).map_err(|e| {
-        ApiError::BadRequest(format!("payload not serializable: {e}"))
-    })?;
+    let payload_json = serde_json::to_string(payload)
+        .map_err(|e| ApiError::BadRequest(format!("payload not serializable: {e}")))?;
     let cmd_id: i64 = sqlx::query_scalar(
         "INSERT INTO push_messages (customer_id, device_id, command, payload_json, status) \
          VALUES (?, ?, ?, ?, 'pending') RETURNING id",

@@ -165,17 +165,19 @@ async fn tick_once(pool: &SqlitePool) -> Result<()> {
             );
             let b = fetch_manifest(&client, LEGACY_UPSTREAM_URL)
                 .await
-                .with_context(|| format!(
-                    "both primary ({primary_url}) and legacy ({LEGACY_UPSTREAM_URL}) failed"
-                ))?;
+                .with_context(|| {
+                    format!(
+                        "both primary ({primary_url}) and legacy ({LEGACY_UPSTREAM_URL}) failed"
+                    )
+                })?;
             (LEGACY_UPSTREAM_URL.to_string(), b)
         }
         Err(e) => return Err(e),
     };
     let url = effective_url;
 
-    let manifest = parse_version_txt(&body)
-        .with_context(|| format!("parse version.txt from {url}"))?;
+    let manifest =
+        parse_version_txt(&body).with_context(|| format!("parse version.txt from {url}"))?;
     let sha = manifest.sha256.clone();
 
     // Find or create the application row. Watcher is single-tenant by
@@ -231,7 +233,10 @@ async fn tick_once(pool: &SqlitePool) -> Result<()> {
     .bind(manifest.size_bytes)
     .bind(&sha)
     .bind(&blob_url)
-    .bind(format!("Auto-discovered by apk watcher; tag={}", manifest.tag))
+    .bind(format!(
+        "Auto-discovered by apk watcher; tag={}",
+        manifest.tag
+    ))
     .fetch_one(pool)
     .await?;
 
@@ -252,7 +257,10 @@ async fn tick_once(pool: &SqlitePool) -> Result<()> {
 async fn fetch_manifest(client: &reqwest::Client, url: &str) -> Result<String> {
     let resp = client
         .get(url)
-        .header("User-Agent", concat!("outpost-mdm-rs/", env!("CARGO_PKG_VERSION")))
+        .header(
+            "User-Agent",
+            concat!("outpost-mdm-rs/", env!("CARGO_PKG_VERSION")),
+        )
         .send()
         .await
         .with_context(|| format!("GET {url}"))?;
@@ -324,14 +332,25 @@ impl UpstreamManifest {
 
         if let Some(idx) = manifest_url.rfind(NEW_NEEDLE) {
             let base = &manifest_url[..idx];
-            return format!("{base}/apks/outpost-{tag}-debug.apk", base = base, tag = self.tag);
+            return format!(
+                "{base}/apks/outpost-{tag}-debug.apk",
+                base = base,
+                tag = self.tag
+            );
         }
         if let Some(idx) = manifest_url.rfind(LEGACY_NEEDLE) {
             let base = &manifest_url[..idx];
-            return format!("{base}/apks/{tag}/app-debug.apk", base = base, tag = self.tag);
+            return format!(
+                "{base}/apks/{tag}/app-debug.apk",
+                base = base,
+                tag = self.tag
+            );
         }
         // Best-effort fallback: same dir as manifest, tag suffix.
-        let dir = manifest_url.rsplit_once('/').map(|(d, _)| d).unwrap_or(manifest_url);
+        let dir = manifest_url
+            .rsplit_once('/')
+            .map(|(d, _)| d)
+            .unwrap_or(manifest_url);
         format!("{dir}/{tag}-app-debug.apk", dir = dir, tag = self.tag)
     }
 }
@@ -404,7 +423,8 @@ mod tests {
 
     #[test]
     fn parses_with_optional_version_code() {
-        let body = "tag=rc42-b33\nsha256=abc\nsize=1\nversion_code=174\nversion_name=1.0.0-rc42-b33\n";
+        let body =
+            "tag=rc42-b33\nsha256=abc\nsize=1\nversion_code=174\nversion_name=1.0.0-rc42-b33\n";
         let m = parse_version_txt(body).unwrap();
         assert_eq!(m.version_code, Some(174));
         assert_eq!(m.version_name.as_deref(), Some("1.0.0-rc42-b33"));

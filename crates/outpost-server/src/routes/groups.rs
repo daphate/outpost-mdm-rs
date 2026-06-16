@@ -309,19 +309,17 @@ async fn post_group_config(
     Json(req): Json<GroupConfigRequest>,
 ) -> Result<(StatusCode, Json<GroupConfigResponse>), ApiError> {
     require_permission(&state.db, user.role_id, "devices.write").await?;
-    let owns: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM groups WHERE id = ? AND customer_id = ?",
-    )
-    .bind(group_id)
-    .bind(user.customer_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let owns: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM groups WHERE id = ? AND customer_id = ?")
+            .bind(group_id)
+            .bind(user.customer_id)
+            .fetch_optional(&state.db)
+            .await?;
     if owns.is_none() {
         return Err(ApiError::NotFound);
     }
-    let payload_json = serde_json::to_string(&req.payload).map_err(|e| {
-        ApiError::BadRequest(format!("payload not serializable: {e}"))
-    })?;
+    let payload_json = serde_json::to_string(&req.payload)
+        .map_err(|e| ApiError::BadRequest(format!("payload not serializable: {e}")))?;
     // Берём все устройства группы + их app_version_code.
     let devices: Vec<(i64, Option<i64>)> = sqlx::query_as(
         "SELECT d.id, d.app_version_code \

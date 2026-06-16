@@ -291,7 +291,10 @@ mod tests {
             .unwrap()
             .to_str()
             .unwrap();
-        assert!(ct.starts_with("application/javascript"), "content-type was {ct}");
+        assert!(
+            ct.starts_with("application/javascript"),
+            "content-type was {ct}"
+        );
         let cache = response
             .headers()
             .get("cache-control")
@@ -302,7 +305,11 @@ mod tests {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         // Tailwind JIT-runtime от cdn.tailwindcss.com — несколько сотен KB.
         // 200 KB — нижняя граница sanity-check'а на случай если файл побит.
-        assert!(bytes.len() > 200_000, "tailwind.js слишком маленький: {} байт", bytes.len());
+        assert!(
+            bytes.len() > 200_000,
+            "tailwind.js слишком маленький: {} байт",
+            bytes.len()
+        );
     }
 
     #[tokio::test]
@@ -320,7 +327,11 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         // htmx 2.0.x minified — около 50 KB.
-        assert!(bytes.len() > 30_000, "htmx.min.js слишком маленький: {} байт", bytes.len());
+        assert!(
+            bytes.len() > 30_000,
+            "htmx.min.js слишком маленький: {} байт",
+            bytes.len()
+        );
     }
 
     #[tokio::test]

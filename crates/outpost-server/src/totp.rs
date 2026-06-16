@@ -50,9 +50,7 @@ pub fn verify(secret_b32: &str, code: &str) -> bool {
     let Ok(expected_num) = code.parse::<u32>() else {
         return false;
     };
-    let now = match std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-    {
+    let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
         Ok(d) => d.as_secs(),
         Err(_) => return false,
     };
@@ -74,7 +72,7 @@ pub fn verify(secret_b32: &str, code: &str) -> bool {
 }
 
 fn compute_code(secret: &[u8], step: u64) -> u32 {
-    use totp_lite::{totp_custom, Sha1};
+    use totp_lite::{Sha1, totp_custom};
     // totp-lite returns the formatted N-digit string. Re-parse to u32
     // for constant-time compare. This is fine — `totp_custom` is the
     // standard RFC 6238 path.
@@ -102,8 +100,7 @@ mod tests {
     #[test]
     fn secret_decodes_to_20_bytes() {
         let s = generate_secret();
-        let bytes =
-            base32::decode(Alphabet::Rfc4648 { padding: false }, &s).expect("decode");
+        let bytes = base32::decode(Alphabet::Rfc4648 { padding: false }, &s).expect("decode");
         assert_eq!(bytes.len(), 20);
     }
 
@@ -128,7 +125,7 @@ mod tests {
 
     #[test]
     fn verify_accepts_current_step_code() {
-        use totp_lite::{totp_custom, Sha1};
+        use totp_lite::{Sha1, totp_custom};
         let s = generate_secret();
         let secret = base32::decode(Alphabet::Rfc4648 { padding: false }, &s).unwrap();
         let now = std::time::SystemTime::now()
@@ -141,7 +138,7 @@ mod tests {
 
     #[test]
     fn verify_accepts_previous_step_code_for_clock_skew() {
-        use totp_lite::{totp_custom, Sha1};
+        use totp_lite::{Sha1, totp_custom};
         let s = generate_secret();
         let secret = base32::decode(Alphabet::Rfc4648 { padding: false }, &s).unwrap();
         let now = std::time::SystemTime::now()

@@ -109,8 +109,7 @@ impl Config {
                 cloudru_secret.is_some(),
             );
         }
-        let cloudru_bucket =
-            env::var("CLOUDRU_BUCKET").unwrap_or_else(|_| "outpost".to_string());
+        let cloudru_bucket = env::var("CLOUDRU_BUCKET").unwrap_or_else(|_| "outpost".to_string());
         let cloudru_apk_key = env::var("CLOUDRU_APK_KEY")
             .unwrap_or_else(|_| "apks/outpost-latest-debug.apk".to_string());
         // v0.18.17: ballistics feature flag — default false (production safe).

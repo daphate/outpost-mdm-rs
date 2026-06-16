@@ -13,13 +13,13 @@
 //! `127.0.0.1:8080/metrics`, never over the internet). The nginx site
 //! deliberately does NOT proxy `/metrics` to the outside world.
 
+use axum::Router;
 use axum::extract::State;
-use axum::http::header;
 use axum::http::StatusCode;
+use axum::http::header;
 use axum::response::IntoResponse;
 use axum::response::Response;
 use axum::routing::get;
-use axum::Router;
 
 use crate::state::AppState;
 
@@ -41,35 +41,34 @@ async fn scrape(State(state): State<AppState>) -> Response {
 
     // Push queue depth — operational signal: large pending count means
     // devices haven't checked in.
-    if let Ok(pending) = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM push_messages WHERE status = 'pending'",
-    )
-    .fetch_one(&state.db)
-    .await
+    if let Ok(pending) =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM push_messages WHERE status = 'pending'")
+            .fetch_one(&state.db)
+            .await
     {
         out.push_str("# HELP outpost_push_pending_total Push messages in 'pending' state.\n");
         out.push_str("# TYPE outpost_push_pending_total gauge\n");
         out.push_str(&format!("outpost_push_pending_total {pending}\n"));
     }
 
-    if let Ok(failed) = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM push_messages WHERE status = 'failed'",
-    )
-    .fetch_one(&state.db)
-    .await
+    if let Ok(failed) =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM push_messages WHERE status = 'failed'")
+            .fetch_one(&state.db)
+            .await
     {
         out.push_str("# HELP outpost_push_failed_total Push messages in 'failed' state.\n");
         out.push_str("# TYPE outpost_push_failed_total gauge\n");
         out.push_str(&format!("outpost_push_failed_total {failed}\n"));
     }
 
-    if let Ok(enrolled) = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM devices WHERE is_enrolled = 1",
-    )
-    .fetch_one(&state.db)
-    .await
+    if let Ok(enrolled) =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM devices WHERE is_enrolled = 1")
+            .fetch_one(&state.db)
+            .await
     {
-        out.push_str("# HELP outpost_devices_enrolled_total Devices that have completed enrollment.\n");
+        out.push_str(
+            "# HELP outpost_devices_enrolled_total Devices that have completed enrollment.\n",
+        );
         out.push_str("# TYPE outpost_devices_enrolled_total gauge\n");
         out.push_str(&format!("outpost_devices_enrolled_total {enrolled}\n"));
     }
@@ -129,7 +128,9 @@ async fn scrape(State(state): State<AppState>) -> Response {
     .fetch_one(&state.db)
     .await
     {
-        out.push_str("# HELP outpost_otlp_metrics_24h Metric data-points ingested in the last 24 h.\n");
+        out.push_str(
+            "# HELP outpost_otlp_metrics_24h Metric data-points ingested in the last 24 h.\n",
+        );
         out.push_str("# TYPE outpost_otlp_metrics_24h gauge\n");
         out.push_str(&format!("outpost_otlp_metrics_24h {metrics_24h}\n"));
     }

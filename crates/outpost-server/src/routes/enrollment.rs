@@ -231,13 +231,14 @@ async fn enroll(
     // если они сконфигурированы. Клиент сохранит их через MDM override flow
     // и будет использовать для скачивания моделей/документов через signer.
     // Per-device персонализированные creds — следующая итерация (см. roadmap).
-    let cloudru_credentials = state.cloudru_signer.as_ref().map(|signer| {
-        CloudruCredentials {
+    let cloudru_credentials = state
+        .cloudru_signer
+        .as_ref()
+        .map(|signer| CloudruCredentials {
             tenant_id: signer.tenant_id().to_string(),
             key_id: signer.key_id().to_string(),
             secret: signer.secret().to_string(),
-        }
-    });
+        });
 
     Ok(Json(EnrollResponse {
         device_token: token,
@@ -580,10 +581,7 @@ async fn sync(
     // v0.17 long-polling: если client попросил подождать и pending пуст,
     // poll'им каждые 2 сек до wait_ms (cap 30s) либо до появления push'а.
     // Это даёт sub-30s latency для admin push'ей без перехода на FCM/WebSocket.
-    let wait_ms = q
-        .wait_for_command_ms
-        .unwrap_or(0)
-        .min(LONG_POLL_MAX_MS);
+    let wait_ms = q.wait_for_command_ms.unwrap_or(0).min(LONG_POLL_MAX_MS);
     if raw_commands.is_empty() && wait_ms > 0 {
         let deadline = tokio::time::Instant::now() + Duration::from_millis(wait_ms);
         loop {
@@ -781,7 +779,9 @@ async fn resolve_update_for_device(
     device_id: i64,
     customer_id: i64,
 ) -> Option<SyncUpdateAvailable> {
-    let target = pick_target_version(pool, device_id, customer_id).await.ok()??;
+    let target = pick_target_version(pool, device_id, customer_id)
+        .await
+        .ok()??;
     // Узнаём текущую версию устройства из БД (свежий UPDATE на pre-step).
     let cur_code: Option<i64> =
         sqlx::query_scalar("SELECT app_version_code FROM devices WHERE id = ?")
@@ -919,12 +919,10 @@ mod tests {
     async fn bundles_etag_empty_when_no_assignments() {
         let pool = crate::db::open_pool(":memory:").await.unwrap();
         // Seed minimal customer + device. customer_id=1 уже есть seed'нут в migrations.
-        sqlx::query(
-            "INSERT INTO devices (customer_id, serial, is_enrolled) VALUES (1, 'TEST', 1)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        sqlx::query("INSERT INTO devices (customer_id, serial, is_enrolled) VALUES (1, 'TEST', 1)")
+            .execute(&pool)
+            .await
+            .unwrap();
         let device_id: i64 = sqlx::query_scalar("SELECT id FROM devices WHERE serial='TEST'")
             .fetch_one(&pool)
             .await
@@ -941,12 +939,10 @@ mod tests {
     #[tokio::test]
     async fn bundles_etag_stable_for_same_assignments() {
         let pool = crate::db::open_pool(":memory:").await.unwrap();
-        sqlx::query(
-            "INSERT INTO devices (customer_id, serial, is_enrolled) VALUES (1, 'TEST', 1)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        sqlx::query("INSERT INTO devices (customer_id, serial, is_enrolled) VALUES (1, 'TEST', 1)")
+            .execute(&pool)
+            .await
+            .unwrap();
         let device_id: i64 = sqlx::query_scalar("SELECT id FROM devices WHERE serial='TEST'")
             .fetch_one(&pool)
             .await
@@ -971,12 +967,10 @@ mod tests {
     #[tokio::test]
     async fn bundles_etag_changes_on_new_assignment() {
         let pool = crate::db::open_pool(":memory:").await.unwrap();
-        sqlx::query(
-            "INSERT INTO devices (customer_id, serial, is_enrolled) VALUES (1, 'TEST', 1)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        sqlx::query("INSERT INTO devices (customer_id, serial, is_enrolled) VALUES (1, 'TEST', 1)")
+            .execute(&pool)
+            .await
+            .unwrap();
         let device_id: i64 = sqlx::query_scalar("SELECT id FROM devices WHERE serial='TEST'")
             .fetch_one(&pool)
             .await
@@ -1002,12 +996,10 @@ mod tests {
     #[tokio::test]
     async fn bundles_etag_changes_on_delete() {
         let pool = crate::db::open_pool(":memory:").await.unwrap();
-        sqlx::query(
-            "INSERT INTO devices (customer_id, serial, is_enrolled) VALUES (1, 'TEST', 1)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        sqlx::query("INSERT INTO devices (customer_id, serial, is_enrolled) VALUES (1, 'TEST', 1)")
+            .execute(&pool)
+            .await
+            .unwrap();
         let device_id: i64 = sqlx::query_scalar("SELECT id FROM devices WHERE serial='TEST'")
             .fetch_one(&pool)
             .await
@@ -1037,12 +1029,10 @@ mod tests {
     #[tokio::test]
     async fn bundles_etag_changes_on_priority_update() {
         let pool = crate::db::open_pool(":memory:").await.unwrap();
-        sqlx::query(
-            "INSERT INTO devices (customer_id, serial, is_enrolled) VALUES (1, 'TEST', 1)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        sqlx::query("INSERT INTO devices (customer_id, serial, is_enrolled) VALUES (1, 'TEST', 1)")
+            .execute(&pool)
+            .await
+            .unwrap();
         let device_id: i64 = sqlx::query_scalar("SELECT id FROM devices WHERE serial='TEST'")
             .fetch_one(&pool)
             .await
@@ -1058,12 +1048,10 @@ mod tests {
         .unwrap();
 
         let etag_low = compute_bundles_etag(&pool, device_id, 1).await.unwrap();
-        sqlx::query(
-            "UPDATE bundle_assignments SET priority = 200 WHERE bundle_id = 'soldier-v31'",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        sqlx::query("UPDATE bundle_assignments SET priority = 200 WHERE bundle_id = 'soldier-v31'")
+            .execute(&pool)
+            .await
+            .unwrap();
         let etag_high = compute_bundles_etag(&pool, device_id, 1).await.unwrap();
         assert_ne!(
             etag_low, etag_high,

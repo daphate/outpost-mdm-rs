@@ -21,12 +21,12 @@
 //! yet — every well-formed batch is persisted in full or rejected with
 //! 400; transport errors are 5xx).
 
+use axum::Router;
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::post;
-use axum::Router;
 use chrono::{DateTime, TimeZone, Utc};
 use serde_json::Value;
 
@@ -58,12 +58,11 @@ async fn authenticate_device(
     parts: &mut axum::http::request::Parts,
     state: &AppState,
 ) -> Result<(i64, i64), Response> {
-    let token = extract_token(parts).ok_or_else(|| {
-        (StatusCode::UNAUTHORIZED, "missing bearer token").into_response()
-    })?;
-    let sess = session::verify(&token, &state.db).await.map_err(|_| {
-        (StatusCode::UNAUTHORIZED, "invalid or expired token").into_response()
-    })?;
+    let token = extract_token(parts)
+        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "missing bearer token").into_response())?;
+    let sess = session::verify(&token, &state.db)
+        .await
+        .map_err(|_| (StatusCode::UNAUTHORIZED, "invalid or expired token").into_response())?;
     if sess.kind != KIND_DEVICE {
         return Err((StatusCode::UNAUTHORIZED, "device token required").into_response());
     }
@@ -93,11 +92,7 @@ async fn ingest_logs(
     let v: Value = match serde_json::from_slice(&bytes) {
         Ok(v) => v,
         Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("malformed OTLP/JSON: {e}"),
-            )
-                .into_response();
+            return (StatusCode::BAD_REQUEST, format!("malformed OTLP/JSON: {e}")).into_response();
         }
     };
     let mut inserted: i64 = 0;
@@ -139,7 +134,10 @@ async fn ingest_logs(
                     .and_then(extract_value_string)
                     .unwrap_or_default();
                 let attrs = attrs_to_json(rec.get("attributes"));
-                let trace_id = rec.get("traceId").and_then(|x| x.as_str()).map(String::from);
+                let trace_id = rec
+                    .get("traceId")
+                    .and_then(|x| x.as_str())
+                    .map(String::from);
                 let span_id = rec.get("spanId").and_then(|x| x.as_str()).map(String::from);
 
                 let res = sqlx::query(
@@ -164,22 +162,14 @@ async fn ingest_logs(
                     Ok(_) => inserted += 1,
                     Err(e) => {
                         tracing::error!(error = %e, "device_logs insert failed");
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "ingest failed",
-                        )
+                        return (StatusCode::INTERNAL_SERVER_ERROR, "ingest failed")
                             .into_response();
                     }
                 }
             }
         }
     }
-    tracing::info!(
-        device_id,
-        customer_id,
-        inserted,
-        "otlp logs ingested"
-    );
+    tracing::info!(device_id, customer_id, inserted, "otlp logs ingested");
     Json(serde_json::json!({"inserted": inserted})).into_response()
 }
 
@@ -203,11 +193,7 @@ async fn ingest_metrics(
     let v: Value = match serde_json::from_slice(&bytes) {
         Ok(v) => v,
         Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("malformed OTLP/JSON: {e}"),
-            )
-                .into_response();
+            return (StatusCode::BAD_REQUEST, format!("malformed OTLP/JSON: {e}")).into_response();
         }
     };
     let mut inserted: i64 = 0;
@@ -236,10 +222,7 @@ async fn ingest_metrics(
                     .and_then(|x| x.as_str())
                     .unwrap_or("")
                     .to_string();
-                let unit = m
-                    .get("unit")
-                    .and_then(|x| x.as_str())
-                    .map(String::from);
+                let unit = m.get("unit").and_then(|x| x.as_str()).map(String::from);
                 // OTLP metric data shape: one of `gauge`, `sum`, `histogram`,
                 // `summary`, `exponentialHistogram`. Each carries dataPoints[].
                 for (kind_name, key) in [
@@ -292,10 +275,7 @@ async fn ingest_metrics(
                             Ok(_) => inserted += 1,
                             Err(e) => {
                                 tracing::error!(error = %e, "device_metrics insert failed");
-                                return (
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    "ingest failed",
-                                )
+                                return (StatusCode::INTERNAL_SERVER_ERROR, "ingest failed")
                                     .into_response();
                             }
                         }
@@ -304,12 +284,7 @@ async fn ingest_metrics(
             }
         }
     }
-    tracing::info!(
-        device_id,
-        customer_id,
-        inserted,
-        "otlp metrics ingested"
-    );
+    tracing::info!(device_id, customer_id, inserted, "otlp metrics ingested");
     Json(serde_json::json!({"inserted": inserted})).into_response()
 }
 
@@ -333,11 +308,7 @@ async fn ingest_traces(
     let v: Value = match serde_json::from_slice(&bytes) {
         Ok(v) => v,
         Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("malformed OTLP/JSON: {e}"),
-            )
-                .into_response();
+            return (StatusCode::BAD_REQUEST, format!("malformed OTLP/JSON: {e}")).into_response();
         }
     };
     let mut inserted: i64 = 0;
@@ -376,9 +347,7 @@ async fn ingest_traces(
                 let (status_code, status_message) = match sp.get("status") {
                     Some(s) => (
                         s.get("code").and_then(|x| x.as_i64()).unwrap_or(0),
-                        s.get("message")
-                            .and_then(|x| x.as_str())
-                            .map(String::from),
+                        s.get("message").and_then(|x| x.as_str()).map(String::from),
                     ),
                     None => (0, None),
                 };
@@ -410,22 +379,14 @@ async fn ingest_traces(
                     Ok(_) => inserted += 1,
                     Err(e) => {
                         tracing::error!(error = %e, "device_traces insert failed");
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "ingest failed",
-                        )
+                        return (StatusCode::INTERNAL_SERVER_ERROR, "ingest failed")
                             .into_response();
                     }
                 }
             }
         }
     }
-    tracing::info!(
-        device_id,
-        customer_id,
-        inserted,
-        "otlp traces ingested"
-    );
+    tracing::info!(device_id, customer_id, inserted, "otlp traces ingested");
     Json(serde_json::json!({"inserted": inserted})).into_response()
 }
 
@@ -442,7 +403,10 @@ fn parse_ts(node: Option<&Value>) -> String {
     };
     let nanos: Option<i128> = match node {
         Value::String(s) => s.parse::<i128>().ok(),
-        Value::Number(n) => n.as_i64().map(i128::from).or_else(|| n.as_f64().map(|f| f as i128)),
+        Value::Number(n) => n
+            .as_i64()
+            .map(i128::from)
+            .or_else(|| n.as_f64().map(|f| f as i128)),
         _ => None,
     };
     let Some(nanos) = nanos else {
@@ -514,10 +478,7 @@ fn extract_value(node: &Value) -> Value {
     {
         return Value::Array(arr.iter().map(extract_value).collect());
     }
-    if let Some(kv) = node
-        .get("kvlistValue")
-        .and_then(|x| x.get("values"))
-    {
+    if let Some(kv) = node.get("kvlistValue").and_then(|x| x.get("values")) {
         return attrs_to_json(Some(kv));
     }
     if let Some(bytes) = node.get("bytesValue").and_then(|x| x.as_str()) {

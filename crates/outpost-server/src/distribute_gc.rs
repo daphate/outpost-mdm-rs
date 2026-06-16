@@ -104,10 +104,7 @@ async fn tick_once(
     if candidates.is_empty() {
         return Ok(());
     }
-    tracing::info!(
-        candidates = candidates.len(),
-        "GC: распределений на purge"
-    );
+    tracing::info!(candidates = candidates.len(), "GC: распределений на purge");
 
     // 2. Mark all rows purged_at; group by sha256 для удаления файлов.
     let mut shas_to_check = std::collections::HashSet::new();
@@ -144,9 +141,7 @@ async fn tick_once(
             );
             continue;
         }
-        let blob_path = app_files_dir
-            .join("encrypted")
-            .join(format!("{sha}.bin"));
+        let blob_path = app_files_dir.join("encrypted").join(format!("{sha}.bin"));
         if blob_path.exists() {
             match tokio::fs::remove_file(&blob_path).await {
                 Ok(_) => tracing::info!(

@@ -90,7 +90,10 @@ async fn main() -> Result<()> {
     tracing::info!(datetime_format = %server_dt_format.as_id(), "server datetime format loaded");
 
     // v0.18.17: ballistics feature flag.
-    tracing::info!(ballistics_enabled = cfg.ballistics_enabled, "ballistics endpoints feature flag");
+    tracing::info!(
+        ballistics_enabled = cfg.ballistics_enabled,
+        "ballistics endpoints feature flag"
+    );
 
     let state = AppState::new(
         pool.clone(),
@@ -164,9 +167,8 @@ async fn ensure_dir_writable(dir: &Path) -> Result<()> {
              bind mount whose host directory is owned by 65532:65532.",
             dir = dir.display(),
         )),
-        Err(e) => Err(anyhow::Error::new(e).context(format!(
-            "write probe to {dir}",
-            dir = dir.display()
-        ))),
+        Err(e) => {
+            Err(anyhow::Error::new(e).context(format!("write probe to {dir}", dir = dir.display())))
+        }
     }
 }

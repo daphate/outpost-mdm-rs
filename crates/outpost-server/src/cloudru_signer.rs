@@ -99,9 +99,15 @@ impl CloudRuPresigner {
     /// Read-only accessors. Used by /api/v1/enroll handler чтобы прокинуть
     /// те же creds в device-side ModelPreferences через MDM override flow
     /// (MDM-DEPLOY-CONTRACT §1.5). НЕ логировать — это secrets.
-    pub fn tenant_id(&self) -> &str { &self.tenant_id }
-    pub fn key_id(&self) -> &str { &self.key_id }
-    pub fn secret(&self) -> &str { &self.secret }
+    pub fn tenant_id(&self) -> &str {
+        &self.tenant_id
+    }
+    pub fn key_id(&self) -> &str {
+        &self.key_id
+    }
+    pub fn secret(&self) -> &str {
+        &self.secret
+    }
 
     /// Сгенерировать presigned GET URL для `key` (e.g. `apks/latest/app-debug.apk`).
     /// `expires_in_seconds` должен быть в `[1, 604800]`.
@@ -175,8 +181,7 @@ impl CloudRuPresigner {
         );
         let canonical_request_hash = hex::encode(Sha256::digest(canonical_request.as_bytes()));
 
-        let string_to_sign =
-            format!("{ALGORITHM}\n{datetime}\n{scope}\n{canonical_request_hash}");
+        let string_to_sign = format!("{ALGORITHM}\n{datetime}\n{scope}\n{canonical_request_hash}");
 
         // Derive signing key через 4 HMAC-SHA256 шага.
         let k_date = hmac_sha256(format!("AWS4{}", self.secret).as_bytes(), date.as_bytes());
@@ -208,8 +213,7 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
 fn uri_encode(input: &str, encode_slash: bool) -> String {
     let mut out = String::with_capacity(input.len() * 2);
     for b in input.bytes() {
-        let is_unreserved = b.is_ascii_alphanumeric()
-            || matches!(b, b'-' | b'.' | b'_' | b'~');
+        let is_unreserved = b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~');
         match (is_unreserved, b, encode_slash) {
             (true, _, _) => out.push(b as char),
             (false, b'/', false) => out.push('/'),
@@ -263,7 +267,10 @@ mod tests {
             .nth(1)
             .expect("signature param present");
         assert_eq!(sig.len(), 64);
-        assert!(sig.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
+        assert!(
+            sig.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase())
+        );
     }
 
     #[test]
@@ -272,12 +279,7 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 5, 18, 0, 0, 0).unwrap();
         let u1 = p.presigned_get_url_at("apks/a.apk", 3600, now);
         let u2 = p.presigned_get_url_at("apks/b.apk", 3600, now);
-        let sig = |u: &str| {
-            u.split("X-Amz-Signature=")
-                .nth(1)
-                .unwrap()
-                .to_string()
-        };
+        let sig = |u: &str| u.split("X-Amz-Signature=").nth(1).unwrap().to_string();
         assert_ne!(sig(&u1), sig(&u2));
     }
 
@@ -285,7 +287,10 @@ mod tests {
     fn key_with_spaces_is_percent_encoded() {
         let p = CloudRuPresigner::new("t", "k", "s");
         let url = p.presigned_get_url("apks/build 38/app.apk", 3600);
-        assert!(url.contains("/apks/build%2038/app.apk"), "spaces must be %20-encoded; got {url}");
+        assert!(
+            url.contains("/apks/build%2038/app.apk"),
+            "spaces must be %20-encoded; got {url}"
+        );
     }
 
     #[test]

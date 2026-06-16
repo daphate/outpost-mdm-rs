@@ -74,12 +74,11 @@ async fn tick_once(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     for rollout in rollouts {
         // 1. Auto-promote по дедлайну.
         if let Some(deadline) = &rollout.canary_until_at {
-            let due: Option<i64> = sqlx::query_scalar(
-                "SELECT CASE WHEN ? <= datetime('now') THEN 1 ELSE 0 END",
-            )
-            .bind(deadline)
-            .fetch_optional(pool)
-            .await?;
+            let due: Option<i64> =
+                sqlx::query_scalar("SELECT CASE WHEN ? <= datetime('now') THEN 1 ELSE 0 END")
+                    .bind(deadline)
+                    .fetch_optional(pool)
+                    .await?;
             if due.unwrap_or(0) == 1 {
                 // Crash-rate gate ещё успеваем проверить — может уже плохо.
                 if let Some(reason) = check_crash_rollback(pool, &rollout).await? {
@@ -137,12 +136,11 @@ async fn check_crash_rollback(
         return Ok(None);
     };
     // target version code — для фильтрации device.app_version_code = target.
-    let target_code: Option<i64> = sqlx::query_scalar(
-        "SELECT version_code FROM application_versions WHERE id = ?",
-    )
-    .bind(rollout.target_version_id)
-    .fetch_optional(pool)
-    .await?;
+    let target_code: Option<i64> =
+        sqlx::query_scalar("SELECT version_code FROM application_versions WHERE id = ?")
+            .bind(rollout.target_version_id)
+            .fetch_optional(pool)
+            .await?;
     let Some(target_code) = target_code else {
         return Ok(None);
     };
@@ -181,8 +179,7 @@ async fn check_crash_rollback(
         return Ok(Some(format!(
             "crash-rate {:.1}% > threshold {:.1}% \
              ({}/{} устройств с ERROR-логом за {}ч)",
-            rate_pct, rollout.crash_threshold_pct,
-            with_errors, on_target, CRASH_RATE_WINDOW_HOURS,
+            rate_pct, rollout.crash_threshold_pct, with_errors, on_target, CRASH_RATE_WINDOW_HOURS,
         )));
     }
     Ok(None)

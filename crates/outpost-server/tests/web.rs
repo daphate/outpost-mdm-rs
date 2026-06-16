@@ -110,7 +110,11 @@ async fn devices_page_renders_table() {
 async fn groups_page_renders() {
     let app = TestApp::start().await;
     let cookie = web_login_cookie(&app).await;
-    let (status, html) = raw_get(&app.url("/groups"), Some(&format!("outpost_session={cookie}"))).await;
+    let (status, html) = raw_get(
+        &app.url("/groups"),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
     assert_eq!(status, 200);
     assert!(html.contains("Группы устройств"));
     assert!(html.contains("всего"));
@@ -120,7 +124,11 @@ async fn groups_page_renders() {
 async fn applications_page_renders() {
     let app = TestApp::start().await;
     let cookie = web_login_cookie(&app).await;
-    let (status, html) = raw_get(&app.url("/applications"), Some(&format!("outpost_session={cookie}"))).await;
+    let (status, html) = raw_get(
+        &app.url("/applications"),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
     assert_eq!(status, 200);
     assert!(html.contains("Приложения"));
 }
@@ -129,7 +137,11 @@ async fn applications_page_renders() {
 async fn configurations_page_renders() {
     let app = TestApp::start().await;
     let cookie = web_login_cookie(&app).await;
-    let (status, html) = raw_get(&app.url("/configurations"), Some(&format!("outpost_session={cookie}"))).await;
+    let (status, html) = raw_get(
+        &app.url("/configurations"),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
     assert_eq!(status, 200);
     assert!(html.contains("Конфигурации"));
 }
@@ -138,7 +150,11 @@ async fn configurations_page_renders() {
 async fn push_page_renders() {
     let app = TestApp::start().await;
     let cookie = web_login_cookie(&app).await;
-    let (status, html) = raw_get(&app.url("/push"), Some(&format!("outpost_session={cookie}"))).await;
+    let (status, html) = raw_get(
+        &app.url("/push"),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
     assert_eq!(status, 200);
     assert!(html.contains("Push-команды"));
 }
@@ -147,7 +163,11 @@ async fn push_page_renders() {
 async fn users_page_renders_with_seed_admin() {
     let app = TestApp::start().await;
     let cookie = web_login_cookie(&app).await;
-    let (status, html) = raw_get(&app.url("/users"), Some(&format!("outpost_session={cookie}"))).await;
+    let (status, html) = raw_get(
+        &app.url("/users"),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
     assert_eq!(status, 200);
     assert!(html.contains("Пользователи"));
     // The seed admin must show up.
@@ -157,7 +177,13 @@ async fn users_page_renders_with_seed_admin() {
 #[tokio::test]
 async fn new_pages_redirect_to_login_without_cookie() {
     let app = TestApp::start().await;
-    for path in ["/groups", "/applications", "/configurations", "/push", "/users"] {
+    for path in [
+        "/groups",
+        "/applications",
+        "/configurations",
+        "/push",
+        "/users",
+    ] {
         let (status, _body) = raw_get(&app.url(path), None).await;
         assert_eq!(status, 303, "{path} must redirect when unauthenticated");
     }
@@ -276,7 +302,10 @@ async fn create_user_rejects_short_password() {
     .await;
     assert_eq!(status, 200);
     let body = body_after_headers(&raw);
-    assert!(body.contains("Пароль должен быть не короче 8 символов") || body.contains("at least 8 characters"));
+    assert!(
+        body.contains("Пароль должен быть не короче 8 символов")
+            || body.contains("at least 8 characters")
+    );
 }
 
 #[tokio::test]
@@ -383,7 +412,8 @@ async fn change_own_password_happy_path_then_relogin_with_new() {
     assert_eq!(status, 200); // login page re-renders with error
 
     // New password works
-    let (status, raw) = raw_post_form(&app.url("/login"), "login=admin&password=NewerPwd1234").await;
+    let (status, raw) =
+        raw_post_form(&app.url("/login"), "login=admin&password=NewerPwd1234").await;
     assert_eq!(status, 303);
     assert!(extract_set_cookie_value(&raw, "outpost_session").is_some());
 }
@@ -414,12 +444,26 @@ async fn device_edit_assigns_group_and_persists() {
 
     // Create a device + a group via API to get stable ids.
     let body = serde_json::json!({"serial":"EDIT-DEV-1"}).to_string();
-    let (status, raw) = http_request("POST", &app.url("/api/v1/devices"), Some(&app.admin_token), None, Some(&body)).await;
+    let (status, raw) = http_request(
+        "POST",
+        &app.url("/api/v1/devices"),
+        Some(&app.admin_token),
+        None,
+        Some(&body),
+    )
+    .await;
     assert_eq!(status, 201);
     let dev: serde_json::Value = serde_json::from_str(&raw).unwrap();
     let did = dev["id"].as_i64().unwrap();
     let body = serde_json::json!({"name":"squad-x"}).to_string();
-    let (status, raw) = http_request("POST", &app.url("/api/v1/groups"), Some(&app.admin_token), None, Some(&body)).await;
+    let (status, raw) = http_request(
+        "POST",
+        &app.url("/api/v1/groups"),
+        Some(&app.admin_token),
+        None,
+        Some(&body),
+    )
+    .await;
     assert_eq!(status, 201);
     let grp: serde_json::Value = serde_json::from_str(&raw).unwrap();
     let gid = grp["id"].as_i64().unwrap();
@@ -463,19 +507,39 @@ async fn device_edit_with_multiple_group_ids_assigns_all() {
     let app = TestApp::start().await;
     let cookie = web_login_cookie(&app).await;
     let body = serde_json::json!({"serial":"EDIT-DEV-2"}).to_string();
-    let (_, raw) = http_request("POST", &app.url("/api/v1/devices"), Some(&app.admin_token), None, Some(&body)).await;
-    let did = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"].as_i64().unwrap();
+    let (_, raw) = http_request(
+        "POST",
+        &app.url("/api/v1/devices"),
+        Some(&app.admin_token),
+        None,
+        Some(&body),
+    )
+    .await;
+    let did = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"]
+        .as_i64()
+        .unwrap();
     let mut gids = Vec::new();
     for n in &["alpha", "beta", "gamma"] {
         let body = serde_json::json!({"name": n}).to_string();
-        let (_, raw) = http_request("POST", &app.url("/api/v1/groups"), Some(&app.admin_token), None, Some(&body)).await;
-        let gid = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"].as_i64().unwrap();
+        let (_, raw) = http_request(
+            "POST",
+            &app.url("/api/v1/groups"),
+            Some(&app.admin_token),
+            None,
+            Some(&body),
+        )
+        .await;
+        let gid = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"]
+            .as_i64()
+            .unwrap();
         gids.push(gid);
     }
     // Send body with multiple group_ids
     let body = format!(
         "display_name=multi&is_active=1&group_ids={a}&group_ids={b}&group_ids={c}",
-        a = gids[0], b = gids[1], c = gids[2],
+        a = gids[0],
+        b = gids[1],
+        c = gids[2],
     );
     let (status, _raw) = raw_request_with_cookie(
         "POST",
@@ -493,8 +557,17 @@ async fn device_delete_via_web_then_404_on_edit() {
     let app = TestApp::start().await;
     let cookie = web_login_cookie(&app).await;
     let body = serde_json::json!({"serial":"DEL-1"}).to_string();
-    let (_, raw) = http_request("POST", &app.url("/api/v1/devices"), Some(&app.admin_token), None, Some(&body)).await;
-    let did = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"].as_i64().unwrap();
+    let (_, raw) = http_request(
+        "POST",
+        &app.url("/api/v1/devices"),
+        Some(&app.admin_token),
+        None,
+        Some(&body),
+    )
+    .await;
+    let did = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"]
+        .as_i64()
+        .unwrap();
     let (status, _raw) = raw_request_with_cookie(
         "POST",
         &app.url(&format!("/devices/{did}/delete")),
@@ -517,8 +590,17 @@ async fn group_edit_then_delete() {
     let app = TestApp::start().await;
     let cookie = web_login_cookie(&app).await;
     let body = serde_json::json!({"name":"to-rename"}).to_string();
-    let (_, raw) = http_request("POST", &app.url("/api/v1/groups"), Some(&app.admin_token), None, Some(&body)).await;
-    let gid = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"].as_i64().unwrap();
+    let (_, raw) = http_request(
+        "POST",
+        &app.url("/api/v1/groups"),
+        Some(&app.admin_token),
+        None,
+        Some(&body),
+    )
+    .await;
+    let gid = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"]
+        .as_i64()
+        .unwrap();
     let (status, _raw) = raw_request_with_cookie(
         "POST",
         &app.url(&format!("/groups/{gid}/edit")),
@@ -528,7 +610,11 @@ async fn group_edit_then_delete() {
     )
     .await;
     assert_eq!(status, 303);
-    let (_, html) = raw_get(&app.url("/groups"), Some(&format!("outpost_session={cookie}"))).await;
+    let (_, html) = raw_get(
+        &app.url("/groups"),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
     assert!(html.contains("renamed"));
     assert!(html.contains("new desc"));
     // Delete
@@ -541,7 +627,11 @@ async fn group_edit_then_delete() {
     )
     .await;
     assert_eq!(status, 303);
-    let (_, html) = raw_get(&app.url("/groups"), Some(&format!("outpost_session={cookie}"))).await;
+    let (_, html) = raw_get(
+        &app.url("/groups"),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
     assert!(!html.contains("renamed"));
 }
 
@@ -549,9 +639,19 @@ async fn group_edit_then_delete() {
 async fn admin_resets_other_users_password_then_user_logs_in_once() {
     let app = TestApp::start().await;
     let cookie = web_login_cookie(&app).await;
-    let body = serde_json::json!({"login":"op-reset","password":"OrigPass123","role_id":3}).to_string();
-    let (_, raw) = http_request("POST", &app.url("/api/v1/users"), Some(&app.admin_token), None, Some(&body)).await;
-    let uid = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"].as_i64().unwrap();
+    let body =
+        serde_json::json!({"login":"op-reset","password":"OrigPass123","role_id":3}).to_string();
+    let (_, raw) = http_request(
+        "POST",
+        &app.url("/api/v1/users"),
+        Some(&app.admin_token),
+        None,
+        Some(&body),
+    )
+    .await;
+    let uid = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"]
+        .as_i64()
+        .unwrap();
     let (status, resp) = raw_request_with_cookie(
         "POST",
         &app.url(&format!("/users/{uid}/reset-password")),
@@ -570,9 +670,19 @@ async fn admin_resets_other_users_password_then_user_logs_in_once() {
 async fn user_delete_not_self() {
     let app = TestApp::start().await;
     let cookie = web_login_cookie(&app).await;
-    let body = serde_json::json!({"login":"to-delete","password":"PwdValid123","role_id":4}).to_string();
-    let (_, raw) = http_request("POST", &app.url("/api/v1/users"), Some(&app.admin_token), None, Some(&body)).await;
-    let uid = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"].as_i64().unwrap();
+    let body =
+        serde_json::json!({"login":"to-delete","password":"PwdValid123","role_id":4}).to_string();
+    let (_, raw) = http_request(
+        "POST",
+        &app.url("/api/v1/users"),
+        Some(&app.admin_token),
+        None,
+        Some(&body),
+    )
+    .await;
+    let uid = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"]
+        .as_i64()
+        .unwrap();
     let (status, _raw) = raw_request_with_cookie(
         "POST",
         &app.url(&format!("/users/{uid}/delete")),
@@ -582,7 +692,11 @@ async fn user_delete_not_self() {
     )
     .await;
     assert_eq!(status, 303);
-    let (_, html) = raw_get(&app.url("/users"), Some(&format!("outpost_session={cookie}"))).await;
+    let (_, html) = raw_get(
+        &app.url("/users"),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
     assert!(!html.contains("to-delete"));
 }
 
@@ -592,14 +706,33 @@ async fn config_edit_then_add_then_remove_app_then_delete() {
     let cookie = web_login_cookie(&app).await;
     // Need an application and a configuration first.
     let body = serde_json::json!({"package_name":"x.test","display_name":"X"}).to_string();
-    let (_, raw) = http_request("POST", &app.url("/api/v1/applications"), Some(&app.admin_token), None, Some(&body)).await;
-    let aid = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"].as_i64().unwrap();
+    let (_, raw) = http_request(
+        "POST",
+        &app.url("/api/v1/applications"),
+        Some(&app.admin_token),
+        None,
+        Some(&body),
+    )
+    .await;
+    let aid = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"]
+        .as_i64()
+        .unwrap();
     let body = serde_json::json!({"name":"baseline","settings_json":"{}"}).to_string();
-    let (_, raw) = http_request("POST", &app.url("/api/v1/configurations"), Some(&app.admin_token), None, Some(&body)).await;
-    let cid = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"].as_i64().unwrap();
+    let (_, raw) = http_request(
+        "POST",
+        &app.url("/api/v1/configurations"),
+        Some(&app.admin_token),
+        None,
+        Some(&body),
+    )
+    .await;
+    let cid = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["id"]
+        .as_i64()
+        .unwrap();
 
     // Edit (update description)
-    let body = "name=baseline&description=edited&kiosk_package=&is_active=1&settings_json=%7B%7D".to_string();
+    let body = "name=baseline&description=edited&kiosk_package=&is_active=1&settings_json=%7B%7D"
+        .to_string();
     let (status, _raw) = raw_request_with_cookie(
         "POST",
         &app.url(&format!("/configurations/{cid}/edit")),
@@ -646,7 +779,11 @@ async fn config_edit_then_add_then_remove_app_then_delete() {
 async fn roles_page_renders_seed_roles_and_permissions() {
     let app = TestApp::start().await;
     let cookie = web_login_cookie(&app).await;
-    let (status, html) = raw_get(&app.url("/roles"), Some(&format!("outpost_session={cookie}"))).await;
+    let (status, html) = raw_get(
+        &app.url("/roles"),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
     assert_eq!(status, 200);
     assert!(html.contains("super-admin"));
     assert!(html.contains("admin"));
@@ -673,7 +810,11 @@ async fn settings_save_then_reflected_in_form_defaults() {
     )
     .await;
     assert_eq!(status, 303);
-    let (_, html) = raw_get(&app.url("/settings"), Some(&format!("outpost_session={cookie}"))).await;
+    let (_, html) = raw_get(
+        &app.url("/settings"),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
     assert!(html.contains("https://mdm.example.com"));
     assert!(html.contains("Frontier MDM"));
     assert!(html.contains("value=\"120\""));
@@ -692,7 +833,11 @@ async fn profile_save_email_then_visible() {
     )
     .await;
     assert_eq!(status, 303);
-    let (_, html) = raw_get(&app.url("/profile"), Some(&format!("outpost_session={cookie}"))).await;
+    let (_, html) = raw_get(
+        &app.url("/profile"),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
     assert!(html.contains("admin@example.test"));
 }
 
@@ -715,7 +860,11 @@ async fn files_upload_then_listed_then_deleted() {
     )
     .await;
     assert_eq!(status, 303);
-    let (_, html) = raw_get(&app.url("/files"), Some(&format!("outpost_session={cookie}"))).await;
+    let (_, html) = raw_get(
+        &app.url("/files"),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
     assert!(html.contains("k.db"));
     assert!(html.contains("knowledge-db"));
 }
@@ -726,7 +875,11 @@ async fn files_upload_then_listed_then_deleted() {
 async fn customers_page_renders_for_super_admin_with_seed_tenant() {
     let app = TestApp::start().await;
     let cookie = web_login_cookie(&app).await;
-    let (status, html) = raw_get(&app.url("/customers"), Some(&format!("outpost_session={cookie}"))).await;
+    let (status, html) = raw_get(
+        &app.url("/customers"),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
     assert_eq!(status, 200);
     assert!(html.contains("Тенанты (заказчики)"));
     assert!(html.contains("default"));
@@ -745,7 +898,11 @@ async fn customer_create_then_list_then_toggle_disable() {
     )
     .await;
     assert_eq!(status, 303);
-    let (_, html) = raw_get(&app.url("/customers"), Some(&format!("outpost_session={cookie}"))).await;
+    let (_, html) = raw_get(
+        &app.url("/customers"),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
     assert!(html.contains("acme"));
 
     // Look up id (it's at least 2; default is 1) — pull the edit link.
@@ -795,7 +952,11 @@ async fn me_2fa_setup_renders_qr_and_secret() {
     )
     .await;
     assert_eq!(status, 303);
-    let (_, html) = raw_get(&app.url("/me/2fa"), Some(&format!("outpost_session={cookie}"))).await;
+    let (_, html) = raw_get(
+        &app.url("/me/2fa"),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
     assert!(html.contains("<svg") || html.contains("QR"));
     assert!(html.contains("введите секрет вручную"));
 }
@@ -803,7 +964,7 @@ async fn me_2fa_setup_renders_qr_and_secret() {
 #[tokio::test]
 async fn me_2fa_verify_with_correct_code_enables_and_returns_recovery_codes() {
     use base32::Alphabet;
-    use totp_lite::{totp_custom, Sha1};
+    use totp_lite::{Sha1, totp_custom};
 
     let app = TestApp::start().await;
     let cookie = web_login_cookie(&app).await;
@@ -818,30 +979,35 @@ async fn me_2fa_verify_with_correct_code_enables_and_returns_recovery_codes() {
     .await;
 
     // Grab the secret from /me/2fa page (it's rendered as <code> ... </code>)
-    let (_, html) = raw_get(&app.url("/me/2fa"), Some(&format!("outpost_session={cookie}"))).await;
+    let (_, html) = raw_get(
+        &app.url("/me/2fa"),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
     let secret = html
         .lines()
         .find(|l| l.contains("font-mono") && l.contains("break-all"))
         .and_then(|_| {
             // Crude extract: find the base32 string. Look for a long
             // ASCII alphanumeric uppercase block of >= 26 chars.
-            let chars: String = html
-                .chars()
-                .collect();
+            let chars: String = html.chars().collect();
             // Find a substring of 32 contiguous A-Z0-9 chars.
             let bytes = chars.as_bytes();
-            (0..bytes.len().saturating_sub(32))
-                .find_map(|i| {
-                    let slice = &bytes[i..i + 32];
-                    if slice.iter().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()) {
-                        Some(std::str::from_utf8(slice).unwrap().to_string())
-                    } else {
-                        None
-                    }
-                })
+            (0..bytes.len().saturating_sub(32)).find_map(|i| {
+                let slice = &bytes[i..i + 32];
+                if slice
+                    .iter()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+                {
+                    Some(std::str::from_utf8(slice).unwrap().to_string())
+                } else {
+                    None
+                }
+            })
         })
         .expect("found a base32 secret on the page");
-    let raw = base32::decode(Alphabet::Rfc4648 { padding: false }, &secret).expect("base32 decodes");
+    let raw =
+        base32::decode(Alphabet::Rfc4648 { padding: false }, &secret).expect("base32 decodes");
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -860,7 +1026,10 @@ async fn me_2fa_verify_with_correct_code_enables_and_returns_recovery_codes() {
     assert_eq!(status, 200, "verify body: {raw_resp}");
     let body_only = body_after_headers(&raw_resp);
     assert!(body_only.contains("Резервные коды") || body_only.contains("включена"));
-    assert!(body_only.contains("Отключить 2FA"), "must show disable button after enable");
+    assert!(
+        body_only.contains("Отключить 2FA"),
+        "must show disable button after enable"
+    );
 }
 
 #[tokio::test]
@@ -886,10 +1055,14 @@ async fn signup_when_enabled_creates_tenant_and_logs_in() {
         Some(&body),
     )
     .await;
-    assert!(matches!(status, 200 | 204), "PUT /settings/signup.enabled returned {status}");
+    assert!(
+        matches!(status, 200 | 204),
+        "PUT /settings/signup.enabled returned {status}"
+    );
 
     // Submit signup
-    let body = "customer_name=newco&login=newcoadmin&email=admin%40newco.test&password=verylongpassword12";
+    let body =
+        "customer_name=newco&login=newcoadmin&email=admin%40newco.test&password=verylongpassword12";
     let (status, raw_resp) = raw_post_form(&app.url("/signup"), body).await;
     assert_eq!(status, 303);
     // Verify session cookie issued

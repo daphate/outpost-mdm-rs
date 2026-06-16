@@ -104,10 +104,7 @@ pub fn router() -> Router<AppState> {
             get(configuration_edit_view).post(configuration_edit_post),
         )
         .route("/configurations/{id}/delete", post(configuration_delete))
-        .route(
-            "/configurations/{id}/apps",
-            post(configuration_app_add),
-        )
+        .route("/configurations/{id}/apps", post(configuration_app_add))
         .route(
             "/configurations/{id}/apps/{app_id}/delete",
             post(configuration_app_remove),
@@ -123,13 +120,13 @@ pub fn router() -> Router<AppState> {
         // Users
         .route("/users", get(users_page))
         .route("/users/new", post(users_create))
-        .route(
-            "/users/{id}/edit",
-            get(user_edit_view).post(user_edit_post),
-        )
+        .route("/users/{id}/edit", get(user_edit_view).post(user_edit_post))
         .route("/users/{id}/toggle-active", post(users_toggle_active))
         .route("/users/{id}/delete", post(users_delete))
-        .route("/users/{id}/reset-password", post(users_admin_reset_password))
+        .route(
+            "/users/{id}/reset-password",
+            post(users_admin_reset_password),
+        )
         // Roles + per-role permissions
         .route("/roles", get(roles_page))
         // Files (generic uploaded files browser)
@@ -208,7 +205,10 @@ pub fn router() -> Router<AppState> {
             "/customers/{id}/edit",
             get(customer_edit_view).post(customer_edit_post),
         )
-        .route("/customers/{id}/toggle-active", post(customer_toggle_active))
+        .route(
+            "/customers/{id}/toggle-active",
+            post(customer_toggle_active),
+        )
         .route("/customers/{id}/switch", post(customer_switch))
         // 2FA TOTP — every authenticated user can enrol; login flow uses the
         // separate /login/2fa step.
@@ -222,10 +222,7 @@ pub fn router() -> Router<AppState> {
         // (`signup.enabled`). Off by default.
         .route("/signup", get(signup_view).post(signup_submit))
         // Current-user password change
-        .route(
-            "/me/password",
-            get(me_password_view).post(me_password_post),
-        )
+        .route("/me/password", get(me_password_view).post(me_password_post))
         // v0.18.20 (security review DOS-1 follow-up): tight body limit for ALL
         // admin form/page routes. Each handler takes a small Form/Bytes/Json
         // body (or none, for GET pages); 1 MiB is generous yet ~200x below the
@@ -297,9 +294,7 @@ impl WebUser {
 /// `/healthz`, `/readyz`, `/login`, and everything under `/api/` aren't
 /// in the picture: they don't run through the `WebUser` extractor at all.
 fn is_password_change_exempt_path(path: &str) -> bool {
-    path.starts_with("/me/password")
-        || path == "/logout"
-        || path.starts_with("/static/")
+    path.starts_with("/me/password") || path == "/logout" || path.starts_with("/static/")
 }
 
 impl FromRequestParts<AppState> for WebUser {
@@ -338,32 +333,30 @@ impl FromRequestParts<AppState> for WebUser {
             return Err(Redirect::to("/me/password"));
         }
 
-        let is_super_admin: bool = sqlx::query_scalar::<_, i64>(
-            "SELECT is_super_admin FROM user_roles WHERE id = ?",
-        )
-        .bind(s.role_id)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|_| Redirect::to("/login"))?
-        .map(|n| n != 0)
-        .unwrap_or(false);
+        let is_super_admin: bool =
+            sqlx::query_scalar::<_, i64>("SELECT is_super_admin FROM user_roles WHERE id = ?")
+                .bind(s.role_id)
+                .fetch_optional(&state.db)
+                .await
+                .map_err(|_| Redirect::to("/login"))?
+                .map(|n| n != 0)
+                .unwrap_or(false);
 
         // Customer-switch overlay: super-admin only. The cookie value is the
         // numeric customer_id they want to act as. Any other user with the
         // cookie set is ignored (cookie is harmless — they can't escalate).
         let mut active_customer_id = s.customer_id;
         if is_super_admin {
-            if let Some(acting) = read_cookie(parts, "outpost_acting")
-                .and_then(|v| v.parse::<i64>().ok())
+            if let Some(acting) =
+                read_cookie(parts, "outpost_acting").and_then(|v| v.parse::<i64>().ok())
             {
-                let exists: Option<i64> = sqlx::query_scalar(
-                    "SELECT 1 FROM customers WHERE id = ? AND is_active = 1",
-                )
-                .bind(acting)
-                .fetch_optional(&state.db)
-                .await
-                .ok()
-                .flatten();
+                let exists: Option<i64> =
+                    sqlx::query_scalar("SELECT 1 FROM customers WHERE id = ? AND is_active = 1")
+                        .bind(acting)
+                        .fetch_optional(&state.db)
+                        .await
+                        .ok()
+                        .flatten();
                 if exists.is_some() {
                     active_customer_id = acting;
                 }
@@ -786,24 +779,32 @@ async fn devices_create(
 ) -> Result<Response, Response> {
     let serial = req.serial.trim();
     if serial.is_empty() {
-        return render_devices(&user, &state, None, Some("Серийный номер обязателен".into()))
-            .await
-            .map_err(|e| e.into_response());
+        return render_devices(
+            &user,
+            &state,
+            None,
+            Some("Серийный номер обязателен".into()),
+        )
+        .await
+        .map_err(|e| e.into_response());
     }
-    let display_name = req.display_name.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+    let display_name = req
+        .display_name
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
     // v0.18.8: новые устройства автоматически получают customer-default
     // configuration. NULL — допустимо (customer без default настроен), тогда
     // device создаётся с configuration_id = NULL (поведение pre-v0.18.8).
     // Admin может поменять любой device-config через /devices/{id}/edit.
-    let default_config_id: Option<i64> = sqlx::query_scalar(
-        "SELECT default_configuration_id FROM customers WHERE id = ?",
-    )
-    .bind(user.customer_id)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten()
-    .flatten();
+    let default_config_id: Option<i64> =
+        sqlx::query_scalar("SELECT default_configuration_id FROM customers WHERE id = ?")
+            .bind(user.customer_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .flatten();
     let res = sqlx::query(
         "INSERT INTO devices (customer_id, serial, display_name, configuration_id) VALUES (?, ?, ?, ?)",
     )
@@ -997,7 +998,11 @@ async fn groups_create(
             .await
             .map_err(|e| e.into_response());
     }
-    let description = req.description.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+    let description = req
+        .description
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
     let res = sqlx::query("INSERT INTO groups (customer_id, name, description) VALUES (?, ?, ?)")
         .bind(user.customer_id)
         .bind(name)
@@ -1016,9 +1021,11 @@ async fn groups_create(
         .map_err(|e| e.into_response())?),
         Err(e) => {
             tracing::error!(error = %e, "groups_create insert failed");
-            Ok(render_groups(&user, &state, None, Some("Database error".into()))
-                .await
-                .map_err(|e| e.into_response())?)
+            Ok(
+                render_groups(&user, &state, None, Some("Database error".into()))
+                    .await
+                    .map_err(|e| e.into_response())?,
+            )
         }
     }
 }
@@ -1173,10 +1180,7 @@ async fn try_applications_upload(
             "file" => {
                 file_original = field.file_name().map(|s| s.to_string());
                 file_content_type = field.content_type().map(|s| s.to_string());
-                let data = field
-                    .bytes()
-                    .await
-                    .map_err(|e| format!("file read: {e}"))?;
+                let data = field.bytes().await.map_err(|e| format!("file read: {e}"))?;
                 file_bytes = Some(data.to_vec());
             }
             _ => {}
@@ -1366,15 +1370,14 @@ async fn render_configs(
     .await?;
     // v0.18.8: какой config назначен customer-default. NULL — не назначен,
     // тогда ни одна из строк не получает is_default=true.
-    let default_config_id: Option<i64> = sqlx::query_scalar(
-        "SELECT default_configuration_id FROM customers WHERE id = ?",
-    )
-    .bind(user.customer_id)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten()
-    .flatten();
+    let default_config_id: Option<i64> =
+        sqlx::query_scalar("SELECT default_configuration_id FROM customers WHERE id = ?")
+            .bind(user.customer_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .flatten();
     let configs = rows
         .into_iter()
         .map(|r| ConfigRow {
@@ -1417,8 +1420,16 @@ async fn configurations_create(
             .await
             .map_err(|e| e.into_response());
     }
-    let description = req.description.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
-    let kiosk_package = req.kiosk_package.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+    let description = req
+        .description
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let kiosk_package = req
+        .kiosk_package
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
     let settings_json = req
         .settings_json
         .as_deref()
@@ -1447,7 +1458,10 @@ async fn configurations_create(
     .execute(&state.db)
     .await;
     match res {
-        Ok(_) => Ok(redirect_with_flash("/configurations", "Configuration created.")),
+        Ok(_) => Ok(redirect_with_flash(
+            "/configurations",
+            "Configuration created.",
+        )),
         Err(sqlx::Error::Database(db)) if db.is_unique_violation() => Ok(render_configs(
             &user,
             &state,
@@ -1458,9 +1472,11 @@ async fn configurations_create(
         .map_err(|e| e.into_response())?),
         Err(e) => {
             tracing::error!(error = %e, "configurations_create insert failed");
-            Ok(render_configs(&user, &state, None, Some("Database error".into()))
-                .await
-                .map_err(|e| e.into_response())?)
+            Ok(
+                render_configs(&user, &state, None, Some("Database error".into()))
+                    .await
+                    .map_err(|e| e.into_response())?,
+            )
         }
     }
 }
@@ -1604,7 +1620,11 @@ async fn render_push(
             device_serial: r.device_serial,
             command: r.command,
             status: r.status,
-            delivered_at: r.delivered_at.as_deref().map(|s| state.fmt_ts(s)).unwrap_or_else(|| "—".into()),
+            delivered_at: r
+                .delivered_at
+                .as_deref()
+                .map(|s| state.fmt_ts(s))
+                .unwrap_or_else(|| "—".into()),
         })
         .collect();
     let mut resp = render(PushTemplate {
@@ -1722,9 +1742,11 @@ async fn push_create(
         Ok(_) => Ok(redirect_with_flash("/push", "Push scheduled.")),
         Err(e) => {
             tracing::error!(error = %e, "push_create insert failed");
-            Ok(render_push(&user, &state, None, Some("Database error".into()))
-                .await
-                .map_err(|e| e.into_response())?)
+            Ok(
+                render_push(&user, &state, None, Some("Database error".into()))
+                    .await
+                    .map_err(|e| e.into_response())?,
+            )
         }
     }
 }
@@ -1800,7 +1822,11 @@ async fn render_users(
             role_name: r.role_name,
             is_active: r.is_active,
             must_change_password: r.must_change_password,
-            last_login_at: r.last_login_at.as_deref().map(|s| state.fmt_ts(s)).unwrap_or_else(|| "—".into()),
+            last_login_at: r
+                .last_login_at
+                .as_deref()
+                .map(|s| state.fmt_ts(s))
+                .unwrap_or_else(|| "—".into()),
         })
         .collect();
     let mut resp = render(UsersTemplate {
@@ -1854,7 +1880,11 @@ async fn users_create(
         .await
         .map_err(|e| e.into_response());
     }
-    let email = req.email.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+    let email = req
+        .email
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
     let phc = match crypto::hash_password(&req.password) {
         Ok(s) => s,
         Err(_) => {
@@ -1886,9 +1916,11 @@ async fn users_create(
         .map_err(|e| e.into_response())?),
         Err(e) => {
             tracing::error!(error = %e, "users_create insert failed");
-            Ok(render_users(&user, &state, None, Some("Database error".into()))
-                .await
-                .map_err(|e| e.into_response())?)
+            Ok(
+                render_users(&user, &state, None, Some("Database error".into()))
+                    .await
+                    .map_err(|e| e.into_response())?,
+            )
         }
     }
 }
@@ -1987,13 +2019,12 @@ async fn user_edit_post(
     Form(req): Form<ProfileForm>,
 ) -> Result<Response, ApiError> {
     // Verify target user в том же customer'е (multi-tenant scoping).
-    let exists: Option<(i64,)> = sqlx::query_as(
-        "SELECT id FROM users WHERE id = ? AND customer_id = ?",
-    )
-    .bind(id)
-    .bind(user.customer_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let exists: Option<(i64,)> =
+        sqlx::query_as("SELECT id FROM users WHERE id = ? AND customer_id = ?")
+            .bind(id)
+            .bind(user.customer_id)
+            .fetch_optional(&state.db)
+            .await?;
     if exists.is_none() {
         return Err(ApiError::NotFound);
     }
@@ -2106,8 +2137,13 @@ impl FromRequestParts<AppState> for FlashCookie {
         parts: &mut Parts,
         _state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let hdr = parts.headers.get(header::COOKIE).and_then(|v| v.to_str().ok());
-        let Some(hdr) = hdr else { return Ok(FlashCookie(None)) };
+        let hdr = parts
+            .headers
+            .get(header::COOKIE)
+            .and_then(|v| v.to_str().ok());
+        let Some(hdr) = hdr else {
+            return Ok(FlashCookie(None));
+        };
         for kv in hdr.split(';') {
             let kv = kv.trim();
             if let Some(v) = kv.strip_prefix("outpost_flash=") {
@@ -2314,7 +2350,13 @@ async fn device_enroll_download(
 /// in the Content-Disposition filename. Keeps alphanum + dash + underscore.
 fn sanitize_filename(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -2535,13 +2577,12 @@ async fn me_password_view(
     State(state): State<AppState>,
     flash: FlashCookie,
 ) -> Result<Response, ApiError> {
-    let must_change: bool = sqlx::query_scalar(
-        "SELECT COALESCE(must_change_password, 0) FROM users WHERE id = ?",
-    )
-    .bind(user.id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(false);
+    let must_change: bool =
+        sqlx::query_scalar("SELECT COALESCE(must_change_password, 0) FROM users WHERE id = ?")
+            .bind(user.id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap_or(false);
     let mut resp = render(MePasswordTemplate {
         user_login: user.login,
         must_change,
@@ -3041,8 +3082,7 @@ async fn render_device_edit(
     const MIN_VC: i64 = 178;
     let update_config_blocker = match current_app_version_code {
         None => Some(
-            "устройство ещё не reportilo app_version_code — обновится при первом /sync"
-                .to_string(),
+            "устройство ещё не reportilo app_version_code — обновится при первом /sync".to_string(),
         ),
         Some(v) if v < MIN_VC => Some(format!(
             "устройство на app_version_code={v}; нужно >= {MIN_VC} (rc42 b37+) для update-config"
@@ -3263,10 +3303,7 @@ async fn device_config_form(
     let parsed: serde_json::Value = match serde_json::from_str(payload_raw) {
         Ok(v) => v,
         Err(e) => {
-            return redirect_with_flash(
-                &format!("/devices/{id}/edit"),
-                &format!("Не JSON: {e}"),
-            );
+            return redirect_with_flash(&format!("/devices/{id}/edit"), &format!("Не JSON: {e}"));
         }
     };
     if !parsed.is_object() {
@@ -3276,14 +3313,13 @@ async fn device_config_form(
         );
     }
     // Verify device + version gate.
-    let row: Option<(Option<i64>,)> = sqlx::query_as(
-        "SELECT app_version_code FROM devices WHERE id = ? AND customer_id = ?",
-    )
-    .bind(id)
-    .bind(user.customer_id)
-    .fetch_optional(&state.db)
-    .await
-    .unwrap_or(None);
+    let row: Option<(Option<i64>,)> =
+        sqlx::query_as("SELECT app_version_code FROM devices WHERE id = ? AND customer_id = ?")
+            .bind(id)
+            .bind(user.customer_id)
+            .fetch_optional(&state.db)
+            .await
+            .unwrap_or(None);
     let Some((av,)) = row else {
         return redirect_with_flash(&format!("/devices/{id}/edit"), "Устройство не найдено.");
     };
@@ -3316,11 +3352,16 @@ async fn device_config_form(
     match res {
         Ok(cmd_id) => redirect_with_flash(
             &format!("/devices/{id}/edit"),
-            &format!("update-config поставлен в очередь (command_id={cmd_id}); устройство применит на ≤30мин"),
+            &format!(
+                "update-config поставлен в очередь (command_id={cmd_id}); устройство применит на ≤30мин"
+            ),
         ),
         Err(e) => {
             tracing::error!(error = %e, "device_config_form insert failed");
-            redirect_with_flash(&format!("/devices/{id}/edit"), "DB error при создании push_message.")
+            redirect_with_flash(
+                &format!("/devices/{id}/edit"),
+                "DB error при создании push_message.",
+            )
         }
     }
 }
@@ -3383,12 +3424,11 @@ async fn render_file_distribute(
     .bind(user.customer_id)
     .fetch_all(&state.db)
     .await?;
-    let groups: Vec<GroupOption> = sqlx::query_as(
-        "SELECT id, name FROM groups WHERE customer_id = ? ORDER BY name LIMIT 200",
-    )
-    .bind(user.customer_id)
-    .fetch_all(&state.db)
-    .await?;
+    let groups: Vec<GroupOption> =
+        sqlx::query_as("SELECT id, name FROM groups WHERE customer_id = ? ORDER BY name LIMIT 200")
+            .bind(user.customer_id)
+            .fetch_all(&state.db)
+            .await?;
     let mut resp = render(FileDistributeTemplate {
         user_login: user.login.clone(),
         file_id,
@@ -3429,7 +3469,9 @@ async fn file_distribute_form(
 
     let target_json = match target_type {
         "device" => {
-            let Some(dev_id) = form.first("target_device_id").and_then(|s| s.parse::<i64>().ok())
+            let Some(dev_id) = form
+                .first("target_device_id")
+                .and_then(|s| s.parse::<i64>().ok())
             else {
                 return redirect_with_flash(
                     &format!("/files/{file_id}/distribute"),
@@ -3439,7 +3481,9 @@ async fn file_distribute_form(
             serde_json::json!({"type": "device", "id": dev_id})
         }
         "group" => {
-            let Some(g_id) = form.first("target_group_id").and_then(|s| s.parse::<i64>().ok())
+            let Some(g_id) = form
+                .first("target_group_id")
+                .and_then(|s| s.parse::<i64>().ok())
             else {
                 return redirect_with_flash(
                     &format!("/files/{file_id}/distribute"),
@@ -3761,9 +3805,18 @@ async fn device_rotate_cloudru_creds_form(
     body: axum::body::Bytes,
 ) -> Response {
     let form = parse_form(&body);
-    let tenant_id = form.first("tenant_id").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-    let key_id = form.first("key_id").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-    let secret = form.first("secret").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let tenant_id = form
+        .first("tenant_id")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let key_id = form
+        .first("key_id")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let secret = form
+        .first("secret")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     if tenant_id.is_none() && key_id.is_none() && secret.is_none() {
         return redirect_with_flash(
             &format!("/devices/{id}/edit"),
@@ -3822,16 +3875,18 @@ async fn queue_device_command_form(
     command: &str,
     payload: serde_json::Value,
 ) -> Response {
-    let row: Option<(Option<i64>,)> = sqlx::query_as(
-        "SELECT app_version_code FROM devices WHERE id = ? AND customer_id = ?",
-    )
-    .bind(device_id)
-    .bind(user.customer_id)
-    .fetch_optional(&state.db)
-    .await
-    .unwrap_or(None);
+    let row: Option<(Option<i64>,)> =
+        sqlx::query_as("SELECT app_version_code FROM devices WHERE id = ? AND customer_id = ?")
+            .bind(device_id)
+            .bind(user.customer_id)
+            .fetch_optional(&state.db)
+            .await
+            .unwrap_or(None);
     let Some((av,)) = row else {
-        return redirect_with_flash(&format!("/devices/{device_id}/edit"), "Устройство не найдено.");
+        return redirect_with_flash(
+            &format!("/devices/{device_id}/edit"),
+            "Устройство не найдено.",
+        );
     };
     const MIN_VC: i64 = 178;
     match av {
@@ -3967,13 +4022,12 @@ async fn render_group_edit(
     flash: Option<String>,
     error: Option<String>,
 ) -> Result<Response, ApiError> {
-    let row: Option<(String, Option<String>)> = sqlx::query_as(
-        "SELECT name, description FROM groups WHERE id = ? AND customer_id = ?",
-    )
-    .bind(id)
-    .bind(user.customer_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let row: Option<(String, Option<String>)> =
+        sqlx::query_as("SELECT name, description FROM groups WHERE id = ? AND customer_id = ?")
+            .bind(id)
+            .bind(user.customer_id)
+            .fetch_optional(&state.db)
+            .await?;
     let Some((name, description)) = row else {
         return Err(ApiError::NotFound);
     };
@@ -4089,39 +4143,35 @@ async fn group_member_add(
     Form(req): Form<GroupMemberAddForm>,
 ) -> Response {
     // Verify the group belongs to this customer.
-    let group_ok: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM groups WHERE id = ? AND customer_id = ?",
-    )
-    .bind(group_id)
-    .bind(user.customer_id)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten();
+    let group_ok: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM groups WHERE id = ? AND customer_id = ?")
+            .bind(group_id)
+            .bind(user.customer_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
     if group_ok.is_none() {
         return redirect_with_flash("/groups", "Group not found.");
     }
     // Verify the device belongs to this customer.
-    let device_ok: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM devices WHERE id = ? AND customer_id = ?",
-    )
-    .bind(req.device_id)
-    .bind(user.customer_id)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten();
+    let device_ok: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM devices WHERE id = ? AND customer_id = ?")
+            .bind(req.device_id)
+            .bind(user.customer_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
     if device_ok.is_none() {
         return redirect_with_flash("/groups", "Device not found.");
     }
     // INSERT OR IGNORE — повторное добавление того же device idempotent.
-    let res = sqlx::query(
-        "INSERT OR IGNORE INTO device_groups(device_id, group_id) VALUES(?, ?)",
-    )
-    .bind(req.device_id)
-    .bind(group_id)
-    .execute(&state.db)
-    .await;
+    let res = sqlx::query("INSERT OR IGNORE INTO device_groups(device_id, group_id) VALUES(?, ?)")
+        .bind(req.device_id)
+        .bind(group_id)
+        .execute(&state.db)
+        .await;
     match res {
         Ok(_) => redirect_with_flash("/groups", "Device added to group."),
         Err(e) => {
@@ -4271,8 +4321,10 @@ async fn render_app_edit(
     let Some((package_name, display_name, description, kind)) = row else {
         return Err(ApiError::NotFound);
     };
-    let kind_options: Vec<(&'static str, bool)> =
-        APP_KINDS.iter().map(|k| (*k, *k == kind.as_str())).collect();
+    let kind_options: Vec<(&'static str, bool)> = APP_KINDS
+        .iter()
+        .map(|k| (*k, *k == kind.as_str()))
+        .collect();
     let mut resp = render(AppEditTemplate {
         user_login: user.login.clone(),
         app_id: id,
@@ -4420,12 +4472,13 @@ async fn render_app_versions(
     flash: Option<String>,
     create_error: Option<String>,
 ) -> Result<Response, ApiError> {
-    let pkg: Option<String> =
-        sqlx::query_scalar("SELECT package_name FROM applications WHERE id = ? AND customer_id = ?")
-            .bind(id)
-            .bind(user.customer_id)
-            .fetch_optional(&state.db)
-            .await?;
+    let pkg: Option<String> = sqlx::query_scalar(
+        "SELECT package_name FROM applications WHERE id = ? AND customer_id = ?",
+    )
+    .bind(id)
+    .bind(user.customer_id)
+    .fetch_optional(&state.db)
+    .await?;
     let Some(package_name) = pkg else {
         return Err(ApiError::NotFound);
     };
@@ -4469,10 +4522,7 @@ async fn application_version_add(
     multipart: Multipart,
 ) -> Response {
     match try_add_app_version(&user, &state, id, multipart).await {
-        Ok(()) => redirect_with_flash(
-            &format!("/applications/{id}/versions"),
-            "Version uploaded.",
-        ),
+        Ok(()) => redirect_with_flash(&format!("/applications/{id}/versions"), "Version uploaded."),
         Err(msg) => render_app_versions(&user, &state, id, None, Some(msg))
             .await
             .unwrap_or_else(|_| {
@@ -4595,16 +4645,10 @@ async fn application_version_delete(
         .execute(&state.db)
         .await;
     match res {
-        Ok(_) => redirect_with_flash(
-            &format!("/applications/{id}/versions"),
-            "Version deleted.",
-        ),
+        Ok(_) => redirect_with_flash(&format!("/applications/{id}/versions"), "Version deleted."),
         Err(e) => {
             tracing::error!(error = %e, "version delete failed");
-            redirect_with_flash(
-                &format!("/applications/{id}/versions"),
-                "Database error.",
-            )
+            redirect_with_flash(&format!("/applications/{id}/versions"), "Database error.")
         }
     }
 }
@@ -4672,12 +4716,13 @@ async fn render_app_rollouts(
     flash: Option<String>,
     error: Option<String>,
 ) -> Result<Response, ApiError> {
-    let pkg: Option<String> =
-        sqlx::query_scalar("SELECT package_name FROM applications WHERE id = ? AND customer_id = ?")
-            .bind(id)
-            .bind(user.customer_id)
-            .fetch_optional(&state.db)
-            .await?;
+    let pkg: Option<String> = sqlx::query_scalar(
+        "SELECT package_name FROM applications WHERE id = ? AND customer_id = ?",
+    )
+    .bind(id)
+    .bind(user.customer_id)
+    .fetch_optional(&state.db)
+    .await?;
     let Some(package_name) = pkg else {
         return Err(ApiError::NotFound);
     };
@@ -4725,12 +4770,11 @@ async fn render_app_rollouts(
     .bind(id)
     .fetch_all(&state.db)
     .await?;
-    let groups: Vec<GroupOption> = sqlx::query_as(
-        "SELECT id, name FROM groups WHERE customer_id = ? ORDER BY name LIMIT 200",
-    )
-    .bind(user.customer_id)
-    .fetch_all(&state.db)
-    .await?;
+    let groups: Vec<GroupOption> =
+        sqlx::query_as("SELECT id, name FROM groups WHERE customer_id = ? ORDER BY name LIMIT 200")
+            .bind(user.customer_id)
+            .fetch_all(&state.db)
+            .await?;
     let mut resp = render(AppRolloutsTemplate {
         user_login: user.login.clone(),
         app_id: id,
@@ -4752,13 +4796,12 @@ async fn application_rollout_create(
     body: axum::body::Bytes,
 ) -> Result<Response, ApiError> {
     // Verify the application belongs to this customer.
-    let owned: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM applications WHERE id = ? AND customer_id = ?",
-    )
-    .bind(id)
-    .bind(user.customer_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let owned: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM applications WHERE id = ? AND customer_id = ?")
+            .bind(id)
+            .bind(user.customer_id)
+            .fetch_optional(&state.db)
+            .await?;
     if owned.is_none() {
         return Err(ApiError::NotFound);
     }
@@ -4794,10 +4837,18 @@ async fn application_rollout_create(
         )
         .await;
     }
-    let group_id: Option<i64> = form
-        .first("group_id")
-        .and_then(|s| if s.is_empty() { None } else { s.parse::<i64>().ok() });
-    let phase = if group_id.is_some() { "canary" } else { "fleet" };
+    let group_id: Option<i64> = form.first("group_id").and_then(|s| {
+        if s.is_empty() {
+            None
+        } else {
+            s.parse::<i64>().ok()
+        }
+    });
+    let phase = if group_id.is_some() {
+        "canary"
+    } else {
+        "fleet"
+    };
     let canary_until_at: Option<String> = form
         .first("canary_until_at")
         .map(|s| s.to_string())
@@ -4892,10 +4943,7 @@ async fn application_rollout_phase(
             &format!("/applications/{id}/rollouts"),
             &format!("Rollout {rid} → {new_phase}"),
         ),
-        Err(_) => redirect_with_flash(
-            &format!("/applications/{id}/rollouts"),
-            "Database error.",
-        ),
+        Err(_) => redirect_with_flash(&format!("/applications/{id}/rollouts"), "Database error."),
     }
 }
 
@@ -5179,10 +5227,7 @@ async fn configuration_app_add(
     .execute(&state.db)
     .await;
     match res {
-        Ok(_) => redirect_with_flash(
-            &format!("/configurations/{id}/edit"),
-            "Application added.",
-        ),
+        Ok(_) => redirect_with_flash(&format!("/configurations/{id}/edit"), "Application added."),
         Err(e) => {
             tracing::error!(error = %e, "config_app_add failed");
             redirect_with_flash(
@@ -5198,14 +5243,13 @@ async fn configuration_app_remove(
     State(state): State<AppState>,
     Path((id, app_id)): Path<(i64, i64)>,
 ) -> Response {
-    let owned: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM configurations WHERE id = ? AND customer_id = ?",
-    )
-    .bind(id)
-    .bind(user.customer_id)
-    .fetch_optional(&state.db)
-    .await
-    .unwrap_or(None);
+    let owned: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM configurations WHERE id = ? AND customer_id = ?")
+            .bind(id)
+            .bind(user.customer_id)
+            .fetch_optional(&state.db)
+            .await
+            .unwrap_or(None);
     if owned.is_none() {
         return redirect_with_flash(
             &format!("/configurations/{id}/edit"),
@@ -5239,14 +5283,13 @@ async fn configuration_make_default(
     Path(id): Path<i64>,
 ) -> Response {
     // Verify ownership.
-    let owned: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM configurations WHERE id = ? AND customer_id = ?",
-    )
-    .bind(id)
-    .bind(user.customer_id)
-    .fetch_optional(&state.db)
-    .await
-    .unwrap_or(None);
+    let owned: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM configurations WHERE id = ? AND customer_id = ?")
+            .bind(id)
+            .bind(user.customer_id)
+            .fetch_optional(&state.db)
+            .await
+            .unwrap_or(None);
     if owned.is_none() {
         return redirect_with_flash("/configurations", "Configuration not found.");
     }
@@ -5349,13 +5392,12 @@ async fn render_files(
     .fetch_all(&state.db)
     .await
     .unwrap_or_default();
-    let target_groups: Vec<GroupOption> = sqlx::query_as(
-        "SELECT id, name FROM groups WHERE customer_id = ? ORDER BY name LIMIT 200",
-    )
-    .bind(user.customer_id)
-    .fetch_all(&state.db)
-    .await
-    .unwrap_or_default();
+    let target_groups: Vec<GroupOption> =
+        sqlx::query_as("SELECT id, name FROM groups WHERE customer_id = ? ORDER BY name LIMIT 200")
+            .bind(user.customer_id)
+            .fetch_all(&state.db)
+            .await
+            .unwrap_or_default();
     let mut resp = render(FilesTemplate {
         user_login: user.login.clone(),
         total,
@@ -5448,13 +5490,16 @@ async fn try_upload_files(
                 let extension = std::path::Path::new(&original_name)
                     .extension()
                     .and_then(|e| e.to_str());
-                let stored =
-                    crate::storage::write_bytes(state.app_files_dir.as_ref(), &bytes, extension)
-                        .await
-                        .map_err(|e| {
-                            tracing::error!(error = %e, name = %original_name, "storage write failed");
-                            format!("storage write failed для {original_name}")
-                        })?;
+                let stored = crate::storage::write_bytes(
+                    state.app_files_dir.as_ref(),
+                    &bytes,
+                    extension,
+                )
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = %e, name = %original_name, "storage write failed");
+                    format!("storage write failed для {original_name}")
+                })?;
                 let mut hasher = Sha256::new();
                 hasher.update(&bytes);
                 let sha = hex::encode(hasher.finalize());
@@ -5529,11 +5574,10 @@ struct PermissionRow {
 }
 
 async fn roles_page(user: WebUser, State(state): State<AppState>) -> Result<Response, ApiError> {
-    let role_rows: Vec<(i64, String, Option<String>, bool)> = sqlx::query_as(
-        "SELECT id, name, description, is_super_admin FROM user_roles ORDER BY id",
-    )
-    .fetch_all(&state.db)
-    .await?;
+    let role_rows: Vec<(i64, String, Option<String>, bool)> =
+        sqlx::query_as("SELECT id, name, description, is_super_admin FROM user_roles ORDER BY id")
+            .fetch_all(&state.db)
+            .await?;
     let mut roles = Vec::with_capacity(role_rows.len());
     for (rid, name, description, is_super_admin) in role_rows {
         let perms: Vec<(String,)> = sqlx::query_as(
@@ -5544,13 +5588,12 @@ async fn roles_page(user: WebUser, State(state): State<AppState>) -> Result<Resp
         .bind(rid)
         .fetch_all(&state.db)
         .await?;
-        let user_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM users WHERE role_id = ? AND customer_id = ?",
-        )
-        .bind(rid)
-        .bind(user.customer_id)
-        .fetch_one(&state.db)
-        .await?;
+        let user_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE role_id = ? AND customer_id = ?")
+                .bind(rid)
+                .bind(user.customer_id)
+                .fetch_one(&state.db)
+                .await?;
         roles.push(RoleRow {
             name,
             description: description.unwrap_or_default(),
@@ -5715,10 +5758,7 @@ async fn render_settings(
 
 fn strip_json_quotes(s: &str) -> String {
     let t = s.trim();
-    if let Some(stripped) = t
-        .strip_prefix('"')
-        .and_then(|s| s.strip_suffix('"'))
-    {
+    if let Some(stripped) = t.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
         stripped.to_string()
     } else {
         t.to_string()
@@ -5919,7 +5959,10 @@ async fn render_profile(
         phone: phone.unwrap_or_default(),
         tg: tg.unwrap_or_default(),
         role_name,
-        last_login_at: last_login_at.as_deref().map(|s| state.fmt_ts(s)).unwrap_or_else(|| "—".into()),
+        last_login_at: last_login_at
+            .as_deref()
+            .map(|s| state.fmt_ts(s))
+            .unwrap_or_else(|| "—".into()),
         created_at: state.fmt_ts(&created_at),
         flash,
         error,
@@ -6145,13 +6188,12 @@ async fn ballistics_template_create_form(
         ));
     }
     if let Some(gid) = target_group_id {
-        let row: Option<(i64,)> = sqlx::query_as(
-            "SELECT id FROM groups WHERE id = ? AND customer_id = ?",
-        )
-        .bind(gid)
-        .bind(user.customer_id)
-        .fetch_optional(&state.db)
-        .await?;
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT id FROM groups WHERE id = ? AND customer_id = ?")
+                .bind(gid)
+                .bind(user.customer_id)
+                .fetch_optional(&state.db)
+                .await?;
         if row.is_none() {
             return Ok(redirect_with_flash(
                 "/ballistics/templates",
@@ -6376,7 +6418,11 @@ async fn telemetry_overview(
             serial: r.serial,
             logs: r.logs,
             errors: r.errors,
-            last_seen: r.last_seen.as_deref().map(|s| state.fmt_ts(s)).unwrap_or_else(|| "—".into()),
+            last_seen: r
+                .last_seen
+                .as_deref()
+                .map(|s| state.fmt_ts(s))
+                .unwrap_or_else(|| "—".into()),
         })
         .collect();
 
@@ -6762,17 +6808,15 @@ async fn device_logs_view(
         attrs_json: String,
         trace_id: Option<String>,
     }
-    let stream: Vec<StreamRaw> = sqlx::query_as::<_, StreamRaw>(
-        &format!(
-            "SELECT ts, severity_number, severity_text, body, attrs_json, trace_id \
+    let stream: Vec<StreamRaw> = sqlx::query_as::<_, StreamRaw>(&format!(
+        "SELECT ts, severity_number, severity_text, body, attrs_json, trace_id \
              FROM device_logs \
              WHERE device_id = ? \
                AND severity_number >= ? \
                AND received_at >= datetime('now', ?) \
                AND body LIKE ? \
              ORDER BY id DESC LIMIT {limit}"
-        ),
-    )
+    ))
     .bind(id)
     .bind(min_severity)
     .bind(since_sql)
@@ -6951,14 +6995,12 @@ async fn customers_create(
         .map(|s| s.trim())
         .filter(|s| matches!(*s, "production" | "demo" | "test"))
         .unwrap_or("production");
-    let res = sqlx::query(
-        "INSERT INTO customers (name, description, kind) VALUES (?, ?, ?)",
-    )
-    .bind(name)
-    .bind(description)
-    .bind(kind)
-    .execute(&state.db)
-    .await;
+    let res = sqlx::query("INSERT INTO customers (name, description, kind) VALUES (?, ?, ?)")
+        .bind(name)
+        .bind(description)
+        .bind(kind)
+        .execute(&state.db)
+        .await;
     match res {
         Ok(_) => Ok(redirect_with_flash("/customers", "Customer created.")),
         Err(sqlx::Error::Database(db)) if db.is_unique_violation() => render_customers(
@@ -7036,17 +7078,21 @@ async fn render_customer_edit(
     else {
         return Err(ApiError::NotFound);
     };
-    let device_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE customer_id = ?")
-        .bind(id)
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or(0);
+    let device_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE customer_id = ?")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap_or(0);
     let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE customer_id = ?")
         .bind(id)
         .fetch_one(&state.db)
         .await
         .unwrap_or(0);
-    let kind_options = CUSTOMER_KINDS.iter().map(|k| (*k, *k == kind.as_str())).collect();
+    let kind_options = CUSTOMER_KINDS
+        .iter()
+        .map(|k| (*k, *k == kind.as_str()))
+        .collect();
     let mut resp = render(CustomerEditTemplate {
         user_login: user.login.clone(),
         customer_id: id,
@@ -7185,14 +7231,13 @@ async fn customer_switch(
 ) -> Result<Response, Response> {
     user.require_super_admin()?;
     // Verify the customer exists and is active.
-    let exists: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM customers WHERE id = ? AND is_active = 1",
-    )
-    .bind(id)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten();
+    let exists: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM customers WHERE id = ? AND is_active = 1")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
     if exists.is_none() {
         return Ok(redirect_with_flash(
             "/customers",
@@ -7209,10 +7254,7 @@ async fn customer_switch(
     if let Ok(v) = HeaderValue::from_str(&cookie) {
         resp.headers_mut().append(header::SET_COOKIE, v);
     }
-    set_flash_cookie(
-        &mut resp,
-        &format!("Now acting as customer #{id}"),
-    );
+    set_flash_cookie(&mut resp, &format!("Now acting as customer #{id}"));
     Ok(resp)
 }
 
@@ -7235,12 +7277,11 @@ async fn me_2fa_view(
     State(state): State<AppState>,
     flash: FlashCookie,
 ) -> Result<Response, ApiError> {
-    let row: Option<(i64, Option<String>)> = sqlx::query_as(
-        "SELECT totp_enabled, totp_secret FROM users WHERE id = ?",
-    )
-    .bind(user.id)
-    .fetch_optional(&state.db)
-    .await?;
+    let row: Option<(i64, Option<String>)> =
+        sqlx::query_as("SELECT totp_enabled, totp_secret FROM users WHERE id = ?")
+            .bind(user.id)
+            .fetch_optional(&state.db)
+            .await?;
     let (totp_enabled, current_secret) = row.unwrap_or((0, None));
     // If totp is NOT enabled but a secret exists, we're in mid-setup —
     // show the QR for that secret. If enabled, hide the secret.
@@ -7268,10 +7309,7 @@ async fn me_2fa_view(
     Ok(resp)
 }
 
-async fn me_2fa_setup(
-    user: WebUser,
-    State(state): State<AppState>,
-) -> Result<Response, ApiError> {
+async fn me_2fa_setup(user: WebUser, State(state): State<AppState>) -> Result<Response, ApiError> {
     // Fresh secret — overrides any previous half-enrolled secret. Doesn't
     // touch totp_enabled (still 0 until /verify succeeds).
     let secret = crate::totp::generate_secret();
@@ -7293,12 +7331,11 @@ async fn me_2fa_verify(
     State(state): State<AppState>,
     Form(req): Form<Me2faVerifyForm>,
 ) -> Result<Response, ApiError> {
-    let secret: Option<String> =
-        sqlx::query_scalar("SELECT totp_secret FROM users WHERE id = ?")
-            .bind(user.id)
-            .fetch_optional(&state.db)
-            .await?
-            .flatten();
+    let secret: Option<String> = sqlx::query_scalar("SELECT totp_secret FROM users WHERE id = ?")
+        .bind(user.id)
+        .fetch_optional(&state.db)
+        .await?
+        .flatten();
     let Some(secret) = secret else {
         return Ok(Redirect::to("/me/2fa").into_response());
     };
@@ -7332,13 +7369,11 @@ async fn me_2fa_verify(
     for _ in 0..10 {
         let code = generate_recovery_code();
         let hash = crypto::hash_password(&code).map_err(|_| ApiError::Internal)?;
-        sqlx::query(
-            "INSERT INTO totp_recovery_codes (user_id, code_hash) VALUES (?, ?)",
-        )
-        .bind(user.id)
-        .bind(&hash)
-        .execute(&mut *tx)
-        .await?;
+        sqlx::query("INSERT INTO totp_recovery_codes (user_id, code_hash) VALUES (?, ?)")
+            .bind(user.id)
+            .bind(&hash)
+            .execute(&mut *tx)
+            .await?;
         plain_codes.push(code);
     }
     tx.commit().await?;
@@ -7347,7 +7382,10 @@ async fn me_2fa_verify(
         totp_enabled: true,
         setup_secret: None,
         qr_svg: String::new(),
-        flash: Some("2FA enabled. Save the recovery codes shown below — they will not be displayed again.".into()),
+        flash: Some(
+            "2FA enabled. Save the recovery codes shown below — they will not be displayed again."
+                .into(),
+        ),
         error: None,
         recovery_codes: Some(plain_codes),
     });
@@ -7355,14 +7393,13 @@ async fn me_2fa_verify(
     Ok(resp)
 }
 
-async fn me_2fa_cancel(
-    user: WebUser,
-    State(state): State<AppState>,
-) -> Result<Response, ApiError> {
-    sqlx::query("UPDATE users SET totp_secret = NULL, totp_enabled = 0 WHERE id = ? AND totp_enabled = 0")
-        .bind(user.id)
-        .execute(&state.db)
-        .await?;
+async fn me_2fa_cancel(user: WebUser, State(state): State<AppState>) -> Result<Response, ApiError> {
+    sqlx::query(
+        "UPDATE users SET totp_secret = NULL, totp_enabled = 0 WHERE id = ? AND totp_enabled = 0",
+    )
+    .bind(user.id)
+    .execute(&state.db)
+    .await?;
     Ok(redirect_with_flash("/me/2fa", "Setup cancelled."))
 }
 
@@ -7420,8 +7457,8 @@ impl FromRequestParts<AppState> for Pending2fa {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let token = read_cookie(parts, "outpost_pending_2fa")
-            .ok_or_else(|| Redirect::to("/login"))?;
+        let token =
+            read_cookie(parts, "outpost_pending_2fa").ok_or_else(|| Redirect::to("/login"))?;
         let s = session::verify(&token, &state.db)
             .await
             .map_err(|_| Redirect::to("/login"))?;
@@ -7459,14 +7496,13 @@ async fn login_2fa_submit(
         });
     }
     let user_id = pending.0.subject_id;
-    let secret: Option<String> =
-        sqlx::query_scalar("SELECT totp_secret FROM users WHERE id = ?")
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await
-            .ok()
-            .flatten()
-            .flatten();
+    let secret: Option<String> = sqlx::query_scalar("SELECT totp_secret FROM users WHERE id = ?")
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .flatten();
     let Some(secret) = secret else {
         return render(Login2faTemplate {
             pending_token: pending.0.id_hash.clone(),
@@ -7518,18 +7554,18 @@ async fn login_2fa_submit(
     };
     // Pending-session row will expire on its own in <5 min, but revoke it
     // immediately so the cookie can't be reused.
-    let _ = session::revoke_all_for_subject(
-        &state.db,
-        session::KIND_PENDING_2FA,
-        user_id,
-    )
-    .await;
+    let _ = session::revoke_all_for_subject(&state.db, session::KIND_PENDING_2FA, user_id).await;
     let _ = sqlx::query("UPDATE users SET last_login_at = datetime('now') WHERE id = ?")
         .bind(user_id)
         .execute(&state.db)
         .await;
     let mut resp = Redirect::to("/dashboard").into_response();
-    set_session_cookie(&mut resp, &token, state.secure_cookies, state.session_ttl_secs);
+    set_session_cookie(
+        &mut resp,
+        &token,
+        state.secure_cookies,
+        state.session_ttl_secs,
+    );
     clear_pending_2fa_cookie(&mut resp);
     resp
 }
@@ -7554,12 +7590,10 @@ async fn consume_recovery_code(
     .await?;
     for r in rows {
         if crypto::verify_password(plain, &r.code_hash).unwrap_or(false) {
-            sqlx::query(
-                "UPDATE totp_recovery_codes SET used_at = datetime('now') WHERE id = ?",
-            )
-            .bind(r.id)
-            .execute(&state.db)
-            .await?;
+            sqlx::query("UPDATE totp_recovery_codes SET used_at = datetime('now') WHERE id = ?")
+                .bind(r.id)
+                .execute(&state.db)
+                .await?;
             return Ok(true);
         }
     }
@@ -7689,13 +7723,12 @@ async fn signup_submit(
     }
     tracing::info!(customer = cname, login, "tenant signed up via /signup");
     // Issue a session immediately so they land on /dashboard logged-in.
-    let row: Option<(i64, i64)> =
-        sqlx::query_as("SELECT id, role_id FROM users WHERE login = ?")
-            .bind(login)
-            .fetch_optional(&state.db)
-            .await
-            .ok()
-            .flatten();
+    let row: Option<(i64, i64)> = sqlx::query_as("SELECT id, role_id FROM users WHERE login = ?")
+        .bind(login)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
     let Some((user_id, role_id)) = row else {
         return render_signup_error(&req, "Internal error — please sign in manually");
     };
@@ -7713,7 +7746,12 @@ async fn signup_submit(
         Err(_) => return render_signup_error(&req, "Internal error"),
     };
     let mut resp = Redirect::to("/dashboard").into_response();
-    set_session_cookie(&mut resp, &token, state.secure_cookies, state.session_ttl_secs);
+    set_session_cookie(
+        &mut resp,
+        &token,
+        state.secure_cookies,
+        state.session_ttl_secs,
+    );
     resp
 }
 
@@ -7728,14 +7766,16 @@ fn render_signup_error(req: &SignupForm, msg: &str) -> Response {
 }
 
 async fn signup_is_enabled(state: &AppState) -> bool {
-    let row: Option<String> = sqlx::query_scalar(
-        "SELECT value_json FROM settings WHERE key = 'signup.enabled'",
+    let row: Option<String> =
+        sqlx::query_scalar("SELECT value_json FROM settings WHERE key = 'signup.enabled'")
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
+    matches!(
+        row.as_deref().map(str::trim),
+        Some("true") | Some("\"true\"")
     )
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten();
-    matches!(row.as_deref().map(str::trim), Some("true") | Some("\"true\""))
 }
 
 // ----- Phase 24 — i18n language switcher ----------------------------------

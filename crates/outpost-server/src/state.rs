@@ -330,7 +330,10 @@ mod tests {
         // v0.18.16: default dt_format = Ru → "DD.MM.YYYY HH:MM".
         // UTC 2026-05-19 00:00:00 → MSK 2026-05-19 03:00.
         let result = state.fmt_ts("2026-05-19 00:00:00");
-        assert_eq!(result, "19.05.2026 03:00", "UTC→MSK conversion broken (Ru format)");
+        assert_eq!(
+            result, "19.05.2026 03:00",
+            "UTC→MSK conversion broken (Ru format)"
+        );
     }
 
     #[tokio::test]
@@ -338,7 +341,10 @@ mod tests {
         let state = state_with_tz(chrono_tz::America::Los_Angeles).await;
         // UTC 2026-05-19 07:00:00 в Los_Angeles (DST = UTC-7) → 2026-05-19 00:00.
         let result = state.fmt_ts("2026-05-19 07:00:00");
-        assert_eq!(result, "19.05.2026 00:00", "UTC→LA conversion broken (Ru format)");
+        assert_eq!(
+            result, "19.05.2026 00:00",
+            "UTC→LA conversion broken (Ru format)"
+        );
     }
 
     #[tokio::test]

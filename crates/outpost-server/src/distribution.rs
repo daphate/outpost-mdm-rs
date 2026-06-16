@@ -136,10 +136,7 @@ pub fn encrypt_for_recipient(
     let eph_pub = eph_priv.public_key();
     let eph_sec1 = eph_pub.to_encoded_point(false).as_bytes().to_vec();
     if eph_sec1.len() != SEC1_UNCOMPRESSED_LEN {
-        return Err(anyhow!(
-            "ephemeral pubkey wrong length: {}",
-            eph_sec1.len()
-        ));
+        return Err(anyhow!("ephemeral pubkey wrong length: {}", eph_sec1.len()));
     }
 
     // ECDH → shared secret (32 bytes).
@@ -164,10 +161,7 @@ pub fn encrypt_for_recipient(
     let wrapped_dek = cipher
         .encrypt(
             Nonce::from_slice(&wrapped_dek_iv),
-            Payload {
-                msg: dek,
-                aad: b"",
-            },
+            Payload { msg: dek, aad: b"" },
         )
         .map_err(|e| anyhow!("aes-gcm wrap dek: {e}"))?;
     // wrapped_dek includes 16-byte tag concatenated.
@@ -192,9 +186,9 @@ fn hex_sha256(input: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use p256::EncodedPoint;
     use p256::SecretKey;
     use p256::elliptic_curve::sec1::FromEncodedPoint;
-    use p256::EncodedPoint;
 
     /// Test-only mirror of what client (Android Keystore) делает на decrypt:
     /// ECDH с локальной private key, HKDF derive KEK, AES-GCM unwrap DEK,
@@ -210,14 +204,13 @@ mod tests {
         // 1. Parse eph_pubkey
         let encoded = EncodedPoint::from_bytes(&payload.eph_pubkey_sec1)
             .map_err(|e| anyhow!("parse eph pubkey: {e}"))?;
-        let eph_pub = PublicKey::from_encoded_point(&encoded).into_option()
+        let eph_pub = PublicKey::from_encoded_point(&encoded)
+            .into_option()
             .ok_or_else(|| anyhow!("invalid eph pubkey point"))?;
 
         // 2. ECDH (manual since we have SecretKey not EphemeralSecret)
-        let shared = p256::ecdh::diffie_hellman(
-            recipient_secret.to_nonzero_scalar(),
-            eph_pub.as_affine(),
-        );
+        let shared =
+            p256::ecdh::diffie_hellman(recipient_secret.to_nonzero_scalar(), eph_pub.as_affine());
 
         // 3. HKDF
         let mut info = Vec::new();
@@ -226,7 +219,8 @@ mod tests {
         info.extend_from_slice(recipient_device_id.to_string().as_bytes());
         let hk = Hkdf::<Sha256>::new(None, shared.raw_secret_bytes().as_slice());
         let mut kek = [0u8; KEK_LEN];
-        hk.expand(&info, &mut kek).map_err(|e| anyhow!("hkdf: {e}"))?;
+        hk.expand(&info, &mut kek)
+            .map_err(|e| anyhow!("hkdf: {e}"))?;
 
         // 4. Unwrap DEK
         let kek_cipher = Aes256Gcm::new_from_slice(&kek)?;
@@ -275,8 +269,7 @@ mod tests {
         assert_eq!(recipient_pub_sec1.len(), 65);
 
         let (blob, dek) = encrypt_blob(plaintext).unwrap();
-        let payload =
-            encrypt_for_recipient(&dek, &recipient_pub_sec1, file_id, device_id).unwrap();
+        let payload = encrypt_for_recipient(&dek, &recipient_pub_sec1, file_id, device_id).unwrap();
 
         assert_eq!(payload.eph_pubkey_sec1.len(), 65);
         assert_eq!(payload.wrapped_dek.len(), DEK_LEN + TAG_LEN);

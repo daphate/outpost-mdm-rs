@@ -47,15 +47,9 @@ const ALLOWED_KINDS: &[&str] = &[
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route(
-            "/api/v1/files/{file_id}/distribute",
-            post(distribute_file),
-        )
+        .route("/api/v1/files/{file_id}/distribute", post(distribute_file))
         // Device-authenticated endpoint — отдаёт ciphertext blob recipient'у.
-        .route(
-            "/api/v1/encrypted-distributions/{id}/blob",
-            get(fetch_blob),
-        )
+        .route("/api/v1/encrypted-distributions/{id}/blob", get(fetch_blob))
 }
 
 #[derive(Debug, Deserialize)]
@@ -207,9 +201,8 @@ pub async fn do_distribute_file(
         return Err(ApiError::BadRequest("filename is required".into()));
     }
     // Распарсить target из generic JSON value.
-    let target: DistributeTarget = serde_json::from_value(req.target.clone()).map_err(|e| {
-        ApiError::BadRequest(format!("invalid target: {e}"))
-    })?;
+    let target: DistributeTarget = serde_json::from_value(req.target.clone())
+        .map_err(|e| ApiError::BadRequest(format!("invalid target: {e}")))?;
 
     // 1. Загрузить uploaded_files row + plaintext bytes.
     let file_row: Option<(String, String)> = sqlx::query_as(
@@ -284,9 +277,8 @@ pub async fn do_distribute_file(
                 continue;
             }
         };
-        let payload =
-            distribution::encrypt_for_recipient(&dek, pubkey_bytes, file_id, r.device_id)
-                .map_err(|e| ApiError::BadRequest(format!("encrypt_for_recipient: {e}")))?;
+        let payload = distribution::encrypt_for_recipient(&dek, pubkey_bytes, file_id, r.device_id)
+            .map_err(|e| ApiError::BadRequest(format!("encrypt_for_recipient: {e}")))?;
 
         // Транзакция: INSERT encrypted_distributions → INSERT push_messages →
         // обновить distribution.push_message_id.
@@ -466,12 +458,14 @@ async fn resolve_recipients(
     let total = raw.len();
     let items: Vec<ResolvedRecipient> = raw
         .into_iter()
-        .map(|(device_id, app_version_code, pubkey_der, key_id)| ResolvedRecipient {
-            device_id,
-            app_version_code,
-            pubkey_der,
-            key_id: key_id.unwrap_or_default(),
-        })
+        .map(
+            |(device_id, app_version_code, pubkey_der, key_id)| ResolvedRecipient {
+                device_id,
+                app_version_code,
+                pubkey_der,
+                key_id: key_id.unwrap_or_default(),
+            },
+        )
         .collect();
     Ok(ResolvedRecipientList { total, items })
 }
@@ -505,7 +499,10 @@ async fn fetch_blob(
         return Err(ApiError::NotFound);
     }
 
-    let blob_path = state.app_files_dir.join("encrypted").join(format!("{sha}.bin"));
+    let blob_path = state
+        .app_files_dir
+        .join("encrypted")
+        .join(format!("{sha}.bin"));
     let bytes = tokio::fs::read(&blob_path).await.map_err(|e| {
         tracing::error!(error = %e, %sha, "blob file missing on disk");
         ApiError::NotFound

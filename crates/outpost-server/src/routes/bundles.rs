@@ -27,7 +27,10 @@ use serde::{Deserialize, Serialize};
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/api/v1/bundles/{bundle_id}/assign", post(create_assignment))
+        .route(
+            "/api/v1/bundles/{bundle_id}/assign",
+            post(create_assignment),
+        )
         .route("/api/v1/bundles/assignments", get(list_assignments))
         .route(
             "/api/v1/bundles/assignments/{id}",
@@ -46,7 +49,10 @@ pub fn router() -> Router<AppState> {
         // Response wrapped в {"bundles": [...], "server_ts": "..."} — matches
         // AR Hud's defensive parser form 3 (object with `bundles` key, array
         // of objects with `bundle_id`).
-        .route("/api/v1/device/bundles", get(list_effective_for_self_device))
+        .route(
+            "/api/v1/device/bundles",
+            get(list_effective_for_self_device),
+        )
         // v0.18.20 (security review DOS-1): per-route body limit. Bundle
         // assignment requests — крошечный JSON; 64 KiB с большим запасом.
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
@@ -211,14 +217,12 @@ async fn delete_assignment(
 ) -> Result<StatusCode, ApiError> {
     require_permission(&state.db, user.role_id, "bundles.write").await?;
 
-    let rows = sqlx::query(
-        "DELETE FROM bundle_assignments WHERE id = ? AND customer_id = ?",
-    )
-    .bind(id)
-    .bind(user.customer_id)
-    .execute(&state.db)
-    .await?
-    .rows_affected();
+    let rows = sqlx::query("DELETE FROM bundle_assignments WHERE id = ? AND customer_id = ?")
+        .bind(id)
+        .bind(user.customer_id)
+        .execute(&state.db)
+        .await?
+        .rows_affected();
 
     if rows == 0 {
         return Err(ApiError::NotFound);
@@ -351,13 +355,12 @@ async fn list_effective_for_device(
     // пространству — нарушение собственного invariant'а P1
     // «cross-tenant → 404, не leak'аем existence»). Mirrors ballistics
     // load_entity_row.
-    let exists: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM devices WHERE id = ? AND customer_id = ?",
-    )
-    .bind(device_id)
-    .bind(user.customer_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let exists: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM devices WHERE id = ? AND customer_id = ?")
+            .bind(device_id)
+            .bind(user.customer_id)
+            .fetch_optional(&state.db)
+            .await?;
     if exists.is_none() {
         return Err(ApiError::NotFound);
     }

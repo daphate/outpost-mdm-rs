@@ -18,8 +18,8 @@
 //! Adding a new locale: implement another `pub static STRINGS_<XX>` filling
 //! every field, add it to `parse_locale` and `Locale::all`.
 
-use axum::http::request::Parts;
 use axum::http::header;
+use axum::http::request::Parts;
 use std::sync::OnceLock;
 
 /// Locales we ship. Names are ISO 639-1.
@@ -71,7 +71,11 @@ pub fn parse_locale(s: &str) -> Option<Locale> {
 /// fall back to `Locale::DEFAULT` (Russian).
 pub fn from_request(parts: &Parts) -> Locale {
     // 1) explicit cookie
-    if let Some(hdr) = parts.headers.get(header::COOKIE).and_then(|v| v.to_str().ok()) {
+    if let Some(hdr) = parts
+        .headers
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+    {
         for kv in hdr.split(';') {
             if let Some(v) = kv.trim().strip_prefix("outpost_lang=")
                 && let Some(loc) = parse_locale(v)
@@ -88,7 +92,10 @@ pub fn from_request(parts: &Parts) -> Locale {
     {
         // Crude parse — take the first token before ';' or ',', try direct
         // match, then strip the q-factor noise.
-        for tag in hdr.split(',').map(|s| s.trim().split(';').next().unwrap_or("")) {
+        for tag in hdr
+            .split(',')
+            .map(|s| s.trim().split(';').next().unwrap_or(""))
+        {
             if let Some(loc) = parse_locale(tag) {
                 return loc;
             }
