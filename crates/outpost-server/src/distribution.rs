@@ -14,7 +14,7 @@
 //! с этим форматом через X509EncodedKeySpec или manual point parsing.
 //! Контракт §2.4/§2.5/§2.6 фиксирует именно 65-байтовый формат, не SPKI.
 
-use aes_gcm::aead::{Aead, KeyInit, Payload};
+use aes_gcm::aead::{Aead, AeadInPlace, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use anyhow::{Context, Result, anyhow};
 use hkdf::Hkdf;
@@ -64,38 +64,47 @@ pub struct BlobCiphertext {
     pub tag: [u8; TAG_LEN],
     pub plaintext_sha256_hex: String,
     pub ciphertext_sha256_hex: String,
+    /// Длина исходного plaintext'а. Для AES-GCM `ciphertext.len()`
+    /// тождественно равна этой величине (GCM не меняет длину — tag detached),
+    /// но caller'у нужен явный размер для записи в БД / response, а сам
+    /// plaintext-буфер после in-place шифрования уже недоступен.
+    pub plaintext_len: usize,
 }
 
 /// Encrypt `plaintext` под randomly-generated DEK. Возвращаемый `dek` затем
 /// каждый recipient получит через [`encrypt_for_recipient`].
-pub fn encrypt_blob(plaintext: &[u8]) -> Result<(BlobCiphertext, [u8; DEK_LEN])> {
+///
+/// Принимает `plaintext` **по значению** и шифрует **in-place** в том же
+/// буфере (`encrypt_in_place_detached` — tag отдельно, длина не меняется).
+/// Это сознательно: аллоцирующий `Aead::encrypt` делал вторую копию размером
+/// со весь файл, и для blob'а на 84 МБ пик доходил до ~168 МБ. На проде у
+/// systemd-юнита `MemoryMax=256M` — двойная буферизация пробивала cgroup-лимит
+/// и ядро убивало процесс OOM-killer'ом (502 на форме «Распространить файл»).
+/// In-place шифрование убирает вторую копию: пик ≈ размер файла, не ×2.
+/// Wire-формат при этом байт-в-байт прежний (AES-256-GCM, detached tag).
+pub fn encrypt_blob(mut plaintext: Vec<u8>) -> Result<(BlobCiphertext, [u8; DEK_LEN])> {
     let mut dek = [0u8; DEK_LEN];
     OsRng.fill_bytes(&mut dek);
 
     let mut iv = [0u8; IV_LEN];
     OsRng.fill_bytes(&mut iv);
 
-    let cipher = Aes256Gcm::new_from_slice(&dek).context("aes-gcm init")?;
-    let mut combined = cipher
-        .encrypt(
-            Nonce::from_slice(&iv),
-            Payload {
-                msg: plaintext,
-                aad: b"",
-            },
-        )
-        .map_err(|e| anyhow!("aes-gcm encrypt: {e}"))?;
-    // aes-gcm crate возвращает ciphertext + tag concatenated; разделяем.
-    if combined.len() < TAG_LEN {
-        return Err(anyhow!("aes-gcm output too short"));
-    }
-    let tag_start = combined.len() - TAG_LEN;
-    let mut tag = [0u8; TAG_LEN];
-    tag.copy_from_slice(&combined[tag_start..]);
-    combined.truncate(tag_start);
-    let ciphertext = combined;
+    // Хэш и длину plaintext'а фиксируем ДО шифрования — после in-place
+    // операции буфер уже содержит ciphertext.
+    let plaintext_len = plaintext.len();
+    let plain_sha = hex_sha256(&plaintext);
 
-    let plain_sha = hex_sha256(plaintext);
+    let cipher = Aes256Gcm::new_from_slice(&dek).context("aes-gcm init")?;
+    // In-place AEAD: шифрует `plaintext` на месте, tag возвращается отдельно.
+    // Никакой второй аллокации размером с файл.
+    let tag_ga = cipher
+        .encrypt_in_place_detached(Nonce::from_slice(&iv), b"", &mut plaintext)
+        .map_err(|e| anyhow!("aes-gcm encrypt: {e}"))?;
+    let mut tag = [0u8; TAG_LEN];
+    tag.copy_from_slice(tag_ga.as_slice());
+    // Буфер теперь содержит ciphertext (та же длина, что и plaintext).
+    let ciphertext = plaintext;
+
     let cipher_sha = hex_sha256(&ciphertext);
 
     Ok((
@@ -105,6 +114,7 @@ pub fn encrypt_blob(plaintext: &[u8]) -> Result<(BlobCiphertext, [u8; DEK_LEN])>
             tag,
             plaintext_sha256_hex: plain_sha,
             ciphertext_sha256_hex: cipher_sha,
+            plaintext_len,
         },
         dek,
     ))
@@ -268,7 +278,7 @@ mod tests {
             .to_vec();
         assert_eq!(recipient_pub_sec1.len(), 65);
 
-        let (blob, dek) = encrypt_blob(plaintext).unwrap();
+        let (blob, dek) = encrypt_blob(plaintext.to_vec()).unwrap();
         let payload = encrypt_for_recipient(&dek, &recipient_pub_sec1, file_id, device_id).unwrap();
 
         assert_eq!(payload.eph_pubkey_sec1.len(), 65);
@@ -290,7 +300,7 @@ mod tests {
             .to_vec();
         let attacker_sk = SecretKey::random(&mut OsRng);
 
-        let (blob, dek) = encrypt_blob(plaintext).unwrap();
+        let (blob, dek) = encrypt_blob(plaintext.to_vec()).unwrap();
         let payload = encrypt_for_recipient(&dek, &real_pub, 1, 1).unwrap();
 
         // Attacker не может decrypt — другой private key даст другой shared
@@ -311,7 +321,7 @@ mod tests {
             .as_bytes()
             .to_vec();
 
-        let (blob, dek) = encrypt_blob(plaintext).unwrap();
+        let (blob, dek) = encrypt_blob(plaintext.to_vec()).unwrap();
         let payload = encrypt_for_recipient(&dek, &recipient_pub, 42, 7).unwrap();
 
         // Decrypt с правильным file_id — OK

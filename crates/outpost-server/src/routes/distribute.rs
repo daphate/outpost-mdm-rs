@@ -232,8 +232,11 @@ pub async fn do_distribute_file(
         return Err(ApiError::BadRequest("no devices in target".into()));
     }
 
-    // 3. Encrypt blob once (random DEK + IV). Wrap DEK per-recipient.
-    let (blob, dek) = distribution::encrypt_blob(&plaintext)
+    // 3. Encrypt blob once (random DEK + IV) — in-place: plaintext-буфер
+    //    переходит во владение encrypt_blob и на месте становится ciphertext'ом
+    //    (без второй копии размером с файл — см. distribution::encrypt_blob).
+    //    Wrap DEK per-recipient.
+    let (blob, dek) = distribution::encrypt_blob(plaintext)
         .map_err(|e| ApiError::BadRequest(format!("encrypt_blob: {e}")))?;
 
     // 4. Persist blob to local disk under $APP_FILES_DIR/encrypted/<random_id>.bin.
@@ -308,7 +311,7 @@ pub async fn do_distribute_file(
         .bind(blob.iv.to_vec())
         .bind(blob.tag.to_vec())
         .bind(&blob.plaintext_sha256_hex)
-        .bind(plaintext.len() as i64)
+        .bind(blob.plaintext_len as i64)
         .bind(&payload.eph_pubkey_sec1)
         .bind(&payload.wrapped_dek)
         .bind(payload.wrapped_dek_iv.to_vec())
@@ -338,7 +341,7 @@ pub async fn do_distribute_file(
             "ciphertext_iv": base64::engine::general_purpose::STANDARD.encode(blob.iv),
             "ciphertext_tag": base64::engine::general_purpose::STANDARD.encode(blob.tag),
             "plaintext_sha256": blob.plaintext_sha256_hex,
-            "plaintext_size": plaintext.len(),
+            "plaintext_size": blob.plaintext_len,
             "recipient_device_id": r.device_id,
             "recipient_key_id": r.key_id,
             "eph_pubkey_der": base64::engine::general_purpose::STANDARD.encode(&payload.eph_pubkey_sec1),
@@ -392,7 +395,7 @@ pub async fn do_distribute_file(
         command_ids,
         distribution_ids,
         ciphertext_size: blob.ciphertext.len() as i64,
-        plaintext_size: plaintext.len() as i64,
+        plaintext_size: blob.plaintext_len as i64,
     })
 }
 

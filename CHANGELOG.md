@@ -2,6 +2,32 @@
 
 Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.22] — 2026-06-17
+
+### Фикс OOM-kill при распространении крупного файла (encrypted distribution)
+
+`POST /files/{id}/distribute-form` падал с **502 Bad Gateway** на крупных
+файлах (воспроизведено на APK 83.8 МБ). Корень — память: хендлер читал весь
+файл в `Vec` (~84 МБ), а аллоцирующий `aes_gcm::encrypt` делал **вторую копию**
+размером со весь файл → пик ~168 МБ. На проде у systemd-юнита
+`MemoryMax=256M`, и процесс убивался cgroup-OOM-killer'ом (подтверждено
+kernel-логом: `Memory cgroup out of memory: Killed process … outpost-server`,
+`constraint=CONSTRAINT_MEMCG`), а `panic = "abort"` делал смерть тотальной →
+nginx отдавал 502, systemd рестартил сервис.
+
+Фикс — шифрование **in-place**: `encrypt_blob` принимает `plaintext` по
+значению и шифрует тот же буфер через `encrypt_in_place_detached` (tag
+отдельно). Второй копии нет, пик ≈ размер файла, не ×2. **Wire-формат
+байт-в-байт прежний** (AES-256-GCM, detached tag) — клиентам перевыкатка не
+нужна, существующие распространения совместимы. Подтверждено roundtrip-тестом
+(`distribution::tests::roundtrip_single_recipient`: encrypt → decrypt as client
+→ битовое совпадение).
+
+Примечание: in-place снимает потолок примерно до ~170 МБ под текущим
+`MemoryMax=256M` (baseline ~52 МБ + буфер). Для заявленного в коде проектного
+потолка blob ≤ 200 МБ потребуется отдельно поднять `MemoryMax` (инфра-решение,
+вне этого коммита).
+
 ## [0.18.21] — 2026-06-16
 
 ### Убран нерабочий `install-apk` push из админ-UI
