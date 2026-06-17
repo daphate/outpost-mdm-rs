@@ -1,6 +1,6 @@
 # Outpost MDM — Architecture
 
-This document describes the layout of the Rust server as of May 2026.
+This document describes the layout of the Rust server as of June 2026 (outpost-server v0.18.22).
 It is the canonical map for a new contributor; pair it with the
 phase-by-phase narrative in [`CHANGELOG.md`](../CHANGELOG.md).
 
@@ -38,7 +38,7 @@ outpost-mdm-rs/
         │   ├── app.rs               # `build_router(state) -> Router` + global middleware stack
         │   ├── shutdown.rs          # `signal()` future: ctrl-c (any OS), SIGTERM (Unix)
         │   ├── db.rs                # `open_pool(path) -> SqlitePool` with WAL pragmas
-        │   ├── auth.rs              # argon2id + HS512 JWT primitives, `KIND_USER` / `KIND_DEVICE`
+        │   ├── auth.rs              # argon2id password hashing (JWT removed in P16; tokens are DB-backed sessions)
         │   ├── auth_extract.rs      # `AuthUser` / `AuthDevice` axum extractors
         │   ├── bootstrap.rs         # first-boot admin password generation
         │   ├── error.rs             # `ApiError` enum + `IntoResponse`
@@ -81,7 +81,7 @@ TCP accept
     → TimeoutLayer                    503 if handler exceeds REQUEST_TIMEOUT_SECS
     → Router::route
       → handler() async fn
-        → AuthUser / AuthDevice       Bearer JWT extraction (parses kind, verifies sig, hits DB)
+        → AuthUser / AuthDevice       Bearer opaque session token (sha256 lookup in `sessions`, checks kind, revoked_at, expiry)
         → require_permission(...)     looks up `user_role_permissions`
         → sqlx::query{,_as,_scalar}   bound queries against SqlitePool
         → returns Result<Json<T>, ApiError>
@@ -178,7 +178,7 @@ Admin              PushSchedule row (pending, due_at?)
                               ▼
                    push_messages rows (pending)
                               │
-                              │   POST /api/v1/sync from device (Bearer device JWT)
+                              │   POST /api/v1/sync from device (Bearer device session token)
                               │     drain pending → mark 'sent', return to device
                               ▼
                    push_messages rows (sent)
@@ -204,11 +204,11 @@ Admin POST /api/v1/files/upload (multipart "file" + "kind")
    ← {id, sha256, size, ...}
 
 Admin GET /api/v1/files/{id}/signed-url?expires_in=300
-   → signed_url::sign(file_id, ttl, jwt_secret)
+   → signed_url::sign(file_id, ttl, app_secret)
    ← {url: "/files/signed/v1.42.1683893760.UUID.HEX", expires_in: 300}
 
 Device GET /files/signed/{token}    (no Authorization header)
-   → signed_url::verify(token, jwt_secret)              constant-time, expiry-checked
+   → signed_url::verify(token, app_secret)              constant-time, expiry-checked
    → storage::resolve_under_root(...)                   path-traversal guard
    → stream the bytes back with original_name + content_type
 ```
@@ -219,8 +219,9 @@ snapshots, and MBTiles packs — the type is annotated via
 
 ## Where things are decided
 
-- **Configuration**: every knob via `Config::from_env`. `JWT_SECRET` is
-  the only required env var; everything else has a sensible default
+- **Configuration**: every knob via `Config::from_env`. `APP_SECRET` is
+  the only required env var (the legacy name `JWT_SECRET` is still
+  accepted as a deprecated alias); everything else has a sensible default
   documented in `Config`'s field comments.
 - **Tracing**: JSON via `tracing-subscriber::fmt().json()`, level
   filtered by `RUST_LOG`. Each request gets a `request_id` span.
@@ -236,8 +237,9 @@ snapshots, and MBTiles packs — the type is annotated via
 
 ## Out-of-scope (intentionally)
 
-- **Frontend admin UI** — planned as a follow-up (HTMX + Askama +
-  Tailwind v4); for now operators drive the server via curl/Postman.
+- ~~**Frontend admin UI**~~ — *shipped.* The HTMX + Askama admin UI is
+  implemented (templates under `crates/outpost-server/templates/`, served
+  by `routes/web.rs`); the JSON API remains available for curl/Postman.
 - **MQTT push transport** — HTTPS long-polling is the only transport;
   `rumqttd`/`rumqttc` are kept on the radar but not enabled.
 - **Multi-server clustering** — single-process / single-SQLite. If the

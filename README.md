@@ -2,7 +2,7 @@
 
 Outpost MDM is a field-grade device management server for managing fleets of [Outpost-Android](https://github.com/daphate/tactical-ar-hud) tactical devices (Ulefone Armor 28 Ultra and analogs).
 
-> **Status:** Early greenfield work, May 2026. The architecture, schema, and feature surface draw inspiration from [Headwind MDM](https://github.com/h-mdm/hmdm-server) (Apache 2.0). An earlier Java fork at [daphate/outpost-mdm](https://github.com/daphate/outpost-mdm) is preserved as an archival reference; this Rust project is the active codebase.
+> **Статус:** Действующий сервер, версия 0.18.22 (на 17 июня 2026). Активно дорабатывается: харденинг безопасности, наблюдаемость (Grafana/OTLP), device-facing API раздачи комплектов (bundles), шифрованная раздача. План производственного развёртывания — в [`docs/PRODUCTION-ROLLOUT-PLAN.md`](docs/PRODUCTION-ROLLOUT-PLAN.md). The architecture, schema, and feature surface draw inspiration from [Headwind MDM](https://github.com/h-mdm/hmdm-server) (Apache 2.0). An earlier Java fork at [daphate/outpost-mdm](https://github.com/daphate/outpost-mdm) is preserved as an archival reference; this Rust project is the active codebase.
 
 ## Stack
 
