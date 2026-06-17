@@ -9,16 +9,35 @@ phase-by-phase narrative in [`CHANGELOG.md`](../CHANGELOG.md).
 ```text
 outpost-mdm-rs/
 ├── Cargo.toml                       # workspace deps + release profile
-├── Dockerfile                       # 3-stage: planner / builder / Chainguard runtime
-├── docker-compose.yml               # local + production compose
+├── Cargo.lock
 ├── deny.toml                        # cargo-deny license/advisory policy
-├── docs/
+├── rust-toolchain.toml              # pinned Rust toolchain
+├── README.md  CHANGELOG.md  CONTRIBUTING.md  SECURITY.md  LICENSE
+├── docs/                            # design + ops docs
 │   ├── ARCHITECTURE.md              # ← this file
-│   └── DEPLOY.md
+│   ├── DEPLOY.md
+│   ├── PRODUCTION-ROLLOUT-PLAN.md
+│   ├── PROVISION-NEW-DEVICE.md
+│   ├── OFFLINE-RESILIENCE.md
+│   ├── OTEL-CONTRACT.md
+│   ├── CLIENT-TELEMETRY-CONTRACT.md
+│   ├── LIBRARY-ARCHIVES.md
+│   ├── BALLISTICS-CRYPTO-DESIGN.md
+│   ├── BALLISTICS-IMPLEMENTATION-SPEC.md
+│   └── V25-SOLDIER-ROLLOUT.md
+├── deploy/                          # production deploy assets (musl ELF + systemd; no container in prod)
+│   ├── outpost-server.service       # systemd unit
+│   ├── nginx-mdm.secondf8n.tech.conf
+│   ├── deploy.ps1
+│   ├── grafana-dashboards/          # outpost-device.json, outpost-fleet.json
+│   ├── grafana-alerting/            # rules.yml
+│   └── systemd-drop-ins/            # prometheus + node-exporter (tailscale-bind)
+├── notes/   tools/                  # internal notes + helper scripts
 └── crates/
-    ├── outpost-core/                # shared domain types (currently empty stub)
-    ├── outpost-migrations/          # sqlx-migrate SQL + integration tests
-    │   ├── migrations/
+    ├── outpost-core/                # shared domain types/services (populated incrementally)
+    │   └── src/lib.rs
+    ├── outpost-migrations/          # sqlx migrations + integration tests
+    │   ├── migrations/              # append-only — never edit a shipped .sql, add a new file
     │   │   ├── 0001_customers.sql
     │   │   ├── 0002_users_auth.sql
     │   │   ├── 0003_devices.sql
@@ -27,43 +46,80 @@ outpost-mdm-rs/
     │   │   ├── 0006_uploaded_files.sql
     │   │   ├── 0007_push.sql
     │   │   ├── 0008_settings.sql
-    │   │   └── 0009_seed_admin.sql
+    │   │   ├── 0009_seed_admin.sql
+    │   │   ├── 0010_sessions.sql                  # P16: opaque DB-backed sessions
+    │   │   ├── 0011_devices_configuration.sql
+    │   │   ├── 0012_telemetry.sql
+    │   │   ├── 0013_customers_active.sql
+    │   │   ├── 0014_application_source_url.sql
+    │   │   ├── 0015_application_rollouts.sql
+    │   │   ├── 0016_device_state_snapshot.sql
+    │   │   ├── 0017_device_keys.sql               # P-256 device pubkeys from enroll
+    │   │   ├── 0018_encrypted_distributions.sql   # per-recipient encrypted file mapping
+    │   │   ├── 0019_default_configuration.sql
+    │   │   ├── 0020_server_timezone.sql
+    │   │   ├── 0021_default_config_settings.sql
+    │   │   ├── 0022_server_datetime_format.sql
+    │   │   ├── 0023_user_profile_fields.sql
+    │   │   ├── 0024_ballistics_schema.sql
+    │   │   ├── 0025_ballistics_permissions.sql
+    │   │   ├── 0026_bundle_assignments.sql
+    │   │   ├── 0027_bundle_permissions_seed.sql
+    │   │   └── 0028_ballistics_entities_tenant_pk.sql
     │   └── src/lib.rs               # `MIGRATOR: sqlx::migrate::Migrator`
     └── outpost-server/              # the binary + library
         ├── src/
-        │   ├── main.rs              # boot: load config, open pool, bootstrap, spawn scheduler, serve
-        │   ├── lib.rs               # public module surface (so integration tests can share)
+        │   ├── main.rs              # boot: config → pool → bootstrap → scheduler → serve
+        │   ├── lib.rs               # public module surface (shared with integration tests)
         │   ├── config.rs            # `Config::from_env` (typed env → struct)
         │   ├── state.rs             # `AppState` + `test_state` helper
-        │   ├── app.rs               # `build_router(state) -> Router` + global middleware stack
-        │   ├── shutdown.rs          # `signal()` future: ctrl-c (any OS), SIGTERM (Unix)
-        │   ├── db.rs                # `open_pool(path) -> SqlitePool` with WAL pragmas
-        │   ├── auth.rs              # argon2id password hashing (JWT removed in P16; tokens are DB-backed sessions)
-        │   ├── auth_extract.rs      # `AuthUser` / `AuthDevice` axum extractors
+        │   ├── app.rs               # HTTP application factory + global middleware stack
+        │   ├── shutdown.rs          # graceful shutdown (ctrl-c / SIGTERM)
+        │   ├── db.rs                # SQLite pool with Outpost-tuned PRAGMAs (WAL)
+        │   ├── auth.rs              # argon2id password hashing (no JWT since P16)
+        │   ├── auth_extract.rs      # bearer token → `AuthUser` / `AuthDevice`
+        │   ├── session.rs           # opaque DB-backed session tokens (sha256 in `sessions`)
+        │   ├── totp.rs              # RFC 6238 TOTP — admin 2FA on web login
         │   ├── bootstrap.rs         # first-boot admin password generation
-        │   ├── error.rs             # `ApiError` enum + `IntoResponse`
-        │   ├── page.rs              # `Page<T>`, `PageParams`, clamp helpers
-        │   ├── permission.rs        # `require_permission(db, role_id, "x.y")`
-        │   ├── scheduler.rs         # push scheduler tokio task + `tick_once`
-        │   ├── signed_url.rs        # HMAC-SHA256 signed download tokens
-        │   ├── storage.rs           # content-addressed disk writer + path-traversal guard
+        │   ├── permission.rs        # `require_permission` (user_role_permissions)
+        │   ├── rate_limit.rs        # per-IP token-bucket limiter
+        │   ├── client_ip.rs         # resolve originating client IP
+        │   ├── error.rs             # unified `ApiError` + `IntoResponse`
+        │   ├── page.rs              # pagination envelope + query params
+        │   ├── scheduler.rs         # push scheduler task + `tick_once`
+        │   ├── storage.rs           # content-addressed disk writer + traversal guard
+        │   ├── signed_url.rs        # HMAC-SHA256 signed download URLs (APP_SECRET)
+        │   ├── cloudru_signer.rs    # Cloud.ru SigV4 presigned-URL generator
+        │   ├── distribution.rs      # encrypt-for-recipient pipeline (per-device)
+        │   ├── distribute_gc.rs     # GC task for encrypted_distributions blobs
+        │   ├── apk_watcher.rs       # Outpost-Android APK upstream watcher
+        │   ├── rollout_monitor.rs   # phased-rollout auto-promote / auto-rollback
+        │   ├── i18n.rs              # typed translations for the admin UI
         │   └── routes/              # one module per resource family
-        │       ├── mod.rs           # `api_v1(state) -> Router` merges everything
-        │       ├── auth.rs          # POST /api/v1/auth/login, GET /api/v1/auth/me
-        │       ├── devices.rs       # CRUD + telemetry
-        │       ├── groups.rs        # CRUD + membership
-        │       ├── applications.rs  # CRUD + versions
-        │       ├── configurations.rs# CRUD + app assignment
-        │       ├── users.rs         # CRUD + /password
-        │       ├── settings.rs      # GET/PUT key-value
-        │       ├── stats.rs         # /fleet rollup
-        │       ├── push.rs          # messages + schedule
-        │       ├── files.rs         # multipart upload + signed-URL download
-        │       └── enrollment.rs    # /enroll, /sync, scheduler glue
+        │       ├── mod.rs           # router assembly
+        │       ├── auth.rs          # /api/v1/auth/* — login / logout / me
+        │       ├── devices.rs       # /api/v1/devices — CRUD + telemetry
+        │       ├── groups.rs        # /api/v1/groups — groups + membership
+        │       ├── applications.rs  # /api/v1/applications — APK catalog + versions
+        │       ├── configurations.rs# /api/v1/configurations — config bundles + app assignment
+        │       ├── users.rs         # /api/v1/users — account management
+        │       ├── settings.rs      # /api/v1/settings — installation key/value
+        │       ├── stats.rs         # /api/v1/stats — fleet rollups
+        │       ├── push.rs          # /api/v1/push — schedule / inspect commands
+        │       ├── files.rs         # /api/v1/files (admin) + /files/signed/{token} (public)
+        │       ├── enrollment.rs    # device-facing /enroll + /sync (long-polling)
+        │       ├── bundles.rs       # /api/v1/bundles — bootstrap bundle assignment
+        │       ├── distribute.rs    # per-device encrypted file distribution
+        │       ├── ballistics.rs    # BALLISTICS-MDM-CONTRACT v1 endpoints
+        │       ├── otel.rs          # OTLP/HTTP-JSON receiver (spans / metrics / logs)
+        │       ├── prom.rs          # Prometheus exposition (`GET /metrics`)
+        │       ├── internal.rs      # nginx `auth_request`-only internal endpoints
+        │       └── web.rs           # HTML admin UI (Askama + cookie session)
+        ├── templates/               # 33 Askama HTML templates (admin UI)
         └── tests/
-            ├── common/mod.rs        # shared TestApp + HTTP helpers
-            └── {auth,devices,applications,configurations,groups,users,
-                  settings,push,files,enrollment,security,healthz}.rs
+            ├── common/              # shared TestApp + HTTP helpers
+            └── {auth,devices,applications,configurations,groups,users,settings,
+                  push,files,enrollment,security,healthz,otel,web}.rs
 ```
 
 ## Lifecycle of one HTTP request
