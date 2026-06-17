@@ -162,14 +162,10 @@ pub fn router() -> Router<AppState> {
             "/devices/{id}/remote-wipe-form",
             post(device_remote_wipe_form),
         )
-        // v0.18.15 (Phase 27): structured update-config form + install-apk push.
+        // v0.18.15 (Phase 27): structured update-config form.
         .route(
             "/devices/{id}/config-structured",
             post(device_config_structured_form),
-        )
-        .route(
-            "/devices/{id}/install-apk-form",
-            post(device_install_apk_form),
         )
         // v0.18.17 (Ballistics M5): admin web UI для push templates per
         // BALLISTICS-MDM-CONTRACT §3.6. Видимо только когда BALLISTICS_ENABLED=true;
@@ -1492,10 +1488,6 @@ struct PushTemplate {
     messages: Vec<PushRow>,
     target_devices: Vec<DeviceOption>,
     target_groups: Vec<GroupOption>,
-    /// v0.18.16: список APK-версий для install-apk dropdown'а.
-    /// Те же кандидаты что и на /devices/{id}/edit но с дополнительным
-    /// payload (sha256/size/url) — JS соберёт JSON.
-    apk_versions: Vec<PushApkVersionOption>,
     /// v0.18.16: те же model registry опции что и в DeviceEditTemplate —
     /// для structured update-config panel.
     llm_options: Vec<ConfigOptionLabel>,
@@ -1510,17 +1502,6 @@ struct PushTemplate {
     cpu_thread_count_options: Vec<ConfigOptionLabel>,
     flash: Option<String>,
     create_error: Option<String>,
-}
-
-#[derive(sqlx::FromRow)]
-struct PushApkVersionOption {
-    id: i64,
-    label: String,
-    version_code: i64,
-    version_name: String,
-    sha256: String,
-    file_size_bytes: i64,
-    source_url: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -1600,19 +1581,6 @@ async fn render_push(
     .bind(user.customer_id)
     .fetch_all(&state.db)
     .await?;
-    let apk_versions: Vec<PushApkVersionOption> = sqlx::query_as(
-        "SELECT av.id, \
-                av.version_name || ' (code ' || av.version_code || ', sha ' || \
-                substr(av.sha256, 1, 8) || '…)' AS label, \
-                av.version_code, av.version_name, av.sha256, av.file_size_bytes, av.source_url \
-         FROM application_versions av \
-         JOIN applications a ON a.id = av.application_id \
-         WHERE a.customer_id = ? AND a.kind = 'apk' \
-         ORDER BY av.version_code DESC LIMIT 200",
-    )
-    .bind(user.customer_id)
-    .fetch_all(&state.db)
-    .await?;
     let messages = rows
         .into_iter()
         .map(|r| PushRow {
@@ -1634,7 +1602,6 @@ async fn render_push(
         messages,
         target_devices,
         target_groups,
-        apk_versions,
         llm_options: llm_options(),
         translator_llm_options: translator_llm_options(),
         vlm_options: vlm_options(),
@@ -3731,71 +3698,6 @@ async fn device_config_structured_form(
         serde_json::Value::Object(payload),
     )
     .await
-}
-
-/// v0.18.15 (Phase 27): admin-initiated `install-apk` push. Ставит в очередь
-/// push_message с command='install-apk' и payload {version_code, version_name,
-/// sha256, url, size_bytes}. Client (rc≥X b≥Y, точное число согласуется
-/// с AR Hud team — см. `MDM-DEVICE-CONTROL-CONTRACT.md §3.4`) применяет:
-/// — качает APK с url
-/// — verify'ит sha256
-/// — вызывает PackageInstaller с user-prompt (silent-install требует
-///   Device-Owner DPM, реализация on AR Hud стороне).
-///
-/// До тех пор пока AR Hud не реализует client-side — команда будет
-/// сохраняться в `applied_commands` со status='error', message='unknown
-/// command' или просто игнорироваться (зависит от client behaviour для
-/// unknown commands). Безопасно — пользовательских данных не задевает.
-async fn device_install_apk_form(
-    user: WebUser,
-    State(state): State<AppState>,
-    Path(id): Path<i64>,
-    body: axum::body::Bytes,
-) -> Response {
-    let form = parse_form(&body);
-    let version_id_raw = form.first("version_id").unwrap_or("").trim();
-    let version_id: i64 = match version_id_raw.parse() {
-        Ok(v) => v,
-        Err(_) => {
-            return redirect_with_flash(
-                &format!("/devices/{id}/edit"),
-                "Выберите версию APK из dropdown'а.",
-            );
-        }
-    };
-    // Lookup app version row + verify customer ownership через JOIN на applications.
-    let row: Option<(i64, String, String, i64, Option<String>)> = sqlx::query_as(
-        "SELECT av.version_code, av.version_name, av.sha256, av.file_size_bytes, av.source_url \
-         FROM application_versions av \
-         JOIN applications a ON a.id = av.application_id \
-         WHERE av.id = ? AND a.customer_id = ? AND a.kind = 'apk'",
-    )
-    .bind(version_id)
-    .bind(user.customer_id)
-    .fetch_optional(&state.db)
-    .await
-    .unwrap_or(None);
-    let Some((version_code, version_name, sha256, size_bytes, source_url)) = row else {
-        return redirect_with_flash(
-            &format!("/devices/{id}/edit"),
-            "Версия APK не найдена в customer scope.",
-        );
-    };
-    let Some(url) = source_url else {
-        return redirect_with_flash(
-            &format!("/devices/{id}/edit"),
-            "У этой версии APK нет source_url — устройство не сможет её скачать. \
-             Загрузите версию с source_url через /applications или раскатайте через rollouts.",
-        );
-    };
-    let payload = serde_json::json!({
-        "version_code": version_code,
-        "version_name": version_name,
-        "sha256": sha256,
-        "size_bytes": size_bytes,
-        "url": url,
-    });
-    queue_device_command_form(&state, &user, id, "install-apk", payload).await
 }
 
 async fn device_rotate_cloudru_creds_form(

@@ -2,6 +2,27 @@
 
 Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.21] — 2026-06-16
+
+### Убран нерабочий `install-apk` push из админ-UI
+
+Команда `install-apk` через `push_messages` **не исполняется клиентом** — AR Hud
+`SyncCommandDispatcher` явно её игнорирует (`ack ok=true "ignored — use
+update_available channel"`), а APK-установка реализована отдельным каналом
+`update_available` (`ApkUpdater`: download → SHA-256 → PackageInstaller). Чтобы
+не вводить администратора в заблуждение (форма выглядела как действие, а на деле
+no-op), убраны оба места:
+
+- `/devices/{id}` («Настроить устройство») — секция-форма «Поставить в очередь
+  install-apk» + route `/devices/{id}/install-apk-form` + handler
+  `device_install_apk_form`.
+- `/push` — опция `install-apk` в command-селекторе + панель + JS + поле
+  `apk_versions` / `PushApkVersionOption` в `PushTemplate`.
+
+Рабочие пути доставки APK (pin версии / rollouts → `update_available`) не
+тронуты. Откат версии остаётся forward-only by design (см. ApkUpdater
+`versionCode <= current → UpToDate` + серверный guard в enrollment.rs).
+
 ## [0.18.20] — 2026-06-15
 
 ### Security hardening pass (security review + adversarial audit + follow-ups)

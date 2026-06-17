@@ -364,7 +364,7 @@
   <section class="bg-white rounded-lg shadow-sm p-4 space-y-3">
     <h3 class="font-medium border-b border-slate-200 pb-2">Push новой версии приложения</h3>
     <p class="text-xs text-slate-500">
-      Управление APK-обновлениями. Есть три способа доставить новую версию на это устройство:
+      Управление APK-обновлениями. Есть два способа доставить новую версию на это устройство:
     </p>
     <ol class="text-xs text-slate-600 list-decimal pl-5 space-y-1">
       <li>
@@ -378,39 +378,7 @@
         canary в группе → fleet-wide. Та же механика <code>update_available</code>,
         но автоматически по политике.
       </li>
-      <li>
-        <strong>Push <code>install-apk</code></strong> — командой ниже. Устройство
-        получит команду в <code>commands[]</code> и (когда AR Hud client это
-        реализует, см. MDM-DEVICE-CONTROL-CONTRACT §3.4) скачает и установит APK.
-        Без silent-install DPM — будет user-prompt от Android PackageInstaller.
-      </li>
     </ol>
-
-    <details class="border border-amber-300 rounded p-3 bg-amber-50">
-      <summary class="cursor-pointer text-sm text-amber-900 font-medium">install-apk — поставить версию в очередь push'а</summary>
-      <form method="POST" action="/devices/{{ device_id }}/install-apk-form" class="space-y-2 mt-3"
-            onsubmit="return confirm('Послать команду install-apk устройству? Будет качать и устанавливать APK.')">
-        <label class="block">
-          <span class="text-xs uppercase tracking-wide text-amber-900">Версия APK</span>
-          <select name="version_id" class="mt-1 w-full rounded border-amber-300 px-3 py-1.5 text-sm disabled:bg-slate-50" {% if update_config_blocker.is_some() %}disabled{% endif %} required>
-            <option value="" disabled selected>— выберите версию —</option>
-            {% for v in app_versions %}
-              <option value="{{ v.id }}">{{ v.label }}</option>
-            {% endfor %}
-          </select>
-          <p class="text-xs text-amber-900 mt-1">
-            У версии должен быть выставлен <code>source_url</code> (загруженная через UI или watcher-discovered версия). Без URL'а команда не пройдёт — устройство не сможет качать APK.
-          </p>
-        </label>
-        <button class="bg-amber-700 hover:bg-amber-800 disabled:bg-slate-300 text-white text-sm px-3 py-1.5 rounded"
-                {% if update_config_blocker.is_some() %}disabled{% endif %}>
-          Поставить в очередь install-apk
-        </button>
-        <p class="text-xs text-amber-900">
-          ⚠ Client-side install-apk handler **TBD** (контракт `MDM-DEVICE-CONTROL-CONTRACT §3.4`). До реализации в AR Hud — устройство получит команду но не выполнит её. Команда безвредна (нет destructive семантики), используйте для тестового канала.
-        </p>
-      </form>
-    </details>
   </section>
 
   <!-- ============================================================ -->

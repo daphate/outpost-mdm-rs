@@ -41,7 +41,6 @@
           <span class="text-xs uppercase tracking-wide text-slate-500">Команда</span>
           <select id="push-command" name="command" required onchange="onPushCommandChange()" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm font-mono">
             <option value="update-config" selected>update-config</option>
-            <option value="install-apk">install-apk</option>
             <option value="rotate-cloudru-creds">rotate-cloudru-creds</option>
             <option value="revoke-enrollment">revoke-enrollment</option>
             <option value="remote-wipe">remote-wipe</option>
@@ -191,31 +190,6 @@
         </div>
       </fieldset>
 
-      <!-- ============== Panel: install-apk ============== -->
-      <fieldset id="panel-install-apk" class="push-panel hidden border border-amber-300 bg-amber-50 rounded p-3 space-y-2">
-        <legend class="text-xs uppercase tracking-wide text-amber-900 px-1">Версия APK</legend>
-        <label class="block">
-          <span class="text-xs uppercase tracking-wide text-amber-900">Версия APK</span>
-          <select id="install-apk-version" class="mt-1 w-full rounded border-amber-300 px-3 py-1.5 text-sm">
-            <option value="">— выберите версию —</option>
-            {% for v in apk_versions %}
-              <option value="{{ v.id }}"
-                      data-version-code="{{ v.version_code }}"
-                      data-version-name="{{ v.version_name }}"
-                      data-sha256="{{ v.sha256 }}"
-                      data-size="{{ v.file_size_bytes }}"
-                      data-url="{% if let Some(u) = v.source_url %}{{ u }}{% endif %}">
-                {{ v.label }}
-              </option>
-            {% endfor %}
-          </select>
-          <p class="text-xs text-amber-900 mt-1">
-            Версия должна иметь <code>source_url</code> — иначе устройство не сможет скачать APK.
-            Client-side install-apk handler у AR Hud — TBD (контракт <code>MDM-DEVICE-CONTROL-CONTRACT §3.4</code>).
-          </p>
-        </label>
-      </fieldset>
-
       <!-- ============== Panel: rotate-cloudru-creds ============== -->
       <fieldset id="panel-rotate-cloudru-creds" class="push-panel hidden border border-slate-200 bg-slate-50 rounded p-3 space-y-2">
         <legend class="text-xs uppercase tracking-wide text-slate-500 px-1">Cloud.ru creds (read-only)</legend>
@@ -271,7 +245,6 @@
       // заполняется JS-ом из активного command-panel'а перед submit.
       const PUSH_PANEL_BY_CMD = {
         'update-config':       'panel-update-config',
-        'install-apk':         'panel-install-apk',
         'rotate-cloudru-creds':'panel-rotate-cloudru-creds',
         'revoke-enrollment':   'panel-revoke-enrollment',
         'remote-wipe':         'panel-remote-wipe',
@@ -312,19 +285,6 @@
             alert('Ничего не выбрано — все поля стояли на «не менять». Выбери хотя бы одно значение.');
             return false;
           }
-        } else if (cmd === 'install-apk') {
-          const sel = document.getElementById('install-apk-version');
-          const opt = sel.selectedOptions[0];
-          if (!sel.value || !opt) { alert('Выбери версию APK.'); return false; }
-          const url = opt.getAttribute('data-url');
-          if (!url) { alert('У версии нет source_url — устройство не сможет скачать APK.'); return false; }
-          payload = {
-            version_code: parseInt(opt.getAttribute('data-version-code'), 10),
-            version_name: opt.getAttribute('data-version-name'),
-            sha256:       opt.getAttribute('data-sha256'),
-            size_bytes:   parseInt(opt.getAttribute('data-size'), 10),
-            url:          url,
-          };
         } else if (cmd === 'rotate-cloudru-creds') {
           const t = document.getElementById('cr-tenant-id').value.trim();
           const k = document.getElementById('cr-key-id').value.trim();
