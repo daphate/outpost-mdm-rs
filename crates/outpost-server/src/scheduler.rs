@@ -82,6 +82,12 @@ pub async fn tick_once(pool: &SqlitePool) -> sqlx::Result<usize> {
     } in rows
     {
         let device_ids = resolve_targets(pool, customer_id, device_id, group_id, config_id).await?;
+        // Атомарно: все push_messages этого расписания + перевод в 'done' — в
+        // одной транзакции. Иначе крах (panic="abort") между вставками и
+        // UPDATE'ом оставил бы расписание 'pending' → повторная полная рассылка
+        // всех команд при следующем тике.
+        let mut tx = pool.begin().await?;
+        let mut row_emitted = 0_usize;
         for did in device_ids {
             sqlx::query(
                 "INSERT INTO push_messages \
@@ -93,16 +99,18 @@ pub async fn tick_once(pool: &SqlitePool) -> sqlx::Result<usize> {
             .bind(&command)
             .bind(&payload)
             .bind(sched_id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
-            emitted += 1;
+            row_emitted += 1;
         }
         sqlx::query(
             "UPDATE push_schedule SET status = 'done', last_run_at = datetime('now') WHERE id = ?",
         )
         .bind(sched_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
+        emitted += row_emitted;
     }
 
     if emitted > 0 {
@@ -114,7 +122,47 @@ pub async fn tick_once(pool: &SqlitePool) -> sqlx::Result<usize> {
     {
         tracing::info!(cleaned = n, "scheduler tick pruned old sessions");
     }
+    // Retention: телеметрия (device_logs / device_metrics / device_traces) —
+    // append-only и растёт неограниченно на 2 GB VM. Чистим строки старше
+    // настраиваемого окна (settings `telemetry.retention_days`, default 30).
+    let retention_days = read_telemetry_retention_days(pool).await;
+    match prune_telemetry(pool, retention_days).await {
+        Ok(n) if n > 0 => {
+            tracing::info!(pruned = n, days = retention_days, "scheduler pruned old telemetry")
+        }
+        Err(e) => tracing::warn!(error = ?e, "telemetry retention prune failed"),
+        _ => {}
+    }
     Ok(emitted)
+}
+
+/// Retention window for telemetry, from settings (`telemetry.retention_days`,
+/// clamped 1..=365), defaulting to 30 days.
+async fn read_telemetry_retention_days(pool: &SqlitePool) -> i64 {
+    let raw: Option<String> = sqlx::query_scalar(
+        "SELECT json_extract(value_json, '$') FROM settings WHERE key = 'telemetry.retention_days'",
+    )
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    raw.and_then(|s| s.parse::<i64>().ok())
+        .filter(|n| (1..=365).contains(n))
+        .unwrap_or(30)
+}
+
+/// Delete telemetry rows whose `received_at` is older than `days` days.
+/// Table names are hardcoded literals (no injection surface); the cutoff is
+/// bound as a parameter. Returns the total number of pruned rows.
+async fn prune_telemetry(pool: &SqlitePool, days: i64) -> sqlx::Result<u64> {
+    let modifier = format!("-{days} days");
+    let mut total = 0u64;
+    for table in ["device_logs", "device_metrics", "device_traces"] {
+        let sql = format!("DELETE FROM {table} WHERE received_at < datetime('now', ?)");
+        let res = sqlx::query(&sql).bind(&modifier).execute(pool).await?;
+        total += res.rows_affected();
+    }
+    Ok(total)
 }
 
 async fn resolve_targets(

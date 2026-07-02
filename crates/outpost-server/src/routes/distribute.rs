@@ -431,7 +431,11 @@ async fn resolve_recipients(
             sqlx::query_as(
                 "SELECT d.id, d.app_version_code, dk.pubkey_der, dk.key_id \
                  FROM devices d \
-                 LEFT JOIN device_keys dk ON dk.device_id = d.id AND dk.revoked_at IS NULL \
+                 LEFT JOIN device_keys dk ON dk.id = ( \
+                     SELECT dk2.id FROM device_keys dk2 \
+                     WHERE dk2.device_id = d.id AND dk2.revoked_at IS NULL \
+                     ORDER BY dk2.id DESC LIMIT 1 \
+                 ) \
                  WHERE d.id = ? AND d.customer_id = ?",
             )
             .bind(id)
@@ -444,7 +448,11 @@ async fn resolve_recipients(
                 "SELECT d.id, d.app_version_code, dk.pubkey_der, dk.key_id \
                  FROM devices d \
                  JOIN device_groups dg ON dg.device_id = d.id \
-                 LEFT JOIN device_keys dk ON dk.device_id = d.id AND dk.revoked_at IS NULL \
+                 LEFT JOIN device_keys dk ON dk.id = ( \
+                     SELECT dk2.id FROM device_keys dk2 \
+                     WHERE dk2.device_id = d.id AND dk2.revoked_at IS NULL \
+                     ORDER BY dk2.id DESC LIMIT 1 \
+                 ) \
                  WHERE dg.group_id = ? AND d.customer_id = ?",
             )
             .bind(id)
@@ -456,7 +464,11 @@ async fn resolve_recipients(
             sqlx::query_as(
                 "SELECT d.id, d.app_version_code, dk.pubkey_der, dk.key_id \
                  FROM devices d \
-                 LEFT JOIN device_keys dk ON dk.device_id = d.id AND dk.revoked_at IS NULL \
+                 LEFT JOIN device_keys dk ON dk.id = ( \
+                     SELECT dk2.id FROM device_keys dk2 \
+                     WHERE dk2.device_id = d.id AND dk2.revoked_at IS NULL \
+                     ORDER BY dk2.id DESC LIMIT 1 \
+                 ) \
                  WHERE d.customer_id = ?",
             )
             .bind(customer_id)

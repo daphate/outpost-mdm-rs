@@ -32,7 +32,15 @@ pub async fn open_pool(db_path: &str) -> Result<SqlitePool> {
     .journal_mode(SqliteJournalMode::Wal)
     .synchronous(SqliteSynchronous::Normal)
     .foreign_keys(true)
-    .busy_timeout(Duration::from_secs(5));
+    .busy_timeout(Duration::from_secs(5))
+    // 64 MiB page cache (negative = KiB). Для БД MDM-масштаба это, как правило,
+    // держит рабочее множество (и часто всю БД) в памяти. Дёшево на 2 GB VM.
+    .pragma("cache_size", "-65536")
+    // Временные таблицы/индексы (сортировки, GROUP BY) — в RAM, не на диск.
+    .pragma("temp_store", "MEMORY")
+    // Периодический ANALYZE при закрытии соединения — планировщик держит
+    // актуальную статистику без ручного обслуживания.
+    .optimize_on_close(true, None);
 
     // For in-memory databases the pool MUST be capped at 1 connection —
     // each new connection would otherwise see an empty, isolated database.
