@@ -60,7 +60,10 @@ async fn login(
         return Err(ApiError::Inactive);
     }
     let phc = password_hash.ok_or(ApiError::NotBootstrapped)?;
-    if !crypto::verify_password(&req.password, &phc).unwrap_or(false) {
+    if !crypto::verify_password_async(req.password.clone(), phc)
+        .await
+        .unwrap_or(false)
+    {
         return Err(ApiError::InvalidCredentials);
     }
 

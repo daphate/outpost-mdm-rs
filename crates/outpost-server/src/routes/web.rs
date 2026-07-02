@@ -459,7 +459,10 @@ async fn login_submit(
             error: Some("Пароль не задан — обратитесь к администратору.".into()),
         });
     };
-    if !crypto::verify_password(&form.password, &phc).unwrap_or(false) {
+    if !crypto::verify_password_async(form.password.clone(), phc)
+        .await
+        .unwrap_or(false)
+    {
         return render(LoginTemplate {
             error: Some("Неверный логин или пароль.".into()),
         });
@@ -1121,13 +1124,12 @@ async fn try_applications_upload(
     state: &AppState,
     mut multipart: Multipart,
 ) -> Result<(), String> {
-    use sha2::{Digest, Sha256};
     let mut package_name = String::new();
     let mut display_name: Option<String> = None;
     let mut kind = "apk".to_string();
     let mut version_code: Option<i64> = None;
     let mut version_name = String::new();
-    let mut file_bytes: Option<Vec<u8>> = None;
+    let mut file_bytes: Option<axum::body::Bytes> = None;
     let mut file_original: Option<String> = None;
     let mut file_content_type: Option<String> = None;
 
@@ -1169,8 +1171,10 @@ async fn try_applications_upload(
             "file" => {
                 file_original = field.file_name().map(|s| s.to_string());
                 file_content_type = field.content_type().map(|s| s.to_string());
+                // Держим тело как Bytes (ref-counted) — не копируем до 200 МБ в
+                // отдельный Vec (пик upload'а иначе ×2, впритык к cgroup-лимиту).
                 let data = field.bytes().await.map_err(|e| format!("file read: {e}"))?;
-                file_bytes = Some(data.to_vec());
+                file_bytes = Some(data);
             }
             _ => {}
         }
@@ -1198,9 +1202,9 @@ async fn try_applications_upload(
             "storage write failed".to_string()
         })?;
 
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    let sha = hex::encode(hasher.finalize());
+    // sha256 уже посчитан внутри write_bytes (content-addressed именование) —
+    // переиспользуем, а не хешируем те же ≤200 МБ второй раз.
+    let sha = stored.sha256.clone();
 
     let mut tx = state.db.begin().await.map_err(|e| {
         tracing::error!(error = %e, "tx begin failed");
@@ -7265,7 +7269,21 @@ async fn me_2fa_verify(
             return Ok(resp);
         }
     };
-    // Generate 10 single-use recovery codes; show them once.
+    // Generate 10 single-use recovery codes; show them once. Хешируем argon2 ×10
+    // ВНЕ транзакции и вне async-runtime (spawn_blocking): это до ~секунды CPU —
+    // держать на ней single-writer SQLite (открытую tx) и async-worker нельзя.
+    let plain_codes: Vec<String> = (0..10).map(|_| generate_recovery_code()).collect();
+    let to_hash = plain_codes.clone();
+    let hashes: Vec<String> = tokio::task::spawn_blocking(move || {
+        to_hash
+            .iter()
+            .map(|c| crypto::hash_password(c))
+            .collect::<anyhow::Result<Vec<_>>>()
+    })
+    .await
+    .map_err(|_| ApiError::Internal)?
+    .map_err(|_| ApiError::Internal)?;
+
     let mut tx = state.db.begin().await?;
     // Фиксируем timestep включения как «последний использованный» — тот же код
     // нельзя будет сразу переиграть на логине (replay-защита, RFC 6238 §5.2).
@@ -7281,16 +7299,12 @@ async fn me_2fa_verify(
         .bind(user.id)
         .execute(&mut *tx)
         .await?;
-    let mut plain_codes = Vec::with_capacity(10);
-    for _ in 0..10 {
-        let code = generate_recovery_code();
-        let hash = crypto::hash_password(&code).map_err(|_| ApiError::Internal)?;
+    for hash in &hashes {
         sqlx::query("INSERT INTO totp_recovery_codes (user_id, code_hash) VALUES (?, ?)")
             .bind(user.id)
-            .bind(&hash)
+            .bind(hash)
             .execute(&mut *tx)
             .await?;
-        plain_codes.push(code);
     }
     tx.commit().await?;
     let mut resp = render(Me2faTemplate {

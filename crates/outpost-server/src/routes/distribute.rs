@@ -235,8 +235,15 @@ pub async fn do_distribute_file(
     // 3. Encrypt blob once (random DEK + IV) — in-place: plaintext-буфер
     //    переходит во владение encrypt_blob и на месте становится ciphertext'ом
     //    (без второй копии размером с файл — см. distribution::encrypt_blob).
+    //    Считаем на blocking-пуле: AES-256-GCM + 2×SHA-256 до 200 МБ — это
+    //    секунды CPU, на async-worker'е они бы застопорили runtime.
     //    Wrap DEK per-recipient.
-    let (blob, dek) = distribution::encrypt_blob(plaintext)
+    let (blob, dek) = tokio::task::spawn_blocking(move || distribution::encrypt_blob(plaintext))
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "encrypt_blob task join failed");
+            ApiError::Internal
+        })?
         .map_err(|e| ApiError::BadRequest(format!("encrypt_blob: {e}")))?;
 
     // 4. Persist blob to local disk under $APP_FILES_DIR/encrypted/<random_id>.bin.

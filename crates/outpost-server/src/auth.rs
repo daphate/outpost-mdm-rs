@@ -37,6 +37,24 @@ pub fn verify_password(password: &str, phc: &str) -> Result<bool> {
         .is_ok())
 }
 
+/// Async wrapper around [`verify_password`]: runs the CPU-bound argon2 verify
+/// (tens–hundreds of ms by design) on the blocking pool so it doesn't stall
+/// the async runtime. Use on request hot-paths (login); the sync version is
+/// fine for one-off startup/admin actions.
+pub async fn verify_password_async(password: String, phc: String) -> Result<bool> {
+    tokio::task::spawn_blocking(move || verify_password(&password, &phc))
+        .await
+        .map_err(|e| anyhow!("verify_password join: {e}"))?
+}
+
+/// Async wrapper around [`hash_password`] — runs argon2 hashing on the blocking
+/// pool. Prefer for request paths that hash (e.g. batch recovery-code hashing).
+pub async fn hash_password_async(password: String) -> Result<String> {
+    tokio::task::spawn_blocking(move || hash_password(&password))
+        .await
+        .map_err(|e| anyhow!("hash_password join: {e}"))?
+}
+
 /// Generate a cryptographically-strong alphanumeric password of `len`
 /// characters. ~6 bits of entropy per character.
 pub fn generate_password(len: usize) -> String {
