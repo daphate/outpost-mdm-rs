@@ -23,7 +23,7 @@ use crate::distribution;
 use crate::error::ApiError;
 use crate::permission::require_permission;
 use crate::state::AppState;
-use axum::body::Bytes;
+use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -506,20 +506,31 @@ async fn fetch_blob(
         .app_files_dir
         .join("encrypted")
         .join(format!("{sha}.bin"));
-    let bytes = tokio::fs::read(&blob_path).await.map_err(|e| {
+    let file = tokio::fs::File::open(&blob_path).await.map_err(|e| {
         tracing::error!(error = %e, %sha, "blob file missing on disk");
         ApiError::NotFound
     })?;
-    if (bytes.len() as i64) != size {
-        tracing::warn!(
-            on_disk = bytes.len(),
-            recorded = size,
-            "blob size mismatch — possible corruption"
-        );
-    }
+    // Стримим ciphertext чанками, а не грузим весь blob (до 200 МБ) в память:
+    // при fleet-раздаче параллельные device-скачивания иначе выбивали бы
+    // cgroup MemoryMax=512M → OOM-kill (тот же класс, что фикс encrypt_blob).
+    // Content-Length берём из фактического размера файла на диске; при
+    // расхождении с записанным size — warning (возможная порча blob'а).
+    let on_disk_len = match tokio::fs::metadata(&blob_path).await {
+        Ok(m) => {
+            let len = m.len();
+            if (len as i64) != size {
+                tracing::warn!(
+                    on_disk = len,
+                    recorded = size,
+                    "blob size mismatch — possible corruption"
+                );
+            }
+            Some(len)
+        }
+        Err(_) => None,
+    };
 
-    let body = Bytes::from(bytes);
-    let mut resp = body.into_response();
+    let mut resp = Body::from_stream(tokio_util::io::ReaderStream::new(file)).into_response();
     resp.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/octet-stream"),
@@ -528,5 +539,9 @@ async fn fetch_blob(
         header::CACHE_CONTROL,
         HeaderValue::from_static("private, no-store"),
     );
+    if let Some(len) = on_disk_len {
+        resp.headers_mut()
+            .insert(header::CONTENT_LENGTH, HeaderValue::from(len));
+    }
     Ok(resp)
 }

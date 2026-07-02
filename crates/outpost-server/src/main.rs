@@ -63,9 +63,12 @@ async fn main() -> Result<()> {
         cfg.cloudru_secret.as_deref(),
     ) {
         (Some(t), Some(k), Some(s)) => {
+            // char-safe усечение: байтовый срез &k[..8] паниковал бы, попади
+            // граница в середину многобайтового UTF-8 (panic="abort" на старте).
+            let key_id_prefix: String = k.chars().take(8).collect();
             tracing::info!(
                 tenant_id = t,
-                key_id_prefix = &k[..k.len().min(8)],
+                key_id_prefix = %key_id_prefix,
                 bucket = %cfg.cloudru_bucket,
                 apk_key = %cfg.cloudru_apk_key,
                 "Cloud.ru presigner enabled"

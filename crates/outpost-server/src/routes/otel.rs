@@ -22,7 +22,6 @@
 //! 400; transport errors are 5xx).
 
 use axum::Router;
-use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
@@ -507,7 +506,3 @@ fn severity_text_from_number(n: i64) -> &'static str {
         _ => "UNSPECIFIED",
     }
 }
-
-// `Bytes` import is kept for future raw-body handling (e.g. protobuf).
-#[allow(dead_code)]
-fn _unused(_b: Bytes) {}

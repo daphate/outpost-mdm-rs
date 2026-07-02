@@ -75,6 +75,16 @@ impl Config {
             .map(|s| s.parse::<i64>().context("parse SESSION_TTL_SECS"))
             .transpose()?
             .unwrap_or(DEFAULT_SESSION_TTL_SECS);
+        // Валидируем диапазон на старте (fail-fast), иначе абсурдное значение
+        // роняло бы первый же login/enroll: chrono::Duration::seconds + Utc::now()
+        // переполняются и паникуют (panic="abort"), а <=0 даёт мгновенно
+        // истёкшие сессии. 60 с .. 10 лет — с запасом покрывает 90-дневный
+        // device-TTL.
+        if !(60..=315_360_000).contains(&session_ttl_secs) {
+            bail!(
+                "SESSION_TTL_SECS out of range ({session_ttl_secs}); expected 60..=315360000 (10 years)"
+            );
+        }
         let max_body_bytes = env::var("MAX_BODY_BYTES")
             .ok()
             .map(|s| s.parse::<usize>().context("parse MAX_BODY_BYTES"))

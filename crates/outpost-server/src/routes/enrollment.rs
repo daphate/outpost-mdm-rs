@@ -175,8 +175,11 @@ async fn enroll(
             .await?;
     let (customer_id, serial, stored_secret) = row.ok_or(ApiError::Unauthorized)?;
     let stored = stored_secret.ok_or(ApiError::Unauthorized)?;
-    if stored != req.enrollment_secret {
-        // Avoid leaking timing — but this is internal stub, plain compare.
+    // Constant-time сравнение enrollment-секрета — не течём таймингом. ct_eq на
+    // срезах разной длины вернёт 0 (длина секрета фиксирована и не чувствительна).
+    let secret_ok: bool =
+        subtle::ConstantTimeEq::ct_eq(stored.as_bytes(), req.enrollment_secret.as_bytes()).into();
+    if !secret_ok {
         return Err(ApiError::Unauthorized);
     }
     // Clear secret (single use), mark enrolled, capture initial versions.

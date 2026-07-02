@@ -39,25 +39,24 @@ pub fn otpauth_uri(secret: &str, issuer: &str, account: &str) -> String {
 /// Verify a 6-digit user-supplied code against the secret, allowing ±1
 /// 30-second step of clock skew (so 90 seconds of valid window total).
 ///
-/// Returns `true` if the code matches the current, previous, or next step.
-pub fn verify(secret_b32: &str, code: &str) -> bool {
+/// Returns `Some(step)` — the matched 30-second timestep — if the code is
+/// valid for the current, previous, or next step; `None` otherwise. Callers
+/// use the returned step for replay protection (persist the last accepted step
+/// and reject any code whose step is `<=` it), per RFC 6238 §5.2.
+pub fn verify(secret_b32: &str, code: &str) -> Option<i64> {
     if code.len() != DIGITS as usize || !code.chars().all(|c| c.is_ascii_digit()) {
-        return false;
+        return None;
     }
-    let Some(secret) = base32::decode(Alphabet::Rfc4648 { padding: false }, secret_b32) else {
-        return false;
-    };
-    let Ok(expected_num) = code.parse::<u32>() else {
-        return false;
-    };
-    let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        Ok(d) => d.as_secs(),
-        Err(_) => return false,
-    };
+    let secret = base32::decode(Alphabet::Rfc4648 { padding: false }, secret_b32)?;
+    let expected_num = code.parse::<u32>().ok()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
     let current_step = (now / STEP_SECONDS) as i64;
     for offset in -SKEW_STEPS..=SKEW_STEPS {
-        let step = (current_step + offset) as u64;
-        let candidate = compute_code(&secret, step);
+        let step = current_step + offset;
+        let candidate = compute_code(&secret, step.max(0) as u64);
         // Constant-time compare on the 4-byte numeric value.
         if subtle::ConstantTimeEq::ct_eq(
             &candidate.to_le_bytes()[..],
@@ -65,10 +64,10 @@ pub fn verify(secret_b32: &str, code: &str) -> bool {
         )
         .into()
         {
-            return true;
+            return Some(step);
         }
     }
-    false
+    None
 }
 
 fn compute_code(secret: &[u8], step: u64) -> u32 {
@@ -117,10 +116,10 @@ mod tests {
     #[test]
     fn verify_rejects_garbage() {
         let s = generate_secret();
-        assert!(!verify(&s, "abc123"));
-        assert!(!verify(&s, "12345"));
-        assert!(!verify(&s, "1234567"));
-        assert!(!verify(&s, ""));
+        assert!(verify(&s, "abc123").is_none());
+        assert!(verify(&s, "12345").is_none());
+        assert!(verify(&s, "1234567").is_none());
+        assert!(verify(&s, "").is_none());
     }
 
     #[test]
@@ -133,7 +132,7 @@ mod tests {
             .unwrap()
             .as_secs();
         let code = totp_custom::<Sha1>(30, 6, &secret, now);
-        assert!(verify(&s, &code), "current-step code must verify");
+        assert!(verify(&s, &code).is_some(), "current-step code must verify");
     }
 
     #[test]
@@ -147,6 +146,6 @@ mod tests {
             .as_secs();
         let prev_step_time = now.saturating_sub(30);
         let code = totp_custom::<Sha1>(30, 6, &secret, prev_step_time);
-        assert!(verify(&s, &code), "previous-step code must verify");
+        assert!(verify(&s, &code).is_some(), "previous-step code must verify");
     }
 }

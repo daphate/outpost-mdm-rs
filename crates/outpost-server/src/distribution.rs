@@ -23,6 +23,7 @@ use p256::ecdh::EphemeralSecret;
 use p256::elliptic_curve::sec1::ToEncodedPoint;
 use rand_core::{OsRng, RngCore};
 use sha2::Sha256;
+use zeroize::Zeroizing;
 
 /// Размер DEK (data-encryption key) — 32 bytes (AES-256).
 pub const DEK_LEN: usize = 32;
@@ -82,9 +83,12 @@ pub struct BlobCiphertext {
 /// и ядро убивало процесс OOM-killer'ом (502 на форме «Распространить файл»).
 /// In-place шифрование убирает вторую копию: пик ≈ размер файла, не ×2.
 /// Wire-формат при этом байт-в-байт прежний (AES-256-GCM, detached tag).
-pub fn encrypt_blob(mut plaintext: Vec<u8>) -> Result<(BlobCiphertext, [u8; DEK_LEN])> {
-    let mut dek = [0u8; DEK_LEN];
-    OsRng.fill_bytes(&mut dek);
+pub fn encrypt_blob(mut plaintext: Vec<u8>) -> Result<(BlobCiphertext, Zeroizing<[u8; DEK_LEN]>)> {
+    // DEK в Zeroizing — зануляется при drop'е (у caller'а после per-recipient
+    // wrap'а). Ограничения zeroize (копии на стеке/в регистрах) осознаём —
+    // это сокращение окна экспозиции, не герметичная гарантия.
+    let mut dek = Zeroizing::new([0u8; DEK_LEN]);
+    OsRng.fill_bytes(&mut dek[..]);
 
     let mut iv = [0u8; IV_LEN];
     OsRng.fill_bytes(&mut iv);
@@ -94,7 +98,7 @@ pub fn encrypt_blob(mut plaintext: Vec<u8>) -> Result<(BlobCiphertext, [u8; DEK_
     let plaintext_len = plaintext.len();
     let plain_sha = hex_sha256(&plaintext);
 
-    let cipher = Aes256Gcm::new_from_slice(&dek).context("aes-gcm init")?;
+    let cipher = Aes256Gcm::new_from_slice(&dek[..]).context("aes-gcm init")?;
     // In-place AEAD: шифрует `plaintext` на месте, tag возвращается отдельно.
     // Никакой второй аллокации размером с файл.
     let tag_ga = cipher
@@ -160,14 +164,16 @@ pub fn encrypt_for_recipient(
     info.extend_from_slice(recipient_device_id.to_string().as_bytes());
 
     let hk = Hkdf::<Sha256>::new(None, shared.raw_secret_bytes().as_slice());
-    let mut kek = [0u8; KEK_LEN];
-    hk.expand(&info, &mut kek)
+    // KEK в Zeroizing — зануляется при выходе из функции. `shared` (p256
+    // SharedSecret) сам зануляется на drop'е.
+    let mut kek = Zeroizing::new([0u8; KEK_LEN]);
+    hk.expand(&info, &mut kek[..])
         .map_err(|e| anyhow!("hkdf expand: {e}"))?;
 
     let mut wrapped_dek_iv = [0u8; IV_LEN];
     OsRng.fill_bytes(&mut wrapped_dek_iv);
 
-    let cipher = Aes256Gcm::new_from_slice(&kek).context("kek init")?;
+    let cipher = Aes256Gcm::new_from_slice(&kek[..]).context("kek init")?;
     let wrapped_dek = cipher
         .encrypt(
             Nonce::from_slice(&wrapped_dek_iv),

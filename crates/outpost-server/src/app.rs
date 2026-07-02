@@ -14,7 +14,6 @@ use serde::Serialize;
 use std::time::Duration;
 use tower_http::{
     compression::CompressionLayer,
-    cors::CorsLayer,
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     set_header::SetResponseHeaderLayer,
     timeout::TimeoutLayer,
@@ -158,10 +157,31 @@ pub fn build_router(state: AppState) -> Router {
             "permissions-policy",
             "camera=(), microphone=(), geolocation=()",
         ))
+        // Content-Security-Policy. 'unsafe-inline'/'unsafe-eval' на script-src
+        // вынужденные: admin-UI содержит inline-скрипты в шаблонах, а Tailwind
+        // Play-CDN JIT-runtime (вшит в /static/tailwind.js) использует eval для
+        // генерации классов. Даже с этими послаблениями CSP реально ограничивает
+        // источники ('self'), запрещает object/embed, base-uri hijack, framing
+        // (антикликджекинг) и cross-origin form-action. Ужесточение до nonce'ов
+        // требует переработки шаблонов — отдельная задача.
+        .layer(set_header_if_absent(
+            "content-security-policy",
+            "default-src 'self'; \
+             script-src 'self' 'unsafe-inline' 'unsafe-eval'; \
+             style-src 'self' 'unsafe-inline'; \
+             img-src 'self' data:; \
+             connect-src 'self'; \
+             object-src 'none'; \
+             base-uri 'self'; \
+             frame-ancestors 'none'; \
+             form-action 'self'",
+        ))
         .layer(TraceLayer::new_for_http())
         .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
         .layer(SetRequestIdLayer::new(request_id_header, MakeRequestUuid))
-        .layer(CorsLayer::permissive())
+        // CORS-слой убран: admin-UI работает same-origin (htmx + вшитая статика),
+        // а нативные Android-клиенты не браузеры — CORS к ним не применяется.
+        // Permissive-CORS на админке был лишним ослаблением.
         .layer(CompressionLayer::new())
         .layer(DefaultBodyLimit::max(max_body))
 }

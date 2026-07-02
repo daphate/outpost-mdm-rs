@@ -18,10 +18,12 @@ description = "Outpost MDM — field-grade device management server (Rust)"
 [workspace.dependencies]
 # async runtime
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "io-util", "time", "fs", "sync"] }
+# ReaderStream — стриминг файловых тел ответов без буферизации целого файла в RAM
+tokio-util = { version = "0.7", features = ["io"] }
 # HTTP framework
 axum = "0.8"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["trace", "cors", "request-id", "compression-gzip", "timeout", "set-header", "limit"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "request-id", "compression-gzip", "timeout", "set-header"] }
 # serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -40,7 +42,7 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate", "chr
 askama = "0.13"
 # auth
 argon2 = "0.5"
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
 # crypto helpers (HMAC for signed URLs)
 hmac = "0.12"
@@ -53,6 +55,8 @@ hex = "0.4"
 p256 = { version = "0.13", features = ["ecdh", "pkcs8", "pem"] }
 hkdf = "0.12"
 aes-gcm = "0.10"
+# зануление эфемерных ключей (DEK/KEK) после использования
+zeroize = "1"
 rand_core = { version = "0.6", features = ["std"] }
 # QR-code SVG generation for device enrollment payload
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
@@ -66,7 +70,7 @@ base64 = "0.22"
 # HTTP client for the APK watcher — polls R2 mirror manifest, parses release
 # pointers, registers new APK versions in application_versions. rustls-tls
 # чтобы избежать OpenSSL зависимости в musl/static builds.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [profile.release]
 opt-level = "z"          # optimize for size — 512 MB box

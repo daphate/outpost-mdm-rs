@@ -256,13 +256,6 @@ pub struct WebUser {
 }
 
 impl WebUser {
-    /// Translated strings for this user's current locale.
-    pub fn s(&self) -> &'static crate::i18n::Strings {
-        self.locale.strings()
-    }
-}
-
-impl WebUser {
     /// Reject early if the current user is not super-admin.
     ///
     /// The lint says `Result<_, Response>` carries a ~150-byte Err
@@ -2171,7 +2164,9 @@ fn percent_encode_minimal(s: &str) -> String {
 
 fn set_flash_cookie(resp: &mut Response, msg: &str) {
     let encoded = percent_encode_minimal(msg);
-    let cookie = format!("outpost_flash={encoded}; Path=/; SameSite=Lax; Max-Age=30");
+    // HttpOnly: flash иногда несёт разовый пароль (admin-reset) — недоступность
+    // для JS/XSS обязательна. Читается только сервером (FlashCookie-экстрактор).
+    let cookie = format!("outpost_flash={encoded}; Path=/; HttpOnly; SameSite=Lax; Max-Age=30");
     if let Ok(v) = HeaderValue::from_str(&cookie) {
         // Append (not insert) so we don't stomp on Set-Session-Cookie / others.
         resp.headers_mut().append(header::SET_COOKIE, v);
@@ -2179,7 +2174,7 @@ fn set_flash_cookie(resp: &mut Response, msg: &str) {
 }
 
 fn clear_flash_cookie(resp: &mut Response) {
-    let cookie = "outpost_flash=; Path=/; SameSite=Lax; Max-Age=0";
+    let cookie = "outpost_flash=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0";
     if let Ok(v) = HeaderValue::from_str(cookie) {
         resp.headers_mut().append(header::SET_COOKIE, v);
     }
@@ -2614,7 +2609,14 @@ async fn me_password_post(
     .bind(user.id)
     .execute(&state.db)
     .await?;
-    Ok(redirect_with_flash("/me/password", "Password updated."))
+    // OWASP session management: смена пароля инвалидирует ВСЕ сессии пользователя
+    // (в т.ч. на других устройствах и текущую) — уводим на /login для повторной
+    // аутентификации уже новым паролем.
+    let _ = session::revoke_all_for_subject(&state.db, session::KIND_USER, user.id).await;
+    let mut resp = Redirect::to("/login").into_response();
+    clear_session_cookie(&mut resp);
+    set_flash_cookie(&mut resp, "Пароль обновлён. Войдите заново.");
+    Ok(resp)
 }
 
 // =====================================================================
@@ -4158,10 +4160,15 @@ async fn users_admin_reset_password(
     .execute(&state.db)
     .await;
     match res {
-        Ok(r) if r.rows_affected() > 0 => redirect_with_flash(
-            "/users",
-            &format!("New one-time password (must change on first login): {one_time}"),
-        ),
+        Ok(r) if r.rows_affected() > 0 => {
+            // Сброс пароля админом инвалидирует активные сессии сброшенного
+            // пользователя — старый токен не должен пережить смену пароля.
+            let _ = session::revoke_all_for_subject(&state.db, session::KIND_USER, id).await;
+            redirect_with_flash(
+                "/users",
+                &format!("New one-time password (must change on first login): {one_time}"),
+            )
+        }
         Ok(_) => redirect_with_flash("/users", "User not found."),
         Err(e) => {
             tracing::error!(error = %e, "admin_reset_password failed");
@@ -5658,13 +5665,16 @@ async fn render_settings(
     Ok(resp)
 }
 
+/// Decode a JSON-encoded string setting back to its raw value.
+///
+/// Values written by [`json_quote`] are valid JSON strings, so parse them
+/// with `serde_json` — this correctly un-escapes `\"`, `\\`, control chars
+/// etc. Legacy values that were stored without quotes (or otherwise fail to
+/// parse as a JSON string) fall back to the trimmed raw text, preserving
+/// backward compatibility with rows written before the round-trip fix.
 fn strip_json_quotes(s: &str) -> String {
     let t = s.trim();
-    if let Some(stripped) = t.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
-        stripped.to_string()
-    } else {
-        t.to_string()
-    }
+    serde_json::from_str::<String>(t).unwrap_or_else(|_| t.to_string())
 }
 
 #[derive(Debug, Deserialize)]
@@ -5767,21 +5777,16 @@ async fn upsert_setting<'a>(
     Ok(())
 }
 
+/// JSON-encode a string setting for storage in `settings.value_json`.
+///
+/// Uses `serde_json`, which escapes ALL control characters (U+0000..U+001F),
+/// not just `\n \r \t`. The previous hand-rolled encoder left other control
+/// chars unescaped, producing invalid JSON — SQLite `json_extract` then
+/// failed (500 on enrollment-link generation) and the round-trip via
+/// [`strip_json_quotes`] corrupted values with each re-save. Serializing a
+/// `&str` never fails, so the fallback is unreachable in practice.
 fn json_quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            _ => out.push(c),
-        }
-    }
-    out.push('"');
-    out
+    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
 }
 
 // ----- /profile self-edit --------------------------------------------------
@@ -7241,28 +7246,37 @@ async fn me_2fa_verify(
     let Some(secret) = secret else {
         return Ok(Redirect::to("/me/2fa").into_response());
     };
-    if !crate::totp::verify(&secret, req.code.trim()) {
-        // Re-render with error.
-        let uri = crate::totp::otpauth_uri(&secret, "Outpost MDM", &user.login);
-        let qr = qrcode_svg(&uri);
-        let mut resp = render(Me2faTemplate {
-            user_login: user.login,
-            totp_enabled: false,
-            setup_secret: Some(secret),
-            qr_svg: qr,
-            flash: None,
-            error: Some("Code did not match. Try again — codes change every 30 s.".into()),
-            recovery_codes: None,
-        });
-        clear_flash_cookie(&mut resp);
-        return Ok(resp);
-    }
+    let matched_step = match crate::totp::verify(&secret, req.code.trim()) {
+        Some(step) => step,
+        None => {
+            // Re-render with error.
+            let uri = crate::totp::otpauth_uri(&secret, "Outpost MDM", &user.login);
+            let qr = qrcode_svg(&uri);
+            let mut resp = render(Me2faTemplate {
+                user_login: user.login,
+                totp_enabled: false,
+                setup_secret: Some(secret),
+                qr_svg: qr,
+                flash: None,
+                error: Some("Code did not match. Try again — codes change every 30 s.".into()),
+                recovery_codes: None,
+            });
+            clear_flash_cookie(&mut resp);
+            return Ok(resp);
+        }
+    };
     // Generate 10 single-use recovery codes; show them once.
     let mut tx = state.db.begin().await?;
-    sqlx::query("UPDATE users SET totp_enabled = 1, updated_at = datetime('now') WHERE id = ?")
-        .bind(user.id)
-        .execute(&mut *tx)
-        .await?;
+    // Фиксируем timestep включения как «последний использованный» — тот же код
+    // нельзя будет сразу переиграть на логине (replay-защита, RFC 6238 §5.2).
+    sqlx::query(
+        "UPDATE users SET totp_enabled = 1, totp_last_step = ?, updated_at = datetime('now') \
+         WHERE id = ?",
+    )
+    .bind(matched_step)
+    .bind(user.id)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("DELETE FROM totp_recovery_codes WHERE user_id = ?")
         .bind(user.id)
         .execute(&mut *tx)
@@ -7414,8 +7428,27 @@ async fn login_2fa_submit(
 
     let mut ok = false;
     let code = req.code.as_deref().unwrap_or("").trim();
-    if !code.is_empty() && crate::totp::verify(&secret, code) {
-        ok = true;
+    if !code.is_empty()
+        && let Some(step) = crate::totp::verify(&secret, code)
+    {
+        // Replay-защита: принимаем код только со timestep строго больше
+        // последнего использованного, затем фиксируем новый. Валидный, но уже
+        // использованный код (тот же 30-сек шаг) отвергается.
+        let last: Option<i64> = sqlx::query_scalar("SELECT totp_last_step FROM users WHERE id = ?")
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .flatten();
+        if last.is_none_or(|l| step > l) {
+            let _ = sqlx::query("UPDATE users SET totp_last_step = ? WHERE id = ?")
+                .bind(step)
+                .bind(user_id)
+                .execute(&state.db)
+                .await;
+            ok = true;
+        }
     }
     if !ok {
         let recovery = req.recovery_code.as_deref().unwrap_or("").trim();

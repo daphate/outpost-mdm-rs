@@ -15,7 +15,6 @@
 
 use axum::Router;
 use axum::extract::State;
-use axum::http::StatusCode;
 use axum::http::header;
 use axum::response::IntoResponse;
 use axum::response::Response;
@@ -256,9 +255,4 @@ async fn scrape(State(state): State<AppState>) -> Response {
 
 fn escape_prom_label(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-#[allow(dead_code)]
-fn _kept() -> StatusCode {
-    StatusCode::OK
 }

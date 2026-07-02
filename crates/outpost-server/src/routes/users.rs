@@ -256,5 +256,8 @@ async fn set_password(
     if res.rows_affected() == 0 {
         return Err(ApiError::NotFound);
     }
+    // Смена пароля инвалидирует активные сессии затронутого пользователя
+    // (OWASP session management) — включая собственную сессию вызывающего.
+    let _ = crate::session::revoke_all_for_subject(&state.db, crate::session::KIND_USER, id).await;
     Ok(StatusCode::NO_CONTENT)
 }

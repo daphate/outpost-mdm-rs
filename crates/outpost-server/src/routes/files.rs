@@ -20,7 +20,6 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncReadExt;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -265,7 +264,7 @@ async fn download_signed(State(state): State<AppState>, Path(token): Path<String
             return (StatusCode::INTERNAL_SERVER_ERROR, "internal").into_response();
         }
     };
-    let Some((file_path, original_name, content_type, file_size_bytes)) = row else {
+    let Some((file_path, original_name, content_type, _file_size_bytes)) = row else {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     };
 
@@ -277,7 +276,7 @@ async fn download_signed(State(state): State<AppState>, Path(token): Path<String
         }
     };
 
-    let mut file = match tokio::fs::File::open(&abs).await {
+    let file = match tokio::fs::File::open(&abs).await {
         Ok(f) => f,
         Err(e) => {
             tracing::error!(error = %e, path = %abs.display(), "signed-url open");
@@ -285,20 +284,29 @@ async fn download_signed(State(state): State<AppState>, Path(token): Path<String
         }
     };
 
-    let mut bytes = Vec::with_capacity(file_size_bytes as usize);
-    if let Err(e) = file.read_to_end(&mut bytes).await {
-        tracing::error!(error = %e, "signed-url read_to_end");
-        return (StatusCode::INTERNAL_SERVER_ERROR, "internal").into_response();
-    }
-
     let ct = content_type.unwrap_or_else(|| "application/octet-stream".into());
-    Response::builder()
+    // Стримим файл чанками через ReaderStream, а не буферизуем целиком в RAM.
+    // Прежний `Vec::with_capacity(file_size_bytes as usize)` (а) паниковал
+    // capacity-overflow, если file_size_bytes в БД оказывался отрицательным
+    // (panic="abort" → падение всего процесса), и (б) на APK до 200 МБ под
+    // cgroup MemoryMax=512M выбивал OOM. Content-Length берём из фактического
+    // размера файла на диске, не из (потенциально устаревшего) значения в БД.
+    let on_disk_len = tokio::fs::metadata(&abs).await.ok().map(|m| m.len());
+    let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, ct)
         .header(
             header::CONTENT_DISPOSITION,
             format!("attachment; filename=\"{original_name}\""),
-        )
-        .body(Body::from(bytes))
-        .unwrap()
+        );
+    if let Some(len) = on_disk_len {
+        builder = builder.header(header::CONTENT_LENGTH, len);
+    }
+    match builder.body(Body::from_stream(tokio_util::io::ReaderStream::new(file))) {
+        Ok(resp) => resp,
+        Err(e) => {
+            tracing::error!(error = %e, "signed-url response build");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal").into_response()
+        }
+    }
 }
