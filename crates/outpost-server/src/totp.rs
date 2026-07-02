@@ -146,6 +146,9 @@ mod tests {
             .as_secs();
         let prev_step_time = now.saturating_sub(30);
         let code = totp_custom::<Sha1>(30, 6, &secret, prev_step_time);
-        assert!(verify(&s, &code).is_some(), "previous-step code must verify");
+        assert!(
+            verify(&s, &code).is_some(),
+            "previous-step code must verify"
+        );
     }
 }

@@ -128,7 +128,11 @@ pub async fn tick_once(pool: &SqlitePool) -> sqlx::Result<usize> {
     let retention_days = read_telemetry_retention_days(pool).await;
     match prune_telemetry(pool, retention_days).await {
         Ok(n) if n > 0 => {
-            tracing::info!(pruned = n, days = retention_days, "scheduler pruned old telemetry")
+            tracing::info!(
+                pruned = n,
+                days = retention_days,
+                "scheduler pruned old telemetry"
+            )
         }
         Err(e) => tracing::warn!(error = ?e, "telemetry retention prune failed"),
         _ => {}

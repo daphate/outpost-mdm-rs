@@ -2,6 +2,75 @@
 
 Notable changes to Outpost MDM. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.19.0] — 2026-07-02 — audit-driven refactor
+
+Проход по оптимизации и информационной безопасности на основе аудита кодовой
+базы (8 аудиторов по измерениям + адверсарная верификация каждой находки + web-
+research по axum/SQLite/крипто-практикам). Реализовано в ветке
+`refactor/v0.19-optimization` пятью протестированными батчами. Весь workspace-
+тест-suite зелёный (9 migrate + 116 lib + все интеграционные + doctests),
+`clippy -D warnings` и `fmt --check` чистые. **Device-facing wire-контракты не
+менялись** (`/api/v1/*`, payload'ы push-команд, крипто-формат P-256/HKDF/
+AES-GCM) — клиентам AR Hud перевыкатка не требуется.
+
+### Корректность и защита от паник (`panic="abort"` — любая паника валит процесс)
+
+- Настройки: самописные `json_quote`/`strip_json_quotes` заменены на `serde_json`.
+  Старый кодек экранировал лишь `\" \\ \n \r \t`, оставляя прочие управляющие
+  символы → невалидный `value_json` → 500 в `json_extract` при генерации
+  enrollment-ссылок, а round-trip портил значения при каждом пересохранении.
+- Стриминг файловых ответов (`/files/signed/{token}`, `fetch-encrypted-file`
+  blob) через `ReaderStream` вместо буферизации целого файла (до 200 МБ) в RAM.
+  Убрана паника `Vec::with_capacity(neg as usize)` при битом размере в БД.
+- `SESSION_TTL_SECS` валидируется при старте (fail-fast) вместо паники при первом
+  логине; char-safe усечение `CLOUDRU_KEY_ID` в стартовом логе.
+
+### Информационная безопасность
+
+- Content-Security-Policy (default-src 'self', заблокированы object/base/frame).
+- Убран `CorsLayer::permissive()` — админка same-origin, нативным клиентам CORS
+  не нужен.
+- Сессии отзываются при смене/сбросе пароля (OWASP session management).
+- TOTP replay-защита: код принимается только со timestep строго больше
+  последнего использованного (миграция 0029 `users.totp_last_step`, RFC 6238 §5.2).
+- Enrollment-секрет сравнивается в константное время (`subtle::ct_eq`).
+- Flash-cookie помечен `HttpOnly` (может нести разовый пароль после reset).
+- DEK/KEK оборачиваются в `zeroize::Zeroizing` в крипто-пути distribution.
+- `X-Forwarded-For` доверяется только при `TRUST_PROXY_HEADERS` (default on) —
+  иначе IP спуфится в обход login rate-limit при прямой экспозиции.
+
+### Производительность
+
+- Тяжёлый CPU уведён с async-runtime в `spawn_blocking`: шифрование blob'а
+  (AES-256-GCM + 2×SHA-256 до 200 МБ), argon2-verify на логине, батч из 10
+  argon2-хешей recovery-кодов (раньше ~секунда argon2 на runtime под открытой
+  write-транзакцией SQLite).
+- APK-upload: тело держится как ref-counted `Bytes` без копии в отдельный `Vec`
+  (пик был ×2, впритык к cgroup-лимиту 512M), sha256 переиспользуется из
+  `write_bytes` вместо повторного хеширования тех же ≤200 МБ.
+- SQLite-тюнинг: `cache_size=-65536` (64 МиБ), `temp_store=MEMORY`,
+  `optimize_on_close`.
+- Retention телеметрии: `device_logs/metrics/traces` чистятся старше
+  `telemetry.retention_days` (default 30) — раньше росли неограниченно на 2 ГБ VM.
+- Fan-out планировщика обёрнут в транзакцию (крах между вставками и `done` больше
+  не даёт повторную рассылку); `resolve_recipients` берёт один последний активный
+  ключ на устройство (нет дублей distribution'ов); индекс
+  `idx_push_messages_customer` (миграция 0030).
+
+### Чистка
+
+- Удалён мёртвый ~1050-строчный словарь переводов `i18n.rs` (`Strings` +
+  `strings_ru/en` + `WebUser::s()`) — в шаблоны никогда не был подключён; живой
+  cookie-переключатель языка оставлен. Удалены мёртвые заглушки, обрезаны
+  неиспользуемые cargo-features (reqwest http2+json, tower-http limit, uuid
+  serde; `tower` перенесён в dev-dependencies).
+
+### Отложено (задокументировано, ниже по важности для текущего масштаба)
+
+Распил `routes/web.rs` (7759 строк) на модули; транзакция OTLP-ingest + итерация
+JSON по ссылке; ограничение окна в prom `/metrics`; N+1 в ballistics-списках
+(фича за флагом, в проде OFF); атомарность activate/insert в apk_watcher.
+
 ## [0.18.22] — 2026-06-17
 
 ### Фикс OOM-kill при распространении крупного файла (encrypted distribution)
