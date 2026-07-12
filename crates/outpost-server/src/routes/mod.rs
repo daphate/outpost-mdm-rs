@@ -13,8 +13,11 @@ pub mod devices;
 pub mod distribute;
 pub mod enrollment;
 pub mod files;
+pub mod geo;
 pub mod groups;
 pub mod internal;
+pub mod live;
+pub mod markers;
 pub mod otel;
 pub mod prom;
 pub mod push;
@@ -34,6 +37,10 @@ pub fn api_v1(state: AppState) -> Router {
         .merge(devices::router())
         .merge(groups::router())
         .merge(units::router())
+        // Ф1: live situational-map framework (SSE + GeoJSON reads + marker ingest).
+        .merge(live::router())
+        .merge(geo::router())
+        .merge(markers::router())
         .merge(applications::router())
         .merge(configurations::router())
         .merge(users::router())

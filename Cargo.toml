@@ -20,6 +20,8 @@ description = "Outpost MDM — field-grade device management server (Rust)"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "io-util", "time", "fs", "sync"] }
 # ReaderStream — стриминг файловых тел ответов без буферизации целого файла в RAM
 tokio-util = { version = "0.7", features = ["io"] }
+# broadcast → SSE stream bridge for the live situational-map feed (Ф1)
+tokio-stream = { version = "0.1", features = ["sync"] }
 # HTTP framework
 axum = "0.8"
 tower = "0.5"

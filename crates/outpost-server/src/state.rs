@@ -6,6 +6,44 @@ use chrono_tz::Tz;
 use sqlx::SqlitePool;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use tokio::sync::broadcast;
+
+/// A live map update, pre-serialized once so fan-out to N SSE subscribers only
+/// clones the `Arc<str>`. Subscribers filter by `customer_id`.
+#[derive(Clone)]
+pub struct LiveEvent {
+    pub customer_id: i64,
+    /// SSE event name: "position" | "marker" | "resync".
+    pub name: &'static str,
+    /// Pre-serialized JSON payload.
+    pub data: Arc<str>,
+}
+
+/// Broadcast bus for the live situational maps (Ф1). Cloneable handle around a
+/// tokio broadcast sender; created once inside [`AppState::new`] so the
+/// constructor signature (and its test callers) stay unchanged.
+#[derive(Clone)]
+pub struct LiveBus(broadcast::Sender<LiveEvent>);
+
+impl LiveBus {
+    pub fn new() -> Self {
+        let (tx, _rx) = broadcast::channel(1024);
+        Self(tx)
+    }
+    pub fn subscribe(&self) -> broadcast::Receiver<LiveEvent> {
+        self.0.subscribe()
+    }
+    /// Publish an event; a send error just means there are no subscribers.
+    pub fn publish(&self, ev: LiveEvent) {
+        let _ = self.0.send(ev);
+    }
+}
+
+impl Default for LiveBus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// v0.18.16: выбираемый формат вывода datetime в admin UI. Хранится в
 /// `settings.server.datetime_format` как короткая строка-id (`ru` /
@@ -108,6 +146,8 @@ pub struct AppState {
     /// См. config::Config::ballistics_enabled + middleware
     /// `routes/ballistics.rs::feature_flag_layer`.
     pub ballistics_enabled: bool,
+    /// Ф1: live broadcast bus for the situational maps (positions/markers → SSE).
+    pub live: LiveBus,
 }
 
 impl AppState {
@@ -139,6 +179,7 @@ impl AppState {
             server_tz: Arc::new(RwLock::new(server_tz)),
             server_dt_format: Arc::new(RwLock::new(DateFormat::Ru)),
             ballistics_enabled,
+            live: LiveBus::new(),
         }
     }
 
