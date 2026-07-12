@@ -34,6 +34,7 @@ pub fn router() -> Router<AppState> {
         .route("/logout", get(logout))
         .route("/dashboard", get(dashboard))
         .route("/map/tactical", get(map_tactical))
+        .route("/map/antidrone", get(map_antidrone))
         // Devices: list, create form-target, per-device edit/enroll/push/delete.
         .route("/devices", get(devices_page))
         .route("/devices/new", post(devices_create))
@@ -662,6 +663,21 @@ struct MapTacticalTemplate {
 /// `devices.read` and customer scoping; this handler just renders the shell.
 async fn map_tactical(user: WebUser) -> Response {
     render(MapTacticalTemplate {
+        user_login: user.login,
+    })
+}
+
+#[derive(Template)]
+#[template(path = "map_antidrone.html")]
+struct MapAntidroneTemplate {
+    user_login: String,
+}
+
+/// Ф3: вид карты антидрона. Данные тянутся клиентом из
+/// `/api/v1/antidrone/scene` (федерация с ЦУП «Пеленг»); обработчик рендерит
+/// только оболочку.
+async fn map_antidrone(user: WebUser) -> Response {
+    render(MapAntidroneTemplate {
         user_login: user.login,
     })
 }

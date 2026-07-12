@@ -12,6 +12,7 @@ pub mod configurations;
 pub mod devices;
 pub mod distribute;
 pub mod enrollment;
+pub mod fed_bearing;
 pub mod files;
 pub mod geo;
 pub mod groups;
@@ -43,6 +44,8 @@ pub fn api_v1(state: AppState) -> Router {
         .merge(geo::router())
         .merge(markers::router())
         .merge(position::router())
+        // Ф3: федерация с ЦУП «Пеленг» (вид /map/antidrone).
+        .merge(fed_bearing::router())
         .merge(applications::router())
         .merge(configurations::router())
         .merge(users::router())

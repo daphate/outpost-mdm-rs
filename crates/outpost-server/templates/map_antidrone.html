@@ -1,0 +1,226 @@
+{% extends "base.html" %}
+
+{% block title %}Карта — антидрон{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="/static/maplibre-gl.css">
+<script src="/static/maplibre-gl.js"></script>
+{% raw %}
+<style>
+  #map { position: absolute; inset: 0; }
+  .maplibregl-popup-content { padding: 8px 10px; }
+</style>
+{% endraw %}
+{% endblock %}
+
+{% block body %}
+<div class="h-screen flex flex-col">
+  {% include "_nav.html" %}
+  <div class="flex-1 min-h-0 flex">
+    <div class="relative flex-1">
+      <div id="map"></div>
+      <div class="absolute top-3 left-3 z-10 bg-white/90 rounded-md shadow px-3 py-2 text-xs space-y-1">
+        <div class="font-semibold text-slate-700">Антидрон — «Пеленг»</div>
+        <div class="flex items-center gap-2"><span class="inline-block w-3 h-3 rounded-full bg-emerald-500"></span> узел в эфире</div>
+        <div class="flex items-center gap-2"><span class="inline-block w-3 h-3 rounded-full bg-red-600"></span> узел не отвечает</div>
+        <div class="flex items-center gap-2"><span class="inline-block w-3 h-3 rounded-full bg-slate-400"></span> не установлен</div>
+        <div class="flex items-center gap-2"><span class="inline-block w-4 h-0 border-t-2 border-amber-500"></span> пеленг</div>
+        <div class="flex items-center gap-2"><span class="inline-block w-3 h-3 rounded-full bg-fuchsia-600"></span> фикс цели</div>
+        <div id="conn" class="pt-1 text-slate-500">обновление: подключение…</div>
+      </div>
+    </div>
+    <aside class="w-80 shrink-0 bg-white border-l border-slate-200 overflow-y-auto">
+      <div class="p-3 border-b border-slate-200">
+        <div class="text-sm font-semibold text-slate-700">Тревоги <span id="alert-count" class="text-slate-400"></span></div>
+      </div>
+      <ul id="alert-list" class="divide-y divide-slate-100 text-sm"></ul>
+      <div class="p-3 border-t border-slate-200">
+        <div class="text-sm font-semibold text-slate-700">Узлы <span id="node-count" class="text-slate-400"></span></div>
+      </div>
+      <ul id="node-list" class="divide-y divide-slate-100 text-sm"></ul>
+    </aside>
+  </div>
+</div>
+
+{% raw %}
+<script>
+(function () {
+  const OSM_STYLE = {
+    version: 8,
+    sources: {
+      osm: { type: 'raster', tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'], tileSize: 256, attribution: '© OpenStreetMap contributors' }
+    },
+    layers: [{ id: 'osm', type: 'raster', source: 'osm' }]
+  };
+  const map = new maplibregl.Map({ container: 'map', style: OSM_STYLE, center: [37.6173, 55.7558], zoom: 9 });
+  map.addControl(new maplibregl.NavigationControl(), 'top-right');
+  map.addControl(new maplibregl.ScaleControl());
+
+  const POLL_MS = 3000;
+  const BEARING_LEN_DEG = 0.09; // длина луча пеленга (~10 км на широте Москвы)
+  const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  // Компасный курс + длина → смещение конечной точки (грубая проекция для луча).
+  function project(lat, lon, compassDeg, lenDeg) {
+    const rad = compassDeg * Math.PI / 180;
+    const dLat = Math.cos(rad) * lenDeg;
+    const dLon = Math.sin(rad) * lenDeg / Math.cos(lat * Math.PI / 180);
+    return [lon + dLon, lat + dLat];
+  }
+
+  // Окружность неопределённости фикса (радиус в метрах → полигон).
+  function circle(lat, lon, radiusM, steps) {
+    const coords = [];
+    const dLatM = 1 / 111320;
+    const dLonM = 1 / (111320 * Math.cos(lat * Math.PI / 180));
+    for (let i = 0; i <= steps; i++) {
+      const a = (i / steps) * 2 * Math.PI;
+      coords.push([lon + Math.cos(a) * radiusM * dLonM, lat + Math.sin(a) * radiusM * dLatM]);
+    }
+    return coords;
+  }
+
+  function bearingsToFC(list) {
+    return {
+      type: 'FeatureCollection',
+      features: (list || []).map(b => ({
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: [[b.lon, b.lat], project(b.lat, b.lon, b.az_compass, BEARING_LEN_DEG)] },
+        properties: { node_id: b.node_id, cls_name: b.cls_name, confirmed: b.confirmed }
+      }))
+    };
+  }
+
+  function fixesRingsFC(fc) {
+    const feats = [];
+    for (const f of (fc.features || [])) {
+      const [lon, lat] = f.geometry.coordinates;
+      const r = f.properties.semi_major_m || f.properties.sigma_m;
+      if (r && r > 0) {
+        feats.push({ type: 'Feature', geometry: { type: 'Polygon', coordinates: [circle(lat, lon, r, 48)] }, properties: {} });
+      }
+    }
+    return { type: 'FeatureCollection', features: feats };
+  }
+
+  function tracksToFC(list) {
+    return {
+      type: 'FeatureCollection',
+      features: (list || []).map(t => ({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [t.lon, t.lat] },
+        properties: { cls_name: t.cls_name, speed_ms: t.speed_ms }
+      }))
+    };
+  }
+
+  function renderNodeList(fc) {
+    const ul = document.getElementById('node-list');
+    const items = fc.features || [];
+    document.getElementById('node-count').textContent = '(' + items.length + ')';
+    ul.innerHTML = '';
+    for (const n of items) {
+      const p = n.properties;
+      const li = document.createElement('li');
+      li.className = 'px-3 py-2 hover:bg-slate-50 cursor-pointer';
+      const color = p.online ? 'bg-emerald-500' : (p.status === 'installed' ? 'bg-red-600' : 'bg-slate-400');
+      li.innerHTML = '<div class="flex items-center gap-2">' +
+        '<span class="inline-block w-2.5 h-2.5 rounded-full ' + color + '"></span>' +
+        '<span class="font-medium">' + esc(p.name || p.node_id || '—') + '</span></div>' +
+        '<div class="text-xs text-slate-500">' + (p.online ? 'в эфире' : 'нет сигнала') + '</div>';
+      li.onclick = () => map.easeTo({ center: n.geometry.coordinates, zoom: Math.max(map.getZoom(), 13) });
+      ul.appendChild(li);
+    }
+  }
+
+  function renderAlerts(list) {
+    const ul = document.getElementById('alert-list');
+    const items = list || [];
+    document.getElementById('alert-count').textContent = '(' + items.length + ')';
+    ul.innerHTML = '';
+    for (const a of items) {
+      const li = document.createElement('li');
+      const red = a.confirmed === 1 || a.verdict === 'confirmed_drone';
+      li.className = 'px-3 py-2 ' + (red ? 'bg-red-50' : 'bg-amber-50');
+      li.innerHTML = '<div class="font-medium ' + (red ? 'text-red-700' : 'text-amber-700') + '">' +
+        esc(a.kind || 'тревога') + (a.cls_name ? ' · ' + esc(a.cls_name) : '') + '</div>' +
+        '<div class="text-xs text-slate-600">' + esc(a.verdict || '') +
+        (a.node ? ' · узел ' + esc(a.node) : '') + '</div>';
+      if (a.lat != null && a.lon != null) {
+        li.classList.add('cursor-pointer');
+        li.onclick = () => map.easeTo({ center: [a.lon, a.lat], zoom: Math.max(map.getZoom(), 13) });
+      }
+      ul.appendChild(li);
+    }
+  }
+
+  let fitted = false;
+  async function poll() {
+    const conn = document.getElementById('conn');
+    try {
+      const d = await fetch('/api/v1/antidrone/scene', { credentials: 'same-origin' }).then(r => {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      });
+      conn.textContent = 'обновление: подключено';
+      const nodes = d.nodes || { type: 'FeatureCollection', features: [] };
+      map.getSource('nodes').setData(nodes);
+      map.getSource('bearings').setData(bearingsToFC(d.bearings));
+      const fixes = d.fixes || { type: 'FeatureCollection', features: [] };
+      map.getSource('fixes').setData(fixes);
+      map.getSource('fix-rings').setData(fixesRingsFC(fixes));
+      map.getSource('tracks').setData(tracksToFC(d.tracks));
+      renderNodeList(nodes);
+      renderAlerts(d.alerts);
+      if (!fitted && nodes.features.length) {
+        const b = new maplibregl.LngLatBounds();
+        nodes.features.forEach(f => b.extend(f.geometry.coordinates));
+        map.fitBounds(b, { padding: 80, maxZoom: 13 });
+        fitted = true;
+      }
+    } catch (e) {
+      conn.textContent = 'обновление: «Пеленг» недоступен';
+    }
+  }
+
+  map.on('load', () => {
+    map.addSource('fix-rings', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    map.addLayer({ id: 'fix-rings', type: 'fill', source: 'fix-rings', paint: { 'fill-color': '#c026d3', 'fill-opacity': 0.12 } });
+
+    map.addSource('bearings', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    map.addLayer({ id: 'bearings', type: 'line', source: 'bearings', paint: { 'line-color': '#f59e0b', 'line-width': 2, 'line-opacity': 0.75 } });
+
+    map.addSource('tracks', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    map.addLayer({ id: 'tracks', type: 'circle', source: 'tracks', paint: { 'circle-radius': 5, 'circle-color': '#7c3aed', 'circle-stroke-width': 1, 'circle-stroke-color': '#fff' } });
+
+    map.addSource('fixes', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    map.addLayer({ id: 'fixes', type: 'circle', source: 'fixes', paint: { 'circle-radius': 6, 'circle-color': '#c026d3', 'circle-stroke-width': 2, 'circle-stroke-color': '#fff' } });
+
+    map.addSource('nodes', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    map.addLayer({
+      id: 'nodes', type: 'circle', source: 'nodes',
+      paint: {
+        'circle-radius': 8,
+        'circle-color': ['case',
+          ['boolean', ['get', 'online'], false], '#10b981',
+          ['==', ['get', 'status'], 'installed'], '#dc2626',
+          '#94a3b8'],
+        'circle-stroke-width': 2, 'circle-stroke-color': '#111827'
+      }
+    });
+    map.on('click', 'nodes', (e) => {
+      const p = e.features[0].properties;
+      new maplibregl.Popup().setLngLat(e.features[0].geometry.coordinates)
+        .setHTML('<div style="font-size:12px"><b>' + esc(p.name || p.node_id) + '</b><br>' +
+          (p.online ? 'в эфире' : 'нет сигнала') + '</div>').addTo(map);
+    });
+    map.on('mouseenter', 'nodes', () => map.getCanvas().style.cursor = 'pointer');
+    map.on('mouseleave', 'nodes', () => map.getCanvas().style.cursor = '');
+
+    poll();
+    setInterval(poll, POLL_MS);
+  });
+})();
+</script>
+{% endraw %}
+{% endblock %}
