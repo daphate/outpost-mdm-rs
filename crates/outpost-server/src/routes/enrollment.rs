@@ -313,6 +313,15 @@ pub struct SyncRequest {
     pub battery_pct: Option<i64>,
     pub last_lat: Option<f64>,
     pub last_lon: Option<f64>,
+    /// Ф1 moving-device extras (all optional — non-moving classes omit them).
+    #[serde(default)]
+    pub last_alt: Option<f64>,
+    #[serde(default)]
+    pub last_bearing: Option<f64>,
+    #[serde(default)]
+    pub last_speed: Option<f64>,
+    #[serde(default)]
+    pub last_accuracy: Option<f64>,
     pub os_version: Option<String>,
     pub app_version: Option<String>,
     /// rc42 b37+: integer Android versionCode (см. `BuildConfig.VERSION_CODE`).
@@ -449,6 +458,100 @@ pub struct SyncQuery {
 /// второй половине лimerock'и сессии продлевает её на ещё 90 дней.
 const SESSION_REFRESH_THRESHOLD_PCT: i64 = 50;
 
+/// Great-circle distance in metres (haversine).
+fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    const R: f64 = 6_371_000.0;
+    let (p1, p2) = (lat1.to_radians(), lat2.to_radians());
+    let dp = (lat2 - lat1).to_radians();
+    let dl = (lon2 - lon1).to_radians();
+    let a = (dp / 2.0).sin().powi(2) + p1.cos() * p2.cos() * (dl / 2.0).sin().powi(2);
+    2.0 * R * a.sqrt().asin()
+}
+
+/// Position-history append throttle (Ф1): append when there is no prior point,
+/// when the last append was ≥ 30 s ago, or when the device moved ≥ 10 m — so a
+/// stationary device costs at most two history rows per minute.
+fn should_append_position(
+    prev_lat: Option<f64>,
+    prev_lon: Option<f64>,
+    prev_track_at: Option<&str>,
+    lat: f64,
+    lon: f64,
+) -> bool {
+    let (Some(plat), Some(plon), Some(pts)) = (prev_lat, prev_lon, prev_track_at) else {
+        return true;
+    };
+    match chrono::NaiveDateTime::parse_from_str(pts, "%Y-%m-%d %H:%M:%S") {
+        // Within the time window → append only if it moved far enough.
+        Ok(t) if chrono::Utc::now().naive_utc() - t < chrono::Duration::seconds(30) => {
+            haversine_m(plat, plon, lat, lon) >= 10.0
+        }
+        // ≥ 30 s elapsed, or an unparseable timestamp → append.
+        _ => true,
+    }
+}
+
+#[cfg(test)]
+mod sync_throttle_tests {
+    use super::{haversine_m, should_append_position};
+
+    #[test]
+    fn haversine_known_distance() {
+        // ~1 arc-minute of latitude ≈ 1852 m.
+        let d = haversine_m(55.0, 37.0, 55.0 + 1.0 / 60.0, 37.0);
+        assert!((d - 1852.0).abs() < 5.0, "got {d}");
+    }
+
+    #[test]
+    fn appends_when_no_prior_point() {
+        assert!(should_append_position(None, None, None, 55.0, 37.0));
+    }
+
+    #[test]
+    fn skips_when_recent_and_near() {
+        let now = chrono::Utc::now()
+            .naive_utc()
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        // Same spot, just appended → skip.
+        assert!(!should_append_position(
+            Some(55.0),
+            Some(37.0),
+            Some(&now),
+            55.00001,
+            37.00001
+        ));
+    }
+
+    #[test]
+    fn appends_when_recent_but_moved_far() {
+        let now = chrono::Utc::now()
+            .naive_utc()
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        // Moved ~1.8 km within the window → append.
+        assert!(should_append_position(
+            Some(55.0),
+            Some(37.0),
+            Some(&now),
+            55.0 + 1.0 / 60.0,
+            37.0
+        ));
+    }
+
+    #[test]
+    fn appends_when_stale() {
+        // Old timestamp, same spot → append (time throttle).
+        assert!(should_append_position(
+            Some(55.0),
+            Some(37.0),
+            Some("2000-01-01 00:00:00"),
+            55.0,
+            37.0
+        ));
+    }
+}
+
 async fn sync(
     device: AuthDevice,
     State(state): State<AppState>,
@@ -482,11 +585,25 @@ async fn sync(
         tracing::warn!(device_id = device.id, error = %e, "session sliding refresh failed (non-fatal)");
     }
 
+    // Ф1: read the prior fix before overwriting it, so the history throttle can
+    // compare distance and time.
+    let prev: (Option<f64>, Option<f64>, Option<String>) = sqlx::query_as(
+        "SELECT last_lat, last_lon, last_track_at FROM devices WHERE id = ?",
+    )
+    .bind(device.id)
+    .fetch_optional(&state.db)
+    .await?
+    .unwrap_or((None, None, None));
+
     sqlx::query(
         "UPDATE devices SET \
             battery_pct      = COALESCE(?, battery_pct), \
             last_lat         = COALESCE(?, last_lat), \
             last_lon         = COALESCE(?, last_lon), \
+            last_alt         = COALESCE(?, last_alt), \
+            last_bearing     = COALESCE(?, last_bearing), \
+            last_speed       = COALESCE(?, last_speed), \
+            last_accuracy    = COALESCE(?, last_accuracy), \
             os_version       = COALESCE(?, os_version), \
             app_version      = COALESCE(?, app_version), \
             app_version_code = COALESCE(?, app_version_code), \
@@ -498,12 +615,56 @@ async fn sync(
     .bind(req.battery_pct)
     .bind(req.last_lat)
     .bind(req.last_lon)
+    .bind(req.last_alt)
+    .bind(req.last_bearing)
+    .bind(req.last_speed)
+    .bind(req.last_accuracy)
     .bind(&req.os_version)
     .bind(&req.app_version)
     .bind(req.app_version_code)
     .bind(device.id)
     .execute(&state.db)
     .await?;
+
+    // Ф1: append to position history (throttled) and push a live update so open
+    // maps track the device without polling.
+    if let (Some(lat), Some(lon)) = (req.last_lat, req.last_lon) {
+        if should_append_position(prev.0, prev.1, prev.2.as_deref(), lat, lon) {
+            sqlx::query(
+                "INSERT INTO device_positions \
+                   (customer_id, device_id, lat, lon, alt, bearing, speed, accuracy) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(device.customer_id)
+            .bind(device.id)
+            .bind(lat)
+            .bind(lon)
+            .bind(req.last_alt)
+            .bind(req.last_bearing)
+            .bind(req.last_speed)
+            .bind(req.last_accuracy)
+            .execute(&state.db)
+            .await?;
+            sqlx::query("UPDATE devices SET last_track_at = datetime('now') WHERE id = ?")
+                .bind(device.id)
+                .execute(&state.db)
+                .await?;
+        }
+        // Publish on every fix (cheaper than the history append) so the live dot
+        // moves smoothly regardless of the append cadence.
+        let payload = serde_json::json!({
+            "op": "move",
+            "device_id": device.id,
+            "lat": lat, "lon": lon,
+            "alt": req.last_alt, "bearing": req.last_bearing, "speed": req.last_speed,
+        })
+        .to_string();
+        state.live.publish(crate::state::LiveEvent {
+            customer_id: device.customer_id,
+            name: "position",
+            data: std::sync::Arc::from(payload.as_str()),
+        });
+    }
 
     // v0.13: store ModelPreferences snapshot if client sent fresh state.
     if let (Some(version), Some(state_json)) = (req.state_version, req.current_state.as_ref()) {
