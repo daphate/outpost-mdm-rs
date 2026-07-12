@@ -23,6 +23,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/geo/devices/{id}/track", get(device_track))
         .route("/api/v1/geo/devices/{id}/metrics", get(device_metrics))
         .route("/api/v1/geo/players", get(players))
+        .route("/api/v1/geo/wearables", get(wearables))
 }
 
 #[derive(Debug, Deserialize)]
@@ -256,6 +257,86 @@ async fn players(user: AuthUser, State(state): State<AppState>) -> Result<Json<V
                     "is_online": r.is_online, "last_seen_at": r.last_seen_at,
                     "radiation": r.radiation, "health": r.health,
                     "threat_level": r.threat_level, "artifacts": r.artifacts,
+                }
+            })
+        })
+        .collect();
+    Ok(Json(json!({"type": "FeatureCollection", "features": features})))
+}
+
+/// Носимые устройства (class = wearable): позиция + последние виталы из
+/// приёмника OTLP. Демонстрирует расширяемый паттерн — новый класс не требует
+/// ни отдельного канала приёма (позиция идёт через общий `/api/v1/position`),
+/// ни миграции (метрики произвольных имён садятся в device_metrics). Виталы
+/// (пульс, SpO₂ и т.п.) отдаются как есть — их имена задаёт устройство.
+async fn wearables(user: AuthUser, State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    require_permission(&state.db, user.role_id, "devices.read").await?;
+
+    #[derive(sqlx::FromRow)]
+    struct WRow {
+        id: i64,
+        serial: String,
+        display_name: Option<String>,
+        unit_id: Option<i64>,
+        last_lat: f64,
+        last_lon: f64,
+        battery_pct: Option<i64>,
+        is_online: bool,
+        last_seen_at: Option<String>,
+    }
+    let rows: Vec<WRow> = sqlx::query_as::<_, WRow>(
+        "SELECT id, serial, display_name, unit_id, last_lat, last_lon, \
+                battery_pct, is_online, last_seen_at \
+         FROM devices \
+         WHERE customer_id = ? AND device_class = 'wearable' \
+           AND last_lat IS NOT NULL AND last_lon IS NOT NULL \
+         ORDER BY id",
+    )
+    .bind(user.customer_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    // Последнее значение каждой метрики для всех носимых этого арендатора.
+    #[derive(sqlx::FromRow)]
+    struct MRow {
+        device_id: i64,
+        name: String,
+        value: f64,
+        unit: Option<String>,
+    }
+    let metrics: Vec<MRow> = sqlx::query_as::<_, MRow>(
+        "SELECT dm.device_id, dm.name, dm.value, dm.unit \
+         FROM device_metrics dm \
+         JOIN devices d ON d.id = dm.device_id \
+         WHERE d.customer_id = ? AND d.device_class = 'wearable' \
+           AND dm.id IN (SELECT MAX(id) FROM device_metrics m2 \
+                         WHERE m2.device_id = dm.device_id GROUP BY m2.name)",
+    )
+    .bind(user.customer_id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    // Сгруппировать метрики по устройству.
+    let mut by_device: std::collections::HashMap<i64, Vec<Value>> = std::collections::HashMap::new();
+    for m in metrics {
+        by_device.entry(m.device_id).or_default().push(json!({
+            "name": m.name, "value": m.value, "unit": m.unit
+        }));
+    }
+
+    let features: Vec<Value> = rows
+        .into_iter()
+        .map(|r| {
+            let ms = by_device.remove(&r.id).unwrap_or_default();
+            json!({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [r.last_lon, r.last_lat]},
+                "properties": {
+                    "device_id": r.id, "serial": r.serial, "display_name": r.display_name,
+                    "unit_id": r.unit_id, "battery_pct": r.battery_pct,
+                    "is_online": r.is_online, "last_seen_at": r.last_seen_at,
+                    "metrics": ms,
                 }
             })
         })

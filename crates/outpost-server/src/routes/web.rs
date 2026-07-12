@@ -36,6 +36,7 @@ pub fn router() -> Router<AppState> {
         .route("/map/tactical", get(map_tactical))
         .route("/map/antidrone", get(map_antidrone))
         .route("/map/players", get(map_players))
+        .route("/map/wearables", get(map_wearables))
         // Devices: list, create form-target, per-device edit/enroll/push/delete.
         .route("/devices", get(devices_page))
         .route("/devices/new", post(devices_create))
@@ -693,6 +694,20 @@ struct MapPlayersTemplate {
 /// поток; обработчик рендерит только оболочку.
 async fn map_players(user: WebUser) -> Response {
     render(MapPlayersTemplate {
+        user_login: user.login,
+    })
+}
+
+#[derive(Template)]
+#[template(path = "map_wearables.html")]
+struct MapWearablesTemplate {
+    user_login: String,
+}
+
+/// Ф5: вид карты носимых устройств. Данные из `/api/v1/geo/wearables`
+/// (позиция + виталы из OTLP); обработчик рендерит только оболочку.
+async fn map_wearables(user: WebUser) -> Response {
+    render(MapWearablesTemplate {
         user_login: user.login,
     })
 }
