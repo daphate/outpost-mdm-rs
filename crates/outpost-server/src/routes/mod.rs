@@ -19,6 +19,7 @@ pub mod internal;
 pub mod live;
 pub mod markers;
 pub mod otel;
+pub mod position;
 pub mod prom;
 pub mod push;
 pub mod settings;
@@ -41,6 +42,7 @@ pub fn api_v1(state: AppState) -> Router {
         .merge(live::router())
         .merge(geo::router())
         .merge(markers::router())
+        .merge(position::router())
         .merge(applications::router())
         .merge(configurations::router())
         .merge(users::router())

@@ -459,7 +459,7 @@ pub struct SyncQuery {
 const SESSION_REFRESH_THRESHOLD_PCT: i64 = 50;
 
 /// Great-circle distance in metres (haversine).
-fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+pub(crate) fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     const R: f64 = 6_371_000.0;
     let (p1, p2) = (lat1.to_radians(), lat2.to_radians());
     let dp = (lat2 - lat1).to_radians();
@@ -471,7 +471,7 @@ fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 /// Position-history append throttle (Ф1): append when there is no prior point,
 /// when the last append was ≥ 30 s ago, or when the device moved ≥ 10 m — so a
 /// stationary device costs at most two history rows per minute.
-fn should_append_position(
+pub(crate) fn should_append_position(
     prev_lat: Option<f64>,
     prev_lon: Option<f64>,
     prev_track_at: Option<&str>,
