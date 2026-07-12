@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+
+{% block title %}Карта — игроки{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="/static/maplibre-gl.css">
+<script src="/static/maplibre-gl.js"></script>
+{% raw %}
+<style>
+  #map { position: absolute; inset: 0; }
+  .maplibregl-popup-content { padding: 8px 10px; }
+</style>
+{% endraw %}
+{% endblock %}
+
+{% block body %}
+<div class="h-screen flex flex-col">
+  {% include "_nav.html" %}
+  <div class="flex-1 min-h-0 flex">
+    <div class="relative flex-1">
+      <div id="map"></div>
+      <div class="absolute top-3 left-3 z-10 bg-white/90 rounded-md shadow px-3 py-2 text-xs space-y-1">
+        <div class="font-semibold text-slate-700">Игроки STALKER</div>
+        <div class="flex items-center gap-2"><span class="inline-block w-3 h-3 rounded-full bg-emerald-500"></span> в сети</div>
+        <div class="flex items-center gap-2"><span class="inline-block w-3 h-3 rounded-full bg-amber-500"></span> радиация</div>
+        <div class="flex items-center gap-2"><span class="inline-block w-3 h-3 rounded-full bg-red-600"></span> угроза</div>
+        <div id="conn" class="pt-1 text-slate-500">поток: подключение…</div>
+      </div>
+    </div>
+    <aside class="w-80 shrink-0 bg-white border-l border-slate-200 overflow-y-auto">
+      <div class="p-3 border-b border-slate-200">
+        <div class="text-sm font-semibold text-slate-700">Игроки <span id="p-count" class="text-slate-400"></span></div>
+      </div>
+      <ul id="p-list" class="divide-y divide-slate-100 text-sm"></ul>
+    </aside>
+  </div>
+</div>
+
+{% raw %}
+<script>
+(function () {
+  const OSM_STYLE = {
+    version: 8,
+    sources: { osm: { type: 'raster', tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'], tileSize: 256, attribution: '© OpenStreetMap contributors' } },
+    layers: [{ id: 'osm', type: 'raster', source: 'osm' }]
+  };
+  const map = new maplibregl.Map({ container: 'map', style: OSM_STYLE, center: [37.6173, 55.7558], zoom: 9 });
+  map.addControl(new maplibregl.NavigationControl(), 'top-right');
+  map.addControl(new maplibregl.ScaleControl());
+
+  const byId = new Map();
+  const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const collection = () => ({ type: 'FeatureCollection', features: [...byId.values()] });
+
+  // Цвет игрока: угроза высокая → красный, радиация заметная → янтарный,
+  // иначе онлайн → зелёный, оффлайн → серый.
+  function refresh() {
+    const src = map.getSource('players');
+    if (src) src.setData(collection());
+    renderList();
+  }
+
+  function renderList() {
+    const ul = document.getElementById('p-list');
+    const items = [...byId.values()];
+    document.getElementById('p-count').textContent = '(' + items.length + ')';
+    ul.innerHTML = '';
+    for (const f of items) {
+      const p = f.properties;
+      const li = document.createElement('li');
+      li.className = 'px-3 py-2 hover:bg-slate-50 cursor-pointer';
+      li.innerHTML = '<div class="flex items-center gap-2">' +
+        '<span class="inline-block w-2.5 h-2.5 rounded-full ' + (p.is_online ? 'bg-emerald-500' : 'bg-slate-400') + '"></span>' +
+        '<span class="font-medium">' + esc(p.display_name || p.serial || ('#' + p.device_id)) + '</span></div>' +
+        '<div class="text-xs text-slate-500">' +
+        (p.health != null ? 'HP ' + Math.round(p.health) + ' · ' : '') +
+        (p.radiation != null ? 'рад ' + Number(p.radiation).toFixed(2) + ' · ' : '') +
+        (p.threat_level ? 'угроза: ' + esc(p.threat_level) : 'спокойно') + '</div>';
+      li.onclick = () => map.easeTo({ center: f.geometry.coordinates, zoom: Math.max(map.getZoom(), 14) });
+      ul.appendChild(li);
+    }
+  }
+
+  let fitted = false;
+  async function loadAll() {
+    try {
+      const fc = await fetch('/api/v1/geo/players', { credentials: 'same-origin' }).then(r => r.json());
+      byId.clear();
+      (fc.features || []).forEach(f => byId.set(f.properties.device_id, f));
+      refresh();
+      if (!fitted && byId.size) {
+        const b = new maplibregl.LngLatBounds();
+        byId.forEach(f => b.extend(f.geometry.coordinates));
+        map.fitBounds(b, { padding: 60, maxZoom: 15 });
+        fitted = true;
+      }
+    } catch (e) { /* transient */ }
+  }
+
+  map.on('load', () => {
+    map.addSource('players', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    map.addLayer({
+      id: 'players', type: 'circle', source: 'players',
+      paint: {
+        'circle-radius': 7,
+        'circle-color': ['case',
+          ['==', ['get', 'threat_level'], 'high'], '#dc2626',
+          ['>', ['coalesce', ['get', 'radiation'], 0], 1], '#f59e0b',
+          ['boolean', ['get', 'is_online'], false], '#10b981',
+          '#94a3b8'],
+        'circle-stroke-width': 2, 'circle-stroke-color': '#fff'
+      }
+    });
+    map.on('click', 'players', (e) => {
+      const p = e.features[0].properties;
+      new maplibregl.Popup().setLngLat(e.features[0].geometry.coordinates)
+        .setHTML('<div style="font-size:12px"><b>' + esc(p.display_name || p.serial) + '</b><br>' +
+          (p.health != null ? 'здоровье ' + Math.round(p.health) + '<br>' : '') +
+          (p.radiation != null ? 'радиация ' + Number(p.radiation).toFixed(2) + '<br>' : '') +
+          (p.threat_level ? 'угроза: ' + esc(p.threat_level) : '') + '</div>').addTo(map);
+    });
+    map.on('mouseenter', 'players', () => map.getCanvas().style.cursor = 'pointer');
+    map.on('mouseleave', 'players', () => map.getCanvas().style.cursor = '');
+
+    loadAll();
+    // Живой поток: на события position/player перезагружаем игроков (простая,
+    // надёжная стратегия — состояние приходит редко и малым объёмом).
+    const es = new EventSource('/api/v1/live/stream', { withCredentials: true });
+    const conn = document.getElementById('conn');
+    es.onopen = () => { conn.textContent = 'поток: подключён'; };
+    es.onerror = () => { conn.textContent = 'поток: переподключение…'; };
+    let pending = false;
+    const scheduleReload = () => {
+      if (pending) return; pending = true;
+      setTimeout(() => { pending = false; loadAll(); }, 1000);
+    };
+    es.addEventListener('player', scheduleReload);
+    es.addEventListener('position', scheduleReload);
+  });
+})();
+</script>
+{% endraw %}
+{% endblock %}

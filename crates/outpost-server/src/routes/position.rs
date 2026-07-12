@@ -39,7 +39,40 @@ async fn ingest(
     State(state): State<AppState>,
     Json(req): Json<PositionReport>,
 ) -> Result<StatusCode, ApiError> {
-    if !(-90.0..=90.0).contains(&req.lat) || !(-180.0..=180.0).contains(&req.lon) {
+    apply_position(
+        &state,
+        device.id,
+        device.customer_id,
+        req.lat,
+        req.lon,
+        req.alt,
+        req.bearing,
+        req.speed,
+        req.accuracy,
+        req.battery_pct,
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Общий приём координат: проверка диапазона, обновление последнего фикса,
+/// история с прореживанием и публикация события `position` в живую шину.
+/// Используется как быстрым каналом `/api/v1/position`, так и игровым
+/// каналом `/api/v1/player/state` (Ф4), чтобы не дублировать логику.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn apply_position(
+    state: &AppState,
+    device_id: i64,
+    customer_id: i64,
+    lat: f64,
+    lon: f64,
+    alt: Option<f64>,
+    bearing: Option<f64>,
+    speed: Option<f64>,
+    accuracy: Option<f64>,
+    battery_pct: Option<i64>,
+) -> Result<(), ApiError> {
+    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
         return Err(ApiError::BadRequest("lat/lon out of range".into()));
     }
 
@@ -47,7 +80,7 @@ async fn ingest(
     let prev: (Option<f64>, Option<f64>, Option<String>) = sqlx::query_as(
         "SELECT last_lat, last_lon, last_track_at FROM devices WHERE id = ?",
     )
-    .bind(device.id)
+    .bind(device_id)
     .fetch_optional(&state.db)
     .await?
     .unwrap_or((None, None, None));
@@ -66,51 +99,51 @@ async fn ingest(
             updated_at    = datetime('now') \
          WHERE id = ?",
     )
-    .bind(req.lat)
-    .bind(req.lon)
-    .bind(req.alt)
-    .bind(req.bearing)
-    .bind(req.speed)
-    .bind(req.accuracy)
-    .bind(req.battery_pct)
-    .bind(device.id)
+    .bind(lat)
+    .bind(lon)
+    .bind(alt)
+    .bind(bearing)
+    .bind(speed)
+    .bind(accuracy)
+    .bind(battery_pct)
+    .bind(device_id)
     .execute(&state.db)
     .await?;
 
-    if should_append_position(prev.0, prev.1, prev.2.as_deref(), req.lat, req.lon) {
+    if should_append_position(prev.0, prev.1, prev.2.as_deref(), lat, lon) {
         sqlx::query(
             "INSERT INTO device_positions \
                (customer_id, device_id, lat, lon, alt, bearing, speed, accuracy) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(device.customer_id)
-        .bind(device.id)
-        .bind(req.lat)
-        .bind(req.lon)
-        .bind(req.alt)
-        .bind(req.bearing)
-        .bind(req.speed)
-        .bind(req.accuracy)
+        .bind(customer_id)
+        .bind(device_id)
+        .bind(lat)
+        .bind(lon)
+        .bind(alt)
+        .bind(bearing)
+        .bind(speed)
+        .bind(accuracy)
         .execute(&state.db)
         .await?;
         sqlx::query("UPDATE devices SET last_track_at = datetime('now') WHERE id = ?")
-            .bind(device.id)
+            .bind(device_id)
             .execute(&state.db)
             .await?;
     }
 
     let payload = serde_json::json!({
         "op": "move",
-        "device_id": device.id,
-        "lat": req.lat, "lon": req.lon,
-        "alt": req.alt, "bearing": req.bearing, "speed": req.speed,
+        "device_id": device_id,
+        "lat": lat, "lon": lon,
+        "alt": alt, "bearing": bearing, "speed": speed,
     })
     .to_string();
     state.live.publish(LiveEvent {
-        customer_id: device.customer_id,
+        customer_id,
         name: "position",
         data: Arc::from(payload.as_str()),
     });
 
-    Ok(StatusCode::NO_CONTENT)
+    Ok(())
 }

@@ -20,6 +20,7 @@ pub mod internal;
 pub mod live;
 pub mod markers;
 pub mod otel;
+pub mod player;
 pub mod position;
 pub mod prom;
 pub mod push;
@@ -44,6 +45,8 @@ pub fn api_v1(state: AppState) -> Router {
         .merge(geo::router())
         .merge(markers::router())
         .merge(position::router())
+        // Ф4: игровой канал класса «игроки STALKER» (вид /map/players).
+        .merge(player::router())
         // Ф3: федерация с ЦУП «Пеленг» (вид /map/antidrone).
         .merge(fed_bearing::router())
         .merge(applications::router())

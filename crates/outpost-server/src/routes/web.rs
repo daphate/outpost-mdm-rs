@@ -35,6 +35,7 @@ pub fn router() -> Router<AppState> {
         .route("/dashboard", get(dashboard))
         .route("/map/tactical", get(map_tactical))
         .route("/map/antidrone", get(map_antidrone))
+        .route("/map/players", get(map_players))
         // Devices: list, create form-target, per-device edit/enroll/push/delete.
         .route("/devices", get(devices_page))
         .route("/devices/new", post(devices_create))
@@ -678,6 +679,20 @@ struct MapAntidroneTemplate {
 /// только оболочку.
 async fn map_antidrone(user: WebUser) -> Response {
     render(MapAntidroneTemplate {
+        user_login: user.login,
+    })
+}
+
+#[derive(Template)]
+#[template(path = "map_players.html")]
+struct MapPlayersTemplate {
+    user_login: String,
+}
+
+/// Ф4: вид карты игроков STALKER. Данные из `/api/v1/geo/players` + живой
+/// поток; обработчик рендерит только оболочку.
+async fn map_players(user: WebUser) -> Response {
+    render(MapPlayersTemplate {
         user_login: user.login,
     })
 }

@@ -22,6 +22,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/geo/markers", get(markers))
         .route("/api/v1/geo/devices/{id}/track", get(device_track))
         .route("/api/v1/geo/devices/{id}/metrics", get(device_metrics))
+        .route("/api/v1/geo/players", get(players))
 }
 
 #[derive(Debug, Deserialize)]
@@ -208,6 +209,58 @@ async fn device_metrics(
         "logs_24h": logs_24h,
         "errors_24h": errors_24h,
     })))
+}
+
+#[derive(sqlx::FromRow)]
+struct PlayerRow {
+    id: i64,
+    serial: String,
+    display_name: Option<String>,
+    unit_id: Option<i64>,
+    last_lat: f64,
+    last_lon: f64,
+    battery_pct: Option<i64>,
+    is_online: bool,
+    last_seen_at: Option<String>,
+    radiation: Option<f64>,
+    health: Option<f64>,
+    threat_level: Option<String>,
+    artifacts: Option<i64>,
+}
+
+/// Игроки STALKER (class = stalker_player) с последним игровым состоянием,
+/// как GeoJSON FeatureCollection. Использует вид `/map/players`.
+async fn players(user: AuthUser, State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    require_permission(&state.db, user.role_id, "devices.read").await?;
+    let rows: Vec<PlayerRow> = sqlx::query_as::<_, PlayerRow>(
+        "SELECT d.id, d.serial, d.display_name, d.unit_id, d.last_lat, d.last_lon, \
+                d.battery_pct, d.is_online, d.last_seen_at, \
+                p.radiation, p.health, p.threat_level, p.artifacts \
+         FROM devices d LEFT JOIN player_states p ON p.device_id = d.id \
+         WHERE d.customer_id = ? AND d.device_class = 'stalker_player' \
+           AND d.last_lat IS NOT NULL AND d.last_lon IS NOT NULL \
+         ORDER BY d.id",
+    )
+    .bind(user.customer_id)
+    .fetch_all(&state.db)
+    .await?;
+    let features: Vec<Value> = rows
+        .into_iter()
+        .map(|r| {
+            json!({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [r.last_lon, r.last_lat]},
+                "properties": {
+                    "device_id": r.id, "serial": r.serial, "display_name": r.display_name,
+                    "unit_id": r.unit_id, "battery_pct": r.battery_pct,
+                    "is_online": r.is_online, "last_seen_at": r.last_seen_at,
+                    "radiation": r.radiation, "health": r.health,
+                    "threat_level": r.threat_level, "artifacts": r.artifacts,
+                }
+            })
+        })
+        .collect();
+    Ok(Json(json!({"type": "FeatureCollection", "features": features})))
 }
 
 #[derive(Debug, Deserialize)]
