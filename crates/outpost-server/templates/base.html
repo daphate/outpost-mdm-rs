@@ -10,6 +10,7 @@
   <!-- ломалось в любой сети без доступа к этим CDN, включая VPN'ы с медленными exit-nodes) -->
   <script src="/static/tailwind.js"></script>
   <script src="/static/htmx.min.js"></script>
+  {% block head %}{% endblock %}
 </head>
 <body class="bg-slate-50 text-slate-900 antialiased">
   {% block body %}{% endblock %}

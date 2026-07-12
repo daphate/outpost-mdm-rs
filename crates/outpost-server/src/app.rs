@@ -57,6 +57,10 @@ pub struct Ready {
 /// - htmx.min.js 2.0.4 (51 KB)
 const STATIC_TAILWIND_JS: &[u8] = include_bytes!("../static/tailwind.js");
 const STATIC_HTMX_JS: &[u8] = include_bytes!("../static/htmx.min.js");
+// Ф1 situational maps. Self-hosted so /map/* works offline / OPSEC-clean.
+// maplibre-gl 5.24.0 (1.03 MB JS + 70 KB CSS), vendored 2026-07-12.
+const STATIC_MAPLIBRE_JS: &[u8] = include_bytes!("../static/maplibre-gl.js");
+const STATIC_MAPLIBRE_CSS: &[u8] = include_bytes!("../static/maplibre-gl.css");
 
 fn static_js_response(body: &'static [u8]) -> Response {
     use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
@@ -78,6 +82,26 @@ async fn serve_tailwind_js() -> Response {
 
 async fn serve_htmx_js() -> Response {
     static_js_response(STATIC_HTMX_JS)
+}
+
+fn static_css_response(body: &'static [u8]) -> Response {
+    use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
+    (
+        [
+            (CONTENT_TYPE, "text/css; charset=utf-8"),
+            (CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+async fn serve_maplibre_js() -> Response {
+    static_js_response(STATIC_MAPLIBRE_JS)
+}
+
+async fn serve_maplibre_css() -> Response {
+    static_css_response(STATIC_MAPLIBRE_CSS)
 }
 
 async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
@@ -135,6 +159,9 @@ pub fn build_router(state: AppState) -> Router {
         // Эти route'ы без State — статика без БД, по этому добавлены до .with_state().
         .route("/static/tailwind.js", get(serve_tailwind_js))
         .route("/static/htmx.min.js", get(serve_htmx_js))
+        // Ф1: MapLibre GL for the situational maps (self-hosted).
+        .route("/static/maplibre-gl.js", get(serve_maplibre_js))
+        .route("/static/maplibre-gl.css", get(serve_maplibre_css))
         .with_state(state.clone());
 
     probes
@@ -166,11 +193,17 @@ pub fn build_router(state: AppState) -> Router {
         // требует переработки шаблонов — отдельная задача.
         .layer(set_header_if_absent(
             "content-security-policy",
+            // Ф1: MapLibre GL spawns its render worker from a blob: URL
+            // (worker-src/child-src blob:) and rasterises tiles to blob: images.
+            // OSM raster tiles are the MVP basemap (img-src + connect-src);
+            // self-hosted .mbtiles will later drop the external host.
             "default-src 'self'; \
              script-src 'self' 'unsafe-inline' 'unsafe-eval'; \
              style-src 'self' 'unsafe-inline'; \
-             img-src 'self' data:; \
-             connect-src 'self'; \
+             img-src 'self' data: blob: https://*.tile.openstreetmap.org https://tile.openstreetmap.org; \
+             connect-src 'self' https://*.tile.openstreetmap.org https://tile.openstreetmap.org; \
+             worker-src blob:; \
+             child-src blob:; \
              object-src 'none'; \
              base-uri 'self'; \
              frame-ancestors 'none'; \

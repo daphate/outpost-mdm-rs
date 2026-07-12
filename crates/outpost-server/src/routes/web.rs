@@ -33,6 +33,7 @@ pub fn router() -> Router<AppState> {
         .route("/login", get(login_page).post(login_submit))
         .route("/logout", get(logout))
         .route("/dashboard", get(dashboard))
+        .route("/map/tactical", get(map_tactical))
         // Devices: list, create form-target, per-device edit/enroll/push/delete.
         .route("/devices", get(devices_page))
         .route("/devices/new", post(devices_create))
@@ -648,6 +649,21 @@ async fn dashboard(user: WebUser, State(state): State<AppState>) -> Result<Respo
         user_login: user.login,
         stats,
     }))
+}
+
+#[derive(Template)]
+#[template(path = "map_tactical.html")]
+struct MapTacticalTemplate {
+    user_login: String,
+}
+
+/// Ф1: shared situational-map view (tactical). Data is pulled client-side from
+/// the `/api/v1/geo/*` + `/api/v1/live/stream` endpoints, which enforce
+/// `devices.read` and customer scoping; this handler just renders the shell.
+async fn map_tactical(user: WebUser) -> Response {
+    render(MapTacticalTemplate {
+        user_login: user.login,
+    })
 }
 
 #[derive(Template)]

@@ -1,0 +1,260 @@
+{% extends "base.html" %}
+
+{% block title %}Карта — тактическая{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="/static/maplibre-gl.css">
+<script src="/static/maplibre-gl.js"></script>
+{% raw %}
+<style>
+  #map { position: absolute; inset: 0; }
+  .maplibregl-popup-content { padding: 8px 10px; }
+</style>
+{% endraw %}
+{% endblock %}
+
+{% block body %}
+<div class="h-screen flex flex-col">
+  {% include "_nav.html" %}
+  <div class="flex-1 min-h-0 flex">
+    <div class="relative flex-1">
+      <div id="map"></div>
+      <div class="absolute top-3 left-3 z-10 bg-white/90 rounded-md shadow px-3 py-2 text-xs space-y-1">
+        <div class="font-semibold text-slate-700">Тактическая карта</div>
+        <div class="flex items-center gap-2"><span class="inline-block w-3 h-3 rounded-full bg-emerald-500"></span> онлайн</div>
+        <div class="flex items-center gap-2"><span class="inline-block w-3 h-3 rounded-full bg-slate-400"></span> оффлайн</div>
+        <div class="flex items-center gap-2"><span class="inline-block w-3 h-3 rounded-full bg-red-600"></span> противник</div>
+        <div class="flex items-center gap-2"><span class="inline-block w-3 h-3 rounded-full bg-amber-500"></span> SOS</div>
+        <div id="conn" class="pt-1 text-slate-500">поток: подключение…</div>
+      </div>
+    </div>
+    <aside class="w-80 shrink-0 bg-white border-l border-slate-200 overflow-y-auto">
+      <div class="p-3 border-b border-slate-200">
+        <div class="text-sm font-semibold text-slate-700">Устройства <span id="dev-count" class="text-slate-400"></span></div>
+      </div>
+      <ul id="dev-list" class="divide-y divide-slate-100 text-sm"></ul>
+      <div id="dev-detail" class="hidden p-3 border-t border-slate-200 text-sm space-y-1 bg-slate-50"></div>
+    </aside>
+  </div>
+</div>
+
+{% raw %}
+<script>
+(function () {
+  // OSM raster is the MVP basemap; self-hosted .mbtiles slots in here later.
+  const OSM_STYLE = {
+    version: 8,
+    sources: {
+      osm: {
+        type: 'raster',
+        tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+        tileSize: 256,
+        attribution: '© OpenStreetMap contributors'
+      }
+    },
+    layers: [{ id: 'osm', type: 'raster', source: 'osm' }]
+  };
+
+  const map = new maplibregl.Map({
+    container: 'map',
+    style: OSM_STYLE,
+    center: [37.6173, 55.7558], // Moscow; recenters onto the fleet after load
+    zoom: 9
+  });
+  map.addControl(new maplibregl.NavigationControl(), 'top-right');
+  map.addControl(new maplibregl.ScaleControl());
+
+  const positionsById = new Map(); // device_id -> GeoJSON Feature
+  const markersById = new Map();   // marker id -> GeoJSON Feature
+
+  const collection = (m) => ({ type: 'FeatureCollection', features: [...m.values()] });
+  const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const nowUtc = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
+  function timeago(ts) {
+    const t = Date.parse(ts.replace(' ', 'T') + 'Z');
+    if (isNaN(t)) return ts;
+    const s = Math.max(0, (Date.now() - t) / 1000);
+    if (s < 60) return Math.floor(s) + ' с назад';
+    if (s < 3600) return Math.floor(s / 60) + ' мин назад';
+    if (s < 86400) return Math.floor(s / 3600) + ' ч назад';
+    return Math.floor(s / 86400) + ' дн назад';
+  }
+
+  function refreshPositions() {
+    const src = map.getSource('positions');
+    if (src) src.setData(collection(positionsById));
+    renderDeviceList();
+  }
+  function refreshMarkers() {
+    const src = map.getSource('markers');
+    if (src) src.setData(collection(markersById));
+  }
+
+  async function loadInitial() {
+    try {
+      const [p, m] = await Promise.all([
+        fetch('/api/v1/geo/positions', { credentials: 'same-origin' }).then(r => r.json()),
+        fetch('/api/v1/geo/markers', { credentials: 'same-origin' }).then(r => r.json())
+      ]);
+      positionsById.clear();
+      (p.features || []).forEach(f => positionsById.set(f.properties.device_id, f));
+      markersById.clear();
+      (m.features || []).forEach(f => markersById.set(f.properties.id, f));
+      refreshPositions();
+      refreshMarkers();
+      fitToData();
+    } catch (e) { /* transient; SSE resync or next load retries */ }
+  }
+
+  function fitToData() {
+    const feats = [...positionsById.values(), ...markersById.values()];
+    if (!feats.length) return;
+    let minx = 180, miny = 90, maxx = -180, maxy = -90;
+    feats.forEach(f => {
+      const [x, y] = f.geometry.coordinates;
+      minx = Math.min(minx, x); miny = Math.min(miny, y);
+      maxx = Math.max(maxx, x); maxy = Math.max(maxy, y);
+    });
+    if (minx === maxx && miny === maxy) { map.easeTo({ center: [minx, miny], zoom: 14 }); return; }
+    map.fitBounds([[minx, miny], [maxx, maxy]], { padding: 60, maxZoom: 15 });
+  }
+
+  function renderDeviceList() {
+    const ul = document.getElementById('dev-list');
+    const items = [...positionsById.values()];
+    document.getElementById('dev-count').textContent = '(' + items.length + ')';
+    items.sort((a, b) => (a.properties.display_name || a.properties.serial || '')
+      .localeCompare(b.properties.display_name || b.properties.serial || ''));
+    ul.innerHTML = '';
+    for (const f of items) {
+      const p = f.properties;
+      const li = document.createElement('li');
+      li.className = 'px-3 py-2 hover:bg-slate-50 cursor-pointer';
+      li.innerHTML =
+        '<div class="flex items-center gap-2">' +
+          '<span class="inline-block w-2.5 h-2.5 rounded-full ' + (p.is_online ? 'bg-emerald-500' : 'bg-slate-400') + '"></span>' +
+          '<span class="font-medium">' + esc(p.display_name || p.serial || ('#' + p.device_id)) + '</span>' +
+          '<span class="ml-auto text-xs text-slate-400">' + (p.battery_pct != null ? p.battery_pct + '%' : '') + '</span>' +
+        '</div>' +
+        '<div class="text-xs text-slate-500">' + esc(p.device_class || '') +
+          (p.last_seen_at ? ' · ' + esc(timeago(p.last_seen_at)) : '') + '</div>';
+      li.onclick = () => selectDevice(f);
+      ul.appendChild(li);
+    }
+  }
+
+  function selectDevice(f) {
+    map.easeTo({ center: f.geometry.coordinates, zoom: Math.max(map.getZoom(), 14) });
+    showDetail(f.properties);
+    loadTrack(f.properties.device_id);
+  }
+
+  function row(label, value) { return '<div><span class="text-slate-500">' + label + ':</span> ' + value + '</div>'; }
+  function showDetail(p) {
+    const d = document.getElementById('dev-detail');
+    d.classList.remove('hidden');
+    d.innerHTML =
+      '<div class="font-semibold text-slate-700">' + esc(p.display_name || p.serial || ('#' + p.device_id)) + '</div>' +
+      row('Класс', esc(p.device_class || '—')) +
+      row('Онлайн', p.is_online ? 'да' : 'нет') +
+      row('Батарея', p.battery_pct != null ? p.battery_pct + '%' : '—') +
+      row('Высота', p.alt != null ? Math.round(p.alt) + ' м' : '—') +
+      row('Курс', p.bearing != null ? Math.round(p.bearing) + '°' : '—') +
+      row('Скорость', p.speed != null ? Number(p.speed).toFixed(1) + ' м/с' : '—') +
+      row('Замечен', p.last_seen_at ? esc(p.last_seen_at) + ' UTC' : '—');
+  }
+
+  async function loadTrack(deviceId) {
+    try {
+      const t = await fetch('/api/v1/geo/devices/' + deviceId + '/track?limit=2000', { credentials: 'same-origin' }).then(r => r.json());
+      const src = map.getSource('track');
+      if (src) src.setData(t && t.geometry ? t : { type: 'Feature', geometry: null, properties: {} });
+    } catch (e) { /* ignore */ }
+  }
+
+  map.on('load', () => {
+    map.addSource('track', { type: 'geojson', data: { type: 'Feature', geometry: null, properties: {} } });
+    map.addLayer({ id: 'track', type: 'line', source: 'track', paint: { 'line-color': '#2563eb', 'line-width': 3, 'line-opacity': 0.7 } });
+
+    map.addSource('positions', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    map.addLayer({
+      id: 'positions', type: 'circle', source: 'positions',
+      paint: {
+        'circle-radius': 7,
+        'circle-color': ['case', ['boolean', ['get', 'is_online'], false], '#10b981', '#94a3b8'],
+        'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff'
+      }
+    });
+
+    map.addSource('markers', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    map.addLayer({
+      id: 'markers', type: 'circle', source: 'markers',
+      paint: {
+        'circle-radius': 6,
+        'circle-color': ['match', ['get', 'kind'], 'enemy', '#dc2626', 'sos', '#f59e0b', 'vehicle', '#2563eb', 'poi', '#16a34a', '#6b7280'],
+        'circle-stroke-width': 2, 'circle-stroke-color': '#111827'
+      }
+    });
+
+    map.on('click', 'positions', (e) => {
+      const did = e.features[0].properties.device_id;
+      selectDevice(positionsById.get(did) || e.features[0]);
+    });
+    map.on('mouseenter', 'positions', () => map.getCanvas().style.cursor = 'pointer');
+    map.on('mouseleave', 'positions', () => map.getCanvas().style.cursor = '');
+    map.on('click', 'markers', (e) => {
+      const p = e.features[0].properties;
+      new maplibregl.Popup().setLngLat(e.features[0].geometry.coordinates)
+        .setHTML('<div style="font-size:12px"><b>' + esc(p.kind) + '</b>' +
+          (p.label ? ' · ' + esc(p.label) : '') +
+          (p.reporter_callsign ? '<br>от ' + esc(p.reporter_callsign) : '') + '</div>')
+        .addTo(map);
+    });
+
+    loadInitial();
+    startStream();
+  });
+
+  function startStream() {
+    const conn = document.getElementById('conn');
+    const es = new EventSource('/api/v1/live/stream', { withCredentials: true });
+    es.onopen = () => { conn.textContent = 'поток: подключён'; };
+    es.onerror = () => { conn.textContent = 'поток: переподключение…'; };
+    es.addEventListener('position', (ev) => {
+      try {
+        const d = JSON.parse(ev.data);
+        const f = positionsById.get(d.device_id);
+        if (f) {
+          f.geometry.coordinates = [d.lon, d.lat];
+          if (d.alt != null) f.properties.alt = d.alt;
+          if (d.bearing != null) f.properties.bearing = d.bearing;
+          if (d.speed != null) f.properties.speed = d.speed;
+          f.properties.is_online = true;
+          f.properties.last_seen_at = nowUtc();
+          refreshPositions();
+        } else {
+          loadInitial(); // new device: pull its full properties
+        }
+      } catch (e) { /* ignore */ }
+    });
+    es.addEventListener('marker', (ev) => {
+      try {
+        const d = JSON.parse(ev.data);
+        if (d.op === 'remove') {
+          markersById.delete(d.id);
+        } else {
+          markersById.set(d.id, {
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [d.lon, d.lat] },
+            properties: { id: d.id, kind: d.kind, subtype: d.subtype, label: d.label, confidence: d.confidence, reporter_callsign: d.reporter_callsign }
+          });
+        }
+        refreshMarkers();
+      } catch (e) { /* ignore */ }
+    });
+    es.addEventListener('resync', () => loadInitial());
+  }
+})();
+</script>
+{% endraw %}
+{% endblock %}
