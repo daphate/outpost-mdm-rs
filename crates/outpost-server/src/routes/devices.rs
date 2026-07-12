@@ -56,6 +56,11 @@ pub struct Device {
     pub customer_id: i64,
     pub serial: String,
     pub display_name: Option<String>,
+    /// Situational-platform device class discriminator (android_tactical |
+    /// acoustic_node | stalker_player | wearable | …).
+    pub device_class: String,
+    /// Optional org-unit (subdivision) assignment; see the `units` table.
+    pub unit_id: Option<i64>,
     pub app_version: Option<String>,
     pub os_version: Option<String>,
     pub battery_pct: Option<i64>,
@@ -79,7 +84,7 @@ async fn list(
     let (limit, offset) = page.clamp();
 
     let items: Vec<Device> = sqlx::query_as::<_, Device>(
-        "SELECT id, customer_id, serial, display_name, app_version, os_version, \
+        "SELECT id, customer_id, serial, display_name, device_class, unit_id, app_version, os_version, \
                 battery_pct, last_lat, last_lon, last_seen_at, is_online, is_enrolled, \
                 is_active, metadata_json, created_at, updated_at \
          FROM devices WHERE customer_id = ? ORDER BY id DESC LIMIT ? OFFSET ?",
@@ -110,7 +115,7 @@ async fn get_one(
 ) -> Result<Json<Device>, ApiError> {
     require_permission(&state.db, user.role_id, "devices.read").await?;
     let device: Option<Device> = sqlx::query_as::<_, Device>(
-        "SELECT id, customer_id, serial, display_name, app_version, os_version, \
+        "SELECT id, customer_id, serial, display_name, device_class, unit_id, app_version, os_version, \
                 battery_pct, last_lat, last_lon, last_seen_at, is_online, is_enrolled, \
                 is_active, metadata_json, created_at, updated_at \
          FROM devices WHERE id = ? AND customer_id = ?",
@@ -126,6 +131,10 @@ async fn get_one(
 pub struct CreateDeviceRequest {
     pub serial: String,
     pub display_name: Option<String>,
+    #[serde(default)]
+    pub device_class: Option<String>,
+    #[serde(default)]
+    pub unit_id: Option<i64>,
 }
 
 async fn create(
@@ -138,12 +147,14 @@ async fn create(
         return Err(ApiError::BadRequest("serial is required".into()));
     }
     let id: i64 = sqlx::query_scalar(
-        "INSERT INTO devices (customer_id, serial, display_name) \
-         VALUES (?, ?, ?) RETURNING id",
+        "INSERT INTO devices (customer_id, serial, display_name, device_class, unit_id) \
+         VALUES (?, ?, ?, COALESCE(?, 'android_tactical'), ?) RETURNING id",
     )
     .bind(user.customer_id)
     .bind(&req.serial)
     .bind(&req.display_name)
+    .bind(&req.device_class)
+    .bind(req.unit_id)
     .fetch_one(&state.db)
     .await
     .map_err(|e| match &e {
@@ -155,7 +166,7 @@ async fn create(
     })?;
 
     let device: Device = sqlx::query_as::<_, Device>(
-        "SELECT id, customer_id, serial, display_name, app_version, os_version, \
+        "SELECT id, customer_id, serial, display_name, device_class, unit_id, app_version, os_version, \
                 battery_pct, last_lat, last_lon, last_seen_at, is_online, is_enrolled, \
                 is_active, metadata_json, created_at, updated_at \
          FROM devices WHERE id = ?",
@@ -170,6 +181,10 @@ async fn create(
 pub struct UpdateDeviceRequest {
     pub display_name: Option<String>,
     pub is_active: Option<bool>,
+    #[serde(default)]
+    pub device_class: Option<String>,
+    #[serde(default)]
+    pub unit_id: Option<i64>,
 }
 
 async fn update(
@@ -181,7 +196,7 @@ async fn update(
     require_permission(&state.db, user.role_id, "devices.write").await?;
     // Verify existence + tenant ownership before mutating.
     let _existing: Device = sqlx::query_as::<_, Device>(
-        "SELECT id, customer_id, serial, display_name, app_version, os_version, \
+        "SELECT id, customer_id, serial, display_name, device_class, unit_id, app_version, os_version, \
                 battery_pct, last_lat, last_lon, last_seen_at, is_online, is_enrolled, \
                 is_active, metadata_json, created_at, updated_at \
          FROM devices WHERE id = ? AND customer_id = ?",
@@ -196,17 +211,21 @@ async fn update(
         "UPDATE devices SET \
             display_name = COALESCE(?, display_name), \
             is_active    = COALESCE(?, is_active), \
+            device_class = COALESCE(?, device_class), \
+            unit_id      = COALESCE(?, unit_id), \
             updated_at   = datetime('now') \
          WHERE id = ?",
     )
     .bind(&req.display_name)
     .bind(req.is_active)
+    .bind(&req.device_class)
+    .bind(req.unit_id)
     .bind(id)
     .execute(&state.db)
     .await?;
 
     let device: Device = sqlx::query_as::<_, Device>(
-        "SELECT id, customer_id, serial, display_name, app_version, os_version, \
+        "SELECT id, customer_id, serial, display_name, device_class, unit_id, app_version, os_version, \
                 battery_pct, last_lat, last_lon, last_seen_at, is_online, is_enrolled, \
                 is_active, metadata_json, created_at, updated_at \
          FROM devices WHERE id = ?",
