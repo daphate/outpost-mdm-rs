@@ -21,6 +21,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/geo/positions", get(positions))
         .route("/api/v1/geo/markers", get(markers))
         .route("/api/v1/geo/devices/{id}/track", get(device_track))
+        .route("/api/v1/geo/devices/{id}/metrics", get(device_metrics))
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,6 +143,71 @@ async fn markers(user: AuthUser, State(state): State<AppState>) -> Result<Json<V
         })
         .collect();
     Ok(Json(json!({"type": "FeatureCollection", "features": features})))
+}
+
+/// Панель показателей на карте: последние значения каждой метрики устройства
+/// (OTLP-приёмник) + счётчики за сутки. Использует тот же запрос «последняя
+/// запись по каждому имени», что и страница /devices/{id}/telemetry.
+async fn device_metrics(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, ApiError> {
+    require_permission(&state.db, user.role_id, "devices.read").await?;
+    let owned: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM devices WHERE id = ? AND customer_id = ?")
+            .bind(id)
+            .bind(user.customer_id)
+            .fetch_optional(&state.db)
+            .await?;
+    if owned.is_none() {
+        return Err(ApiError::NotFound);
+    }
+
+    #[derive(sqlx::FromRow)]
+    struct MRow {
+        name: String,
+        value: f64,
+        unit: Option<String>,
+        ts: String,
+    }
+    let rows: Vec<MRow> = sqlx::query_as::<_, MRow>(
+        "SELECT name, value, unit, ts FROM device_metrics WHERE device_id = ? \
+         AND id IN (SELECT MAX(id) FROM device_metrics WHERE device_id = ? GROUP BY name) \
+         ORDER BY name LIMIT 60",
+    )
+    .bind(id)
+    .bind(id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    let logs_24h: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM device_logs WHERE device_id = ? AND received_at >= datetime('now', '-1 day')",
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+    let errors_24h: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM device_logs WHERE device_id = ? AND severity_number >= 17 \
+         AND received_at >= datetime('now', '-1 day')",
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+
+    let metrics: Vec<Value> = rows
+        .into_iter()
+        .map(|r| json!({"name": r.name, "value": r.value, "unit": r.unit, "ts": r.ts}))
+        .collect();
+    Ok(Json(json!({
+        "device_id": id,
+        "metrics": metrics,
+        "logs_24h": logs_24h,
+        "errors_24h": errors_24h,
+    })))
 }
 
 #[derive(Debug, Deserialize)]

@@ -34,6 +34,7 @@
       </div>
       <ul id="dev-list" class="divide-y divide-slate-100 text-sm"></ul>
       <div id="dev-detail" class="hidden p-3 border-t border-slate-200 text-sm space-y-1 bg-slate-50"></div>
+      <div id="dev-metrics" class="hidden p-3 border-t border-slate-200 text-sm bg-white"></div>
     </aside>
   </div>
 </div>
@@ -147,6 +148,31 @@
     map.easeTo({ center: f.geometry.coordinates, zoom: Math.max(map.getZoom(), 14) });
     showDetail(f.properties);
     loadTrack(f.properties.device_id);
+    loadMetrics(f.properties.device_id);
+  }
+
+  async function loadMetrics(deviceId) {
+    const box = document.getElementById('dev-metrics');
+    try {
+      const d = await fetch('/api/v1/geo/devices/' + deviceId + '/metrics', { credentials: 'same-origin' }).then(r => r.json());
+      box.classList.remove('hidden');
+      let html = '<div class="font-semibold text-slate-700 mb-1">Показатели</div>';
+      html += '<div class="text-xs text-slate-500 mb-2">журнал за сутки: ' + d.logs_24h +
+              ' записей, ошибок: ' + d.errors_24h + '</div>';
+      if (!d.metrics || !d.metrics.length) {
+        html += '<div class="text-xs text-slate-400">данных от устройства ещё нет</div>';
+      } else {
+        html += '<table class="w-full text-xs"><tbody>';
+        for (const m of d.metrics) {
+          const v = (typeof m.value === 'number' && !Number.isInteger(m.value)) ? m.value.toFixed(2) : m.value;
+          html += '<tr class="border-t border-slate-100">' +
+            '<td class="py-1 pr-2 text-slate-600 break-all">' + esc(m.name) + '</td>' +
+            '<td class="py-1 text-right font-medium whitespace-nowrap">' + esc(v) + (m.unit ? ' ' + esc(m.unit) : '') + '</td></tr>';
+        }
+        html += '</tbody></table>';
+      }
+      box.innerHTML = html;
+    } catch (e) { box.classList.add('hidden'); }
   }
 
   function row(label, value) { return '<div><span class="text-slate-500">' + label + ':</span> ' + value + '</div>'; }
