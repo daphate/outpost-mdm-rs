@@ -16,6 +16,11 @@ path = "src/lib.rs"
 name = "outpost-server"
 path = "src/main.rs"
 
+# Ф6: срез данных заказчика в single-tenant seed для on-прем сборки.
+[[bin]]
+name = "outpost-export"
+path = "src/bin/export.rs"
+
 [dependencies]
 tokio.workspace = true
 tokio-util.workspace = true

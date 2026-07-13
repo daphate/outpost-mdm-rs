@@ -1,0 +1,14 @@
+{
+  "customer_id": 2,
+  "customer_name": "Заказчик-Пример",
+  "domain": "mdm.example.ru",
+  "single_tenant": true,
+  "enabled_classes": ["android_tactical", "wearable"],
+  "feature_flags": {
+    "ballistics": false,
+    "bearing_federation": false,
+    "players": false
+  },
+  "bearing": { "base_url": "", "fed_token": "" },
+  "runtime": { "secure_cookies": true, "bind_addr": "127.0.0.1:8080", "db_path": "/var/lib/outpost/outpost.db" }
+}
