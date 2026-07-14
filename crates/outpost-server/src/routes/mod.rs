@@ -22,6 +22,7 @@ pub mod markers;
 pub mod otel;
 pub mod player;
 pub mod position;
+pub mod profiles;
 pub mod prom;
 pub mod push;
 pub mod settings;
@@ -53,6 +54,8 @@ pub fn api_v1(state: AppState) -> Router {
         .merge(configurations::router())
         .merge(users::router())
         .merge(settings::router())
+        // Ф6: per-tenant customer profile (data for multi-tenant runtime + on-prem build).
+        .merge(profiles::router())
         .merge(stats::router())
         .merge(push::router())
         .merge(files::router())
