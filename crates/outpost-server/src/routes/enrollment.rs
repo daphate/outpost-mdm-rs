@@ -387,9 +387,17 @@ async fn fetch_pending_for_device(
     pool: &sqlx::SqlitePool,
     device_id: i64,
 ) -> Result<Vec<SyncCommandRow>, ApiError> {
+    // Срочные игровые события (Выброс, угроза) действительны только «здесь и
+    // сейчас»: живое устройство забирает их за секунды через long-poll. Если
+    // устройство было offline и переподключилось позже, протухшую команду не
+    // отдаём — иначе игрок проиграет Выброс, которого уже не было (см.
+    // routes/player.rs). Прочие команды (в т.ч. состояния KILL/REVIVE) — без
+    // ограничения по времени, как и раньше.
     let rows = sqlx::query_as::<_, SyncCommandRow>(
         "SELECT id, command, payload_json FROM push_messages \
          WHERE device_id = ? AND status = 'pending' \
+           AND NOT (command IN ('game.emission', 'game.threat') \
+                    AND created_at <= datetime('now', '-120 seconds')) \
          ORDER BY id ASC LIMIT 50",
     )
     .bind(device_id)

@@ -931,12 +931,22 @@ async fn map_antidrone(user: WebUser) -> Response {
 #[template(path = "map_players.html")]
 struct MapPlayersTemplate {
     nav: crate::nav::NavCtx,
+    /// Показывать ли гейм-мастерскую панель («Ноосфера»). Право то же, что и на
+    /// постановку push-команд устройствам — реализация лежит в push_messages.
+    can_control: bool,
 }
 
 /// Ф4: вид карты игроков STALKER. Данные из `/api/v1/geo/players` + живой
-/// поток; обработчик рендерит только оболочку.
-async fn map_players(user: WebUser) -> Response {
-    render(MapPlayersTemplate { nav: user.nav() })
+/// поток; обработчик рендерит оболочку и, при наличии права `push.send`,
+/// гейм-мастерские элементы управления игровыми механиками.
+async fn map_players(user: WebUser, State(state): State<AppState>) -> Response {
+    let can_control = require_permission(&state.db, user.role_id, "push.send")
+        .await
+        .is_ok();
+    render(MapPlayersTemplate {
+        nav: user.nav(),
+        can_control,
+    })
 }
 
 #[derive(Template)]
