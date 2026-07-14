@@ -587,13 +587,12 @@ async fn sync(
 
     // Ф1: read the prior fix before overwriting it, so the history throttle can
     // compare distance and time.
-    let prev: (Option<f64>, Option<f64>, Option<String>) = sqlx::query_as(
-        "SELECT last_lat, last_lon, last_track_at FROM devices WHERE id = ?",
-    )
-    .bind(device.id)
-    .fetch_optional(&state.db)
-    .await?
-    .unwrap_or((None, None, None));
+    let prev: (Option<f64>, Option<f64>, Option<String>) =
+        sqlx::query_as("SELECT last_lat, last_lon, last_track_at FROM devices WHERE id = ?")
+            .bind(device.id)
+            .fetch_optional(&state.db)
+            .await?
+            .unwrap_or((None, None, None));
 
     sqlx::query(
         "UPDATE devices SET \

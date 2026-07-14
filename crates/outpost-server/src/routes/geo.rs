@@ -101,7 +101,9 @@ async fn positions(
             })
         })
         .collect();
-    Ok(Json(json!({"type": "FeatureCollection", "features": features})))
+    Ok(Json(
+        json!({"type": "FeatureCollection", "features": features}),
+    ))
 }
 
 #[derive(sqlx::FromRow)]
@@ -149,7 +151,9 @@ async fn markers(user: AuthUser, State(state): State<AppState>) -> Result<Json<V
             })
         })
         .collect();
-    Ok(Json(json!({"type": "FeatureCollection", "features": features})))
+    Ok(Json(
+        json!({"type": "FeatureCollection", "features": features}),
+    ))
 }
 
 /// Панель показателей на карте: последние значения каждой метрики устройства
@@ -276,7 +280,9 @@ async fn players(user: AuthUser, State(state): State<AppState>) -> Result<Json<V
             })
         })
         .collect();
-    Ok(Json(json!({"type": "FeatureCollection", "features": features})))
+    Ok(Json(
+        json!({"type": "FeatureCollection", "features": features}),
+    ))
 }
 
 /// Носимые устройства (class = wearable): позиция + последние виталы из
@@ -338,7 +344,8 @@ async fn wearables(user: AuthUser, State(state): State<AppState>) -> Result<Json
     .unwrap_or_default();
 
     // Сгруппировать метрики по устройству.
-    let mut by_device: std::collections::HashMap<i64, Vec<Value>> = std::collections::HashMap::new();
+    let mut by_device: std::collections::HashMap<i64, Vec<Value>> =
+        std::collections::HashMap::new();
     for m in metrics {
         by_device.entry(m.device_id).or_default().push(json!({
             "name": m.name, "value": m.value, "unit": m.unit
@@ -361,7 +368,9 @@ async fn wearables(user: AuthUser, State(state): State<AppState>) -> Result<Json
             })
         })
         .collect();
-    Ok(Json(json!({"type": "FeatureCollection", "features": features})))
+    Ok(Json(
+        json!({"type": "FeatureCollection", "features": features}),
+    ))
 }
 
 #[derive(Debug, Deserialize)]

@@ -77,13 +77,12 @@ pub(crate) async fn apply_position(
     }
 
     // Прежний фикс — для прореживания истории.
-    let prev: (Option<f64>, Option<f64>, Option<String>) = sqlx::query_as(
-        "SELECT last_lat, last_lon, last_track_at FROM devices WHERE id = ?",
-    )
-    .bind(device_id)
-    .fetch_optional(&state.db)
-    .await?
-    .unwrap_or((None, None, None));
+    let prev: (Option<f64>, Option<f64>, Option<String>) =
+        sqlx::query_as("SELECT last_lat, last_lon, last_track_at FROM devices WHERE id = ?")
+            .bind(device_id)
+            .fetch_optional(&state.db)
+            .await?
+            .unwrap_or((None, None, None));
 
     sqlx::query(
         "UPDATE devices SET \

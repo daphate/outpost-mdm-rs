@@ -86,7 +86,9 @@ fn json_array_of_strings(v: &Value, field: &str) -> Result<String, ApiError> {
 
 fn json_object(v: &Value, field: &str) -> Result<String, ApiError> {
     if !v.is_object() {
-        return Err(ApiError::BadRequest(format!("{field} must be a JSON object")));
+        return Err(ApiError::BadRequest(format!(
+            "{field} must be a JSON object"
+        )));
     }
     Ok(v.to_string())
 }

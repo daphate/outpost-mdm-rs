@@ -23,7 +23,10 @@ use serde::{Deserialize, Serialize};
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/units", get(list).post(create))
-        .route("/api/v1/units/{id}", get(get_one).put(update).delete(delete))
+        .route(
+            "/api/v1/units/{id}",
+            get(get_one).put(update).delete(delete),
+        )
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -37,8 +40,7 @@ pub struct Unit {
     pub updated_at: DateTime<Utc>,
 }
 
-const SELECT_COLS: &str =
-    "id, customer_id, parent_id, name, description, created_at, updated_at";
+const SELECT_COLS: &str = "id, customer_id, parent_id, name, description, created_at, updated_at";
 
 async fn list(
     user: AuthUser,
@@ -98,7 +100,9 @@ async fn require_parent_in_tenant(
                 .fetch_optional(&state.db)
                 .await?;
         if ok.is_none() {
-            return Err(ApiError::BadRequest("parent unit not found in tenant".into()));
+            return Err(ApiError::BadRequest(
+                "parent unit not found in tenant".into(),
+            ));
         }
     }
     Ok(())
@@ -134,15 +138,17 @@ async fn create(
     .fetch_one(&state.db)
     .await
     .map_err(|e| match &e {
-        sqlx::Error::Database(db) if db.is_unique_violation() => {
-            ApiError::BadRequest(format!("unit '{}' already exists under this parent", req.name))
-        }
+        sqlx::Error::Database(db) if db.is_unique_violation() => ApiError::BadRequest(format!(
+            "unit '{}' already exists under this parent",
+            req.name
+        )),
         _ => ApiError::from(e),
     })?;
-    let u: Unit = sqlx::query_as::<_, Unit>(&format!("SELECT {SELECT_COLS} FROM units WHERE id = ?"))
-        .bind(id)
-        .fetch_one(&state.db)
-        .await?;
+    let u: Unit =
+        sqlx::query_as::<_, Unit>(&format!("SELECT {SELECT_COLS} FROM units WHERE id = ?"))
+            .bind(id)
+            .fetch_one(&state.db)
+            .await?;
     Ok((StatusCode::CREATED, Json(u)))
 }
 
@@ -172,7 +178,9 @@ async fn update(
     .await?
     .ok_or(ApiError::NotFound)?;
     if req.parent_id == Some(id) {
-        return Err(ApiError::BadRequest("a unit cannot be its own parent".into()));
+        return Err(ApiError::BadRequest(
+            "a unit cannot be its own parent".into(),
+        ));
     }
     require_parent_in_tenant(&state, user.customer_id, req.parent_id).await?;
     sqlx::query(
@@ -189,10 +197,11 @@ async fn update(
     .bind(id)
     .execute(&state.db)
     .await?;
-    let u: Unit = sqlx::query_as::<_, Unit>(&format!("SELECT {SELECT_COLS} FROM units WHERE id = ?"))
-        .bind(id)
-        .fetch_one(&state.db)
-        .await?;
+    let u: Unit =
+        sqlx::query_as::<_, Unit>(&format!("SELECT {SELECT_COLS} FROM units WHERE id = ?"))
+            .bind(id)
+            .fetch_one(&state.db)
+            .await?;
     Ok(Json(u))
 }
 

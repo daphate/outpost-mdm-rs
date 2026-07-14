@@ -96,11 +96,12 @@ pub async fn export_customer(
             sqlx::query("DELETE FROM main.customers")
                 .execute(&mut conn)
                 .await?;
-            let n = sqlx::query("INSERT INTO main.customers SELECT * FROM src.customers WHERE id = ?")
-                .bind(customer_id)
-                .execute(&mut conn)
-                .await?
-                .rows_affected();
+            let n =
+                sqlx::query("INSERT INTO main.customers SELECT * FROM src.customers WHERE id = ?")
+                    .bind(customer_id)
+                    .execute(&mut conn)
+                    .await?
+                    .rows_affected();
             report.per_table.push((t.clone(), n));
             report.total_rows += n;
         } else if has_customer {
@@ -121,7 +122,9 @@ pub async fn export_customer(
         }
     }
 
-    sqlx::query("DETACH DATABASE src").execute(&mut conn).await?;
+    sqlx::query("DETACH DATABASE src")
+        .execute(&mut conn)
+        .await?;
     sqlx::query("PRAGMA foreign_keys=ON")
         .execute(&mut conn)
         .await?;
@@ -170,7 +173,10 @@ mod tests {
 
         seed_source(src).await;
         let report = export_customer(src, tgt, 1).await.unwrap();
-        assert!(report.total_rows >= 1, "должна скопироваться хотя бы 1 строка");
+        assert!(
+            report.total_rows >= 1,
+            "должна скопироваться хотя бы 1 строка"
+        );
 
         // Проверить целевую БД: только заказчик 1, только его устройство,
         // глобальные роли на месте.
@@ -183,7 +189,11 @@ mod tests {
             .fetch_all(&pool)
             .await
             .unwrap();
-        assert_eq!(customers, vec![1], "в срезе должен остаться только заказчик 1");
+        assert_eq!(
+            customers,
+            vec![1],
+            "в срезе должен остаться только заказчик 1"
+        );
 
         let foreign: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE customer_id != 1")

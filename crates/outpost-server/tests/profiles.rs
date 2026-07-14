@@ -42,7 +42,8 @@ async fn upsert_then_get_roundtrip_and_coalesce() {
     let v: serde_json::Value = serde_json::from_str(&got).unwrap();
     assert_eq!(v["single_tenant"], true);
     assert_eq!(v["domain"], "acme.example.tech");
-    let classes: Vec<String> = serde_json::from_str(v["enabled_classes"].as_str().unwrap()).unwrap();
+    let classes: Vec<String> =
+        serde_json::from_str(v["enabled_classes"].as_str().unwrap()).unwrap();
     assert!(classes.contains(&"wearable".to_string()));
     let flags: serde_json::Value =
         serde_json::from_str(v["feature_flags"].as_str().unwrap()).unwrap();

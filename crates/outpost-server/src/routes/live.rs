@@ -30,18 +30,19 @@ async fn stream(user: AuthUser, State(state): State<AppState>) -> impl IntoRespo
     let rx = state.live.subscribe();
     let events = BroadcastStream::new(rx).filter_map(move |res| match res {
         // Only this tenant's events reach the client.
-        Ok(ev) if ev.customer_id == customer_id => {
-            Some(Ok::<Event, Infallible>(
-                Event::default().event(ev.name).data(&*ev.data),
-            ))
-        }
+        Ok(ev) if ev.customer_id == customer_id => Some(Ok::<Event, Infallible>(
+            Event::default().event(ev.name).data(&*ev.data),
+        )),
         Ok(_) => None,
         // Lagged: the receiver fell behind the 1024-slot buffer. Tell the client
         // to refetch rather than trying to replay the gap.
         Err(_lagged) => Some(Ok(Event::default().event("resync").data("{}"))),
     });
-    let sse = Sse::new(events)
-        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("ping"));
+    let sse = Sse::new(events).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("ping"),
+    );
     // Belt-and-suspenders against proxy buffering (nginx also sets this).
     ([("x-accel-buffering", "no")], sse)
 }
