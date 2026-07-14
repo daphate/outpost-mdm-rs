@@ -36,6 +36,7 @@ use axum::{
     routing::get,
 };
 
+use crate::auth_extract::SUPER_ADMIN_ROLE_ID;
 use crate::session::{self, KIND_USER};
 use crate::state::AppState;
 
@@ -81,29 +82,49 @@ async fn auth_check(State(state): State<AppState>, headers: HeaderMap) -> Respon
         return (StatusCode::UNAUTHORIZED, "second factor required").into_response();
     }
 
-    // Account must still be active. Even after a session is issued an
-    // admin can flip `is_active = 0` to lock the user out instantly;
-    // this enforcement point must respect that.
-    let active: Option<i64> = sqlx::query_scalar("SELECT is_active FROM users WHERE id = ?")
-        .bind(s.subject_id)
-        .fetch_optional(&state.db)
-        .await
-        .ok()
-        .flatten();
-    if active != Some(1) {
+    // Account must still be active (an admin can flip `is_active = 0` to lock a
+    // user out instantly, even after a session is issued). We also pull the
+    // CURRENT role here rather than trusting the role cached in the session at
+    // issue time — a demotion must take effect immediately at this gate.
+    let row: Option<(i64, i64)> =
+        sqlx::query_as("SELECT is_active, role_id FROM users WHERE id = ?")
+            .bind(s.subject_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
+    let Some((1, role_id)) = row else {
         return (StatusCode::UNAUTHORIZED, "user deactivated").into_response();
+    };
+
+    // Tenant-awareness: on the central multi-tenant hub, Grafana is a single
+    // anonymous-admin instance that sees EVERY tenant's data. Gate it to
+    // super-admins (hub operators) so a regular tenant user cannot reach the
+    // shared, cross-tenant Grafana. Per-tenant scoping (Grafana orgs keyed off
+    // the `x-auth-customer-id` header below) is the follow-up, and lives in
+    // Grafana config, not here. On a single-tenant deploy the admin IS the
+    // super-admin, so this changes nothing.
+    if role_id != SUPER_ADMIN_ROLE_ID {
+        return (
+            StatusCode::UNAUTHORIZED,
+            "grafana restricted to super-admin",
+        )
+            .into_response();
     }
 
-    // Pass user identity to the upstream (Grafana) via response headers.
+    // Pass identity + tenant to the upstream (Grafana) via response headers.
     // nginx `auth_request_set` can copy these into request headers when
-    // forwarding to the protected upstream, enabling auth.proxy /
-    // X-WEBAUTH-USER style auto-login in Grafana.
+    // forwarding to the protected upstream, enabling auth.proxy / X-WEBAUTH-USER
+    // style auto-login and (later) per-tenant org routing.
     let mut resp = (StatusCode::OK, "ok").into_response();
     if let Ok(login_hv) = HeaderValue::from_str(&s.login) {
         resp.headers_mut().insert("x-auth-user-login", login_hv);
     }
     if let Ok(id_hv) = HeaderValue::from_str(&s.subject_id.to_string()) {
         resp.headers_mut().insert("x-auth-user-id", id_hv);
+    }
+    if let Ok(cid_hv) = HeaderValue::from_str(&s.customer_id.to_string()) {
+        resp.headers_mut().insert("x-auth-customer-id", cid_hv);
     }
     resp
 }
@@ -144,6 +165,66 @@ mod tests {
                 Request::builder()
                     .uri("/__mdm_auth_check")
                     .header("cookie", "outpost_session=not-a-real-token-just-junk")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn super_admin_allowed_and_carries_tenant_header() {
+        let state = test_state().await;
+        let app = router().with_state(state.clone());
+        // The seeded admin (id 1) is super-admin (role 1), active, tenant 1.
+        let token = crate::session::create_user_session(
+            &state.db,
+            1,
+            1,
+            crate::auth_extract::SUPER_ADMIN_ROLE_ID,
+            "admin",
+            3600,
+        )
+        .await
+        .unwrap();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/__mdm_auth_check")
+                    .header("cookie", format!("outpost_session={token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get("x-auth-customer-id").unwrap(), "1");
+    }
+
+    #[tokio::test]
+    async fn regular_tenant_user_denied_shared_grafana() {
+        let state = test_state().await;
+        let app = router().with_state(state.clone());
+        // A non-super-admin (role 2, "operator") in the same tenant.
+        sqlx::query(
+            "INSERT INTO users (customer_id, role_id, login, is_active) VALUES (1, 2, 'op', 1)",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+        let uid: i64 = sqlx::query_scalar("SELECT id FROM users WHERE login = 'op'")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        let token = crate::session::create_user_session(&state.db, uid, 1, 2, "op", 3600)
+            .await
+            .unwrap();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/__mdm_auth_check")
+                    .header("cookie", format!("outpost_session={token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
