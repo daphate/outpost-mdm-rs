@@ -68,6 +68,20 @@ impl TenantPurpose {
     }
 }
 
+/// Русская подпись класса устройства (`devices.device_class`, миграция 0031;
+/// канонический список — docs/DEVICE-CLASSES.md). Whitelist классов, как и у
+/// назначений, живёт в коде; незнакомый класс показываем как есть нельзя
+/// (это данные устройства) — даём нейтральное «прочее».
+pub fn device_class_label_ru(class: &str) -> &'static str {
+    match class {
+        "android_tactical" => "тактический",
+        "acoustic_node" => "акустический узел",
+        "stalker_player" => "игрок",
+        "wearable" => "носимое",
+        _ => "прочее",
+    }
+}
+
 /// Всё, что нужно `_nav.html`. По флагу на каждый пункт меню, зависящий от
 /// назначения тенанта; всегда видимые пункты (Сводка, Устройства, Группы,
 /// Телеметрия, Пользователи, Роли, Настройки) флагов не имеют. «Тенанты» —
@@ -182,6 +196,16 @@ mod tests {
             flags(TenantPurpose::Wearables),
             [false, false, false, true, false, false, false, false, false]
         );
+    }
+
+    #[test]
+    fn device_class_labels_cover_canonical_classes_and_fallback() {
+        assert_eq!(device_class_label_ru("android_tactical"), "тактический");
+        assert_eq!(device_class_label_ru("acoustic_node"), "акустический узел");
+        assert_eq!(device_class_label_ru("stalker_player"), "игрок");
+        assert_eq!(device_class_label_ru("wearable"), "носимое");
+        assert_eq!(device_class_label_ru("quadcopter"), "прочее");
+        assert_eq!(device_class_label_ru(""), "прочее");
     }
 
     #[test]

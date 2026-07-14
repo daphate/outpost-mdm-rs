@@ -53,6 +53,12 @@ fn fed_config() -> Option<&'static Fed> {
     .as_ref()
 }
 
+/// Настроена ли федерация с ЦУП «Пеленг» на этом инстансе (без похода в сеть).
+/// Используется сводкой антидронного тенанта.
+pub fn is_configured() -> bool {
+    fed_config().is_some()
+}
+
 fn http_client() -> Option<&'static reqwest::Client> {
     static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
     CLIENT

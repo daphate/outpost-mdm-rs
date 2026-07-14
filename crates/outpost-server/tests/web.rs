@@ -949,6 +949,19 @@ fn nav_of(html: &str) -> &str {
     &html[start..end]
 }
 
+/// ~300-байтовое окно HTML после первого вхождения `needle`, обрезанное по
+/// границе символа: кириллица в разметке ломает наивный `&html[i..i+300]`.
+fn window_after<'a>(html: &'a str, needle: &str) -> &'a str {
+    let idx = html
+        .find(needle)
+        .unwrap_or_else(|| panic!("«{needle}» not found in page"));
+    let mut end = (idx + 300).min(html.len());
+    while !html.is_char_boundary(end) {
+        end -= 1;
+    }
+    &html[idx..end]
+}
+
 #[tokio::test]
 async fn default_universal_tenant_shows_full_menu() {
     let app = TestApp::start().await;
@@ -1076,6 +1089,327 @@ async fn customer_edit_updates_purpose_and_menu_follows() {
     let nav = nav_of(&dash);
     assert!(nav.contains("href=\"/map/players\""));
     assert!(!nav.contains("href=\"/ballistics/templates\""));
+}
+
+// ----- Purpose-специфичные сводки ------------------------------------------
+
+#[tokio::test]
+async fn game_dashboard_join_code_lifecycle() {
+    let app = TestApp::start().await;
+    let cookie = web_login_cookie(&app).await;
+    // Игровой тенант + переключение в него.
+    let (status, _raw) = raw_request_with_cookie(
+        "POST",
+        &app.url("/customers/new"),
+        &format!("outpost_session={cookie}"),
+        "application/x-www-form-urlencoded",
+        "name=larp&description=&kind=production&purpose=game",
+    )
+    .await;
+    assert_eq!(status, 303);
+    let tenant_id: i64 = sqlx::query_scalar("SELECT id FROM customers WHERE name = 'larp'")
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    let (status, raw) = raw_request_with_cookie(
+        "POST",
+        &app.url(&format!("/customers/{tenant_id}/switch")),
+        &format!("outpost_session={cookie}"),
+        "application/x-www-form-urlencoded",
+        "",
+    )
+    .await;
+    assert_eq!(status, 303);
+    let acting = extract_set_cookie_value(&raw, "outpost_acting").unwrap();
+    let cookies = format!("outpost_session={cookie}; outpost_acting={acting}");
+
+    // Сводка игры до выпуска кода: игроки + предложение включить саморегистрацию.
+    // «Игроки онлайн» — подпись именно карточки: nav-ссылка называется «Игроки»,
+    // поэтому короткий вариант был бы вакуумным ассертом.
+    let (status, html) = raw_get(&app.url("/dashboard"), Some(&cookies)).await;
+    assert_eq!(status, 200);
+    assert!(html.contains("Сводка по игре"));
+    assert!(html.contains("Код игры"));
+    assert!(html.contains("Игроки онлайн"));
+    assert!(html.contains("Включить саморегистрацию"));
+
+    // Включение: секрет появляется в профиле именно этого тенанта.
+    let (status, _raw) = raw_request_with_cookie(
+        "POST",
+        &app.url("/game/join/enable"),
+        &cookies,
+        "application/x-www-form-urlencoded",
+        "",
+    )
+    .await;
+    assert_eq!(status, 303);
+    async fn join_secret(pool: &sqlx::SqlitePool, tenant_id: i64) -> Option<String> {
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT join_secret FROM customer_profiles WHERE customer_id = ?",
+        )
+        .bind(tenant_id)
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+        .flatten()
+    }
+    let s1 = join_secret(&app.pool, tenant_id)
+        .await
+        .expect("join secret set after enable");
+    assert_eq!(s1.len(), 32);
+
+    // Сводка показывает секрет, join-URI и QR.
+    let (_, html) = raw_get(&app.url("/dashboard"), Some(&cookies)).await;
+    assert!(html.contains(&s1));
+    assert!(html.contains("outpost-join://v1/"));
+    assert!(html.contains("<svg"));
+
+    // Перевыпуск меняет секрет (и именно меняет, а не стирает).
+    let (status, _raw) = raw_request_with_cookie(
+        "POST",
+        &app.url("/game/join/enable"),
+        &cookies,
+        "application/x-www-form-urlencoded",
+        "",
+    )
+    .await;
+    assert_eq!(status, 303);
+    let s2 = join_secret(&app.pool, tenant_id)
+        .await
+        .expect("reissue keeps a secret set");
+    assert_ne!(s2, s1);
+
+    // Выключение стирает секрет, сводка возвращается к предложению включить.
+    let (status, _raw) = raw_request_with_cookie(
+        "POST",
+        &app.url("/game/join/disable"),
+        &cookies,
+        "application/x-www-form-urlencoded",
+        "",
+    )
+    .await;
+    assert_eq!(status, 303);
+    assert!(join_secret(&app.pool, tenant_id).await.is_none());
+    let (_, html) = raw_get(&app.url("/dashboard"), Some(&cookies)).await;
+    assert!(html.contains("Включить саморегистрацию"));
+}
+
+#[tokio::test]
+async fn antidrone_dashboard_shows_nodes_and_federation_status() {
+    let app = TestApp::start().await;
+    let cookie = web_login_cookie(&app).await;
+    let (status, _raw) = raw_request_with_cookie(
+        "POST",
+        &app.url("/customers/new"),
+        &format!("outpost_session={cookie}"),
+        "application/x-www-form-urlencoded",
+        "name=airwatch&description=&kind=production&purpose=antidrone",
+    )
+    .await;
+    assert_eq!(status, 303);
+    let tenant_id: i64 = sqlx::query_scalar("SELECT id FROM customers WHERE name = 'airwatch'")
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    // Узел в чужом тенанте — прямым SQL: API-токен привязан к home-тенанту,
+    // outpost_acting действует только на WebUser.
+    sqlx::query(
+        "INSERT INTO devices (customer_id, serial, device_class, is_online) \
+         VALUES (?, 'node-1', 'acoustic_node', 1)",
+    )
+    .bind(tenant_id)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+    let (status, raw) = raw_request_with_cookie(
+        "POST",
+        &app.url(&format!("/customers/{tenant_id}/switch")),
+        &format!("outpost_session={cookie}"),
+        "application/x-www-form-urlencoded",
+        "",
+    )
+    .await;
+    assert_eq!(status, 303);
+    let acting = extract_set_cookie_value(&raw, "outpost_acting").unwrap();
+
+    let (status, html) = raw_get(
+        &app.url("/dashboard"),
+        Some(&format!(
+            "outpost_session={cookie}; outpost_acting={acting}"
+        )),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert!(html.contains("Сводка по антидрону"));
+    // Счётчик узлов реально отражает вставленный acoustic_node (а не только
+    // метку): оконный ассерт по образцу wearables-теста.
+    let tail = window_after(&html, "Акустические узлы");
+    assert!(tail.contains(">1<"), "expected nodes_total 1 in: {tail}");
+    // Статус федерации зависит от окружения процесса (OnceLock, env в тестах
+    // не мутируем — урок fffb8e9): ожидание вычисляем из того же env.
+    let bearing_env = std::env::var("BEARING_BASE_URL").is_ok_and(|s| !s.is_empty())
+        && std::env::var("BEARING_FED_TOKEN").is_ok_and(|s| !s.is_empty());
+    if bearing_env {
+        assert!(!html.contains("не настроена"));
+    } else {
+        assert!(html.contains("не настроена"));
+    }
+    // Ни APK-карточек, ни секции кода игры у антидронного тенанта нет.
+    assert!(!html.contains("Приложения"));
+    assert!(!html.contains("Код игры"));
+}
+
+#[tokio::test]
+async fn wearables_dashboard_counts_only_fresh_vitals() {
+    let app = TestApp::start().await;
+    // Home-тенант становится носимым (id=1) — сессия и токены остаются валидны.
+    sqlx::query("UPDATE customers SET purpose = 'wearables' WHERE id = 1")
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    // Два носимых: у первого свежая метрика, у второго только протухшая.
+    sqlx::query(
+        "INSERT INTO devices (customer_id, serial, device_class) \
+         VALUES (1, 'W-1', 'wearable'), (1, 'W-2', 'wearable')",
+    )
+    .execute(&app.pool)
+    .await
+    .unwrap();
+    let w1: i64 = sqlx::query_scalar("SELECT id FROM devices WHERE serial = 'W-1'")
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    let w2: i64 = sqlx::query_scalar("SELECT id FROM devices WHERE serial = 'W-2'")
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    // Две свежие метрики ОДНОГО устройства: пиновка COUNT(DISTINCT device_id)
+    // — с COUNT(*) карточка показала бы 2 (строки метрик, а не устройства).
+    sqlx::query(
+        "INSERT INTO device_metrics (customer_id, device_id, ts, name, value) \
+         VALUES (1, ?, datetime('now'), 'vitals.heart_rate', 72), \
+                (1, ?, datetime('now'), 'vitals.spo2', 98)",
+    )
+    .bind(w1)
+    .bind(w1)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO device_metrics (customer_id, device_id, ts, name, value, received_at) \
+         VALUES (1, ?, datetime('now','-1 hour'), 'vitals.heart_rate', 70, datetime('now','-1 hour'))",
+    )
+    .bind(w2)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+
+    let cookie = web_login_cookie(&app).await;
+    let (status, html) = raw_get(
+        &app.url("/dashboard"),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert!(html.contains("Сводка по носимым"));
+    // Свежие виталы шлёт ровно одно из двух носимых.
+    let tail = window_after(&html, "Передают виталы");
+    assert!(
+        tail.contains(">1<"),
+        "expected fresh-vitals count 1 in: {tail}"
+    );
+    // APK-карточек у носимого тенанта нет.
+    assert!(!html.contains("Приложения"));
+
+    // Страница устройств показывает колонку «Класс» с подписью.
+    let (_, dev_html) = raw_get(
+        &app.url("/devices"),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
+    assert!(dev_html.contains("Класс"));
+    assert!(dev_html.contains("носимое"));
+}
+
+#[tokio::test]
+async fn game_join_forms_require_configurations_write() {
+    let app = TestApp::start().await;
+    // Viewer (роль 4, read-only) в home-тенанте.
+    let body = serde_json::json!({"login": "viewer1", "role_id": 4, "password": "ViewerPass123!"})
+        .to_string();
+    http_request(
+        "POST",
+        &app.url("/api/v1/users"),
+        Some(&app.admin_token),
+        None,
+        Some(&body),
+    )
+    .await;
+    let (status, raw) = raw_post_form(
+        &app.url("/login"),
+        "login=viewer1&password=ViewerPass123%21",
+    )
+    .await;
+    assert_eq!(status, 303);
+    let cookie = extract_set_cookie_value(&raw, "outpost_session").unwrap();
+    for path in ["/game/join/enable", "/game/join/disable"] {
+        let (status, _raw) = raw_request_with_cookie(
+            "POST",
+            &app.url(path),
+            &format!("outpost_session={cookie}"),
+            "application/x-www-form-urlencoded",
+            "",
+        )
+        .await;
+        assert_eq!(status, 403, "{path} must require configurations.write");
+    }
+}
+
+#[tokio::test]
+async fn stray_join_secret_warns_after_purpose_change() {
+    let app = TestApp::start().await;
+    let cookie = web_login_cookie(&app).await;
+    // Игровой home-тенант с выпущенным кодом…
+    sqlx::query("UPDATE customers SET purpose = 'game' WHERE id = 1")
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    let (status, _raw) = raw_request_with_cookie(
+        "POST",
+        &app.url("/game/join/enable"),
+        &format!("outpost_session={cookie}"),
+        "application/x-www-form-urlencoded",
+        "",
+    )
+    .await;
+    assert_eq!(status, 303);
+    // …меняет назначение: секрет остаётся активен, сводка предупреждает.
+    sqlx::query("UPDATE customers SET purpose = 'tactical' WHERE id = 1")
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    let (_, html) = raw_get(
+        &app.url("/dashboard"),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
+    assert!(html.contains("выпущен код игры"));
+    // Выключение из предупреждения работает, предупреждение исчезает.
+    let (status, _raw) = raw_request_with_cookie(
+        "POST",
+        &app.url("/game/join/disable"),
+        &format!("outpost_session={cookie}"),
+        "application/x-www-form-urlencoded",
+        "",
+    )
+    .await;
+    assert_eq!(status, 303);
+    let (_, html) = raw_get(
+        &app.url("/dashboard"),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
+    assert!(!html.contains("выпущен код игры"));
 }
 
 #[tokio::test]

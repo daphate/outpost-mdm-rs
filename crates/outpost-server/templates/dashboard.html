@@ -6,29 +6,82 @@
 {% include "_nav.html" %}
 
 <main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
-  <h2 class="text-2xl font-bold">Сводка по парку</h2>
+  <h2 class="text-2xl font-bold">{{ heading }}</h2>
+
+  {% if let Some(msg) = flash %}
+    <div class="bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm px-4 py-2 rounded">{{ msg }}</div>
+  {% endif %}
 
   <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-    <a href="/devices" class="block bg-white p-5 rounded-lg shadow-sm hover:shadow-md hover:bg-slate-50 transition">
-      <div class="text-xs uppercase tracking-wide text-slate-500">Устройства</div>
-      <div class="text-3xl font-bold mt-1">{{ stats.devices_total }}</div>
-    </a>
-    <a href="/devices" class="block bg-white p-5 rounded-lg shadow-sm hover:shadow-md hover:bg-slate-50 transition">
-      <div class="text-xs uppercase tracking-wide text-slate-500">Онлайн</div>
-      <div class="text-3xl font-bold mt-1 text-emerald-600">{{ stats.devices_online }}</div>
-    </a>
-    <a href="/devices" class="block bg-white p-5 rounded-lg shadow-sm hover:shadow-md hover:bg-slate-50 transition">
-      <div class="text-xs uppercase tracking-wide text-slate-500">Зарегистрированы</div>
-      <div class="text-3xl font-bold mt-1">{{ stats.devices_enrolled }}</div>
-    </a>
+    {# Первый ряд карточек — по назначению тенанта: игроки / узлы / носимые,
+       иначе общие счётчики парка. Заполнен максимум один purpose-блок. #}
+    {% if let Some(g) = game %}
+      <a href="/map/players" class="block bg-white p-5 rounded-lg shadow-sm hover:shadow-md hover:bg-slate-50 transition">
+        <div class="text-xs uppercase tracking-wide text-slate-500">Игроки</div>
+        <div class="text-3xl font-bold mt-1">{{ g.players_total }}</div>
+      </a>
+      <a href="/map/players" class="block bg-white p-5 rounded-lg shadow-sm hover:shadow-md hover:bg-slate-50 transition">
+        <div class="text-xs uppercase tracking-wide text-slate-500">Игроки онлайн</div>
+        <div class="text-3xl font-bold mt-1 text-emerald-600">{{ g.players_online }}</div>
+      </a>
+    {% else if let Some(a) = antidrone %}
+      <a href="/devices" class="block bg-white p-5 rounded-lg shadow-sm hover:shadow-md hover:bg-slate-50 transition">
+        <div class="text-xs uppercase tracking-wide text-slate-500">Акустические узлы</div>
+        <div class="text-3xl font-bold mt-1">{{ a.nodes_total }}</div>
+      </a>
+      <a href="/map/antidrone" class="block bg-white p-5 rounded-lg shadow-sm hover:shadow-md hover:bg-slate-50 transition">
+        <div class="text-xs uppercase tracking-wide text-slate-500">Узлы онлайн</div>
+        <div class="text-3xl font-bold mt-1 text-emerald-600">{{ a.nodes_online }}</div>
+      </a>
+      <a href="/map/antidrone" class="block bg-white p-5 rounded-lg shadow-sm hover:shadow-md hover:bg-slate-50 transition">
+        <div class="text-xs uppercase tracking-wide text-slate-500">Федерация «Пеленг»</div>
+        {% if a.bearing_configured %}
+          <div class="text-lg font-semibold mt-2 text-emerald-600">настроена</div>
+        {% else %}
+          <div class="text-lg font-semibold mt-2 text-amber-600">не настроена</div>
+        {% endif %}
+      </a>
+    {% else if let Some(w) = wearables %}
+      <a href="/devices" class="block bg-white p-5 rounded-lg shadow-sm hover:shadow-md hover:bg-slate-50 transition">
+        <div class="text-xs uppercase tracking-wide text-slate-500">Носимые</div>
+        <div class="text-3xl font-bold mt-1">{{ w.wear_total }}</div>
+      </a>
+      <a href="/map/wearables" class="block bg-white p-5 rounded-lg shadow-sm hover:shadow-md hover:bg-slate-50 transition">
+        <div class="text-xs uppercase tracking-wide text-slate-500">Онлайн</div>
+        <div class="text-3xl font-bold mt-1 text-emerald-600">{{ w.wear_online }}</div>
+      </a>
+      <a href="/map/wearables" class="block bg-white p-5 rounded-lg shadow-sm hover:shadow-md hover:bg-slate-50 transition">
+        <div class="text-xs uppercase tracking-wide text-slate-500">Передают виталы (15 мин)</div>
+        <div class="text-3xl font-bold mt-1">{{ w.vitals_active_15m }}</div>
+      </a>
+    {% else %}
+      <a href="/devices" class="block bg-white p-5 rounded-lg shadow-sm hover:shadow-md hover:bg-slate-50 transition">
+        <div class="text-xs uppercase tracking-wide text-slate-500">Устройства</div>
+        <div class="text-3xl font-bold mt-1">{{ stats.devices_total }}</div>
+      </a>
+      <a href="/devices" class="block bg-white p-5 rounded-lg shadow-sm hover:shadow-md hover:bg-slate-50 transition">
+        <div class="text-xs uppercase tracking-wide text-slate-500">Онлайн</div>
+        <div class="text-3xl font-bold mt-1 text-emerald-600">{{ stats.devices_online }}</div>
+      </a>
+      <a href="/devices" class="block bg-white p-5 rounded-lg shadow-sm hover:shadow-md hover:bg-slate-50 transition">
+        <div class="text-xs uppercase tracking-wide text-slate-500">Зарегистрированы</div>
+        <div class="text-3xl font-bold mt-1">{{ stats.devices_enrolled }}</div>
+      </a>
+    {% endif %}
+    {# APK-конвейер — только там, где он есть (nav-флаги по назначению). #}
+    {% if nav.show_apps %}
     <a href="/applications" class="block bg-white p-5 rounded-lg shadow-sm hover:shadow-md hover:bg-slate-50 transition">
       <div class="text-xs uppercase tracking-wide text-slate-500">Приложения</div>
       <div class="text-3xl font-bold mt-1">{{ stats.applications_total }}</div>
     </a>
+    {% endif %}
+    {% if nav.show_configs %}
     <a href="/configurations" class="block bg-white p-5 rounded-lg shadow-sm hover:shadow-md hover:bg-slate-50 transition">
       <div class="text-xs uppercase tracking-wide text-slate-500">Конфигурации</div>
       <div class="text-3xl font-bold mt-1">{{ stats.configurations_total }}</div>
     </a>
+    {% endif %}
+    {% if nav.show_push %}
     <a href="/push" class="block bg-white p-5 rounded-lg shadow-sm hover:shadow-md hover:bg-slate-50 transition">
       <div class="text-xs uppercase tracking-wide text-slate-500">Push ожидают</div>
       <div class="text-3xl font-bold mt-1 text-amber-600">{{ stats.push_pending }}</div>
@@ -37,6 +90,61 @@
       <div class="text-xs uppercase tracking-wide text-slate-500">Push за 24 ч</div>
       <div class="text-3xl font-bold mt-1">{{ stats.push_sent_24h }}</div>
     </a>
+    {% endif %}
   </div>
+
+  {# Предупреждение об «осиротевшем» коде игры: назначение сменили, а
+     саморегистрация всё ещё активна. Виден только с configurations.write. #}
+  {% if stray_join_secret %}
+  <section class="bg-amber-50 border border-amber-200 text-amber-900 text-sm px-4 py-3 rounded flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+    <p>У тенанта выпущен код игры — саморегистрация игроков активна, хотя назначение тенанта не «игра». Игроки могут продолжать подключаться.</p>
+    <form method="POST" action="/game/join/disable" class="shrink-0">
+      <button class="bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium px-4 py-1.5 rounded">Выключить</button>
+    </form>
+  </section>
+  {% endif %}
+
+  {# Код игры — саморегистрация игроков (режим B), только игровой тенант и
+     только для тех, кто вправе управлять кодом (configurations.write). #}
+  {% if let Some(g) = game %}
+  {% if g.can_manage_join %}
+  <section class="bg-white rounded-lg shadow-sm p-5 space-y-3">
+    <h3 class="text-lg font-semibold">Код игры (саморегистрация игроков)</h3>
+    {% if let Some(s) = g.join_secret %}
+      <p class="text-sm text-slate-600">Игрок сканирует общий QR приложением, вводит позывной — устройство класса «игрок» создаётся автоматически и получает токен на 90 дней.</p>
+      <div class="flex flex-col md:flex-row gap-5 items-start">
+        {% if let Some(q) = g.join_qr_svg %}
+          <div class="shrink-0 bg-white border border-slate-200 rounded p-2">{{ q|safe }}</div>
+        {% endif %}
+        <div class="space-y-3 text-sm min-w-0">
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-500">Секрет</div>
+            <code class="font-mono select-all break-all">{{ s }}</code>
+          </div>
+          {% if let Some(u) = g.join_uri %}
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-500">Join-URI (если QR не сканируется)</div>
+            <code class="font-mono text-xs break-all select-all">{{ u }}</code>
+          </div>
+          {% endif %}
+          <div class="flex gap-3 pt-1">
+            <form method="POST" action="/game/join/enable">
+              <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded">Перевыпустить (старый QR перестанет работать)</button>
+            </form>
+            <form method="POST" action="/game/join/disable">
+              <button class="text-sm text-red-600 hover:text-red-800 px-2 py-1.5">Выключить саморегистрацию</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    {% else %}
+      <p class="text-sm text-slate-600">Саморегистрация выключена — join-секрет не выпущен. Включите, чтобы получить общий QR: игроки будут подключаться сами, без ручного заведения каждого устройства.</p>
+      <form method="POST" action="/game/join/enable">
+        <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-1.5 rounded">Включить саморегистрацию</button>
+      </form>
+    {% endif %}
+  </section>
+  {% endif %}
+  {% endif %}
 </main>
 {% endblock %}

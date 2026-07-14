@@ -193,6 +193,9 @@ pub fn router() -> Router<AppState> {
         // Server-wide settings
         .route("/settings", get(settings_page).post(settings_save))
         .route("/settings/language", post(settings_language))
+        // Код игры (саморегистрация игроков) — формы на сводке игрового тенанта.
+        .route("/game/join/enable", post(game_join_enable_form))
+        .route("/game/join/disable", post(game_join_disable_form))
         // Self-profile (email, etc)
         .route("/profile", get(profile_view).post(profile_save))
         // Telemetry — fleet overview, per-device drill-down, per-device log stream
@@ -626,7 +629,16 @@ impl<S: Send + Sync> FromRequestParts<S> for LogoutToken {
 #[template(path = "dashboard.html")]
 struct DashboardTemplate {
     nav: crate::nav::NavCtx,
+    /// Заголовок по назначению тенанта («Сводка по игре» и т. д.).
+    heading: &'static str,
     stats: FleetStatsView,
+    /// Purpose-блоки: заполнен максимум один, по назначению активного тенанта.
+    game: Option<GameDash>,
+    antidrone: Option<AntidroneDash>,
+    wearables: Option<WearablesDash>,
+    /// Код игры активен, хотя назначение тенанта — не «игра» (см. dashboard()).
+    stray_join_secret: bool,
+    flash: Option<String>,
 }
 
 #[derive(Debug)]
@@ -640,7 +652,41 @@ struct FleetStatsView {
     push_sent_24h: i64,
 }
 
-async fn dashboard(user: WebUser, State(state): State<AppState>) -> Result<Response, ApiError> {
+/// Сводка игрового тенанта: игроки + код игры (саморегистрация, режим B).
+#[derive(Debug)]
+struct GameDash {
+    players_total: i64,
+    players_online: i64,
+    /// Есть ли у зрителя право configurations.write (гейт API join/enable).
+    /// Без него секция «Код игры» не показывается вовсе — viewer видит
+    /// счётчики игроков, но не секрет.
+    can_manage_join: bool,
+    join_secret: Option<String>,
+    join_uri: Option<String>,
+    join_qr_svg: Option<String>,
+}
+
+/// Сводка антидронного тенанта: акустические узлы + статус федерации «Пеленг».
+#[derive(Debug)]
+struct AntidroneDash {
+    nodes_total: i64,
+    nodes_online: i64,
+    bearing_configured: bool,
+}
+
+/// Сводка тенанта носимых: парк + сколько устройств реально шлёт виталы.
+#[derive(Debug)]
+struct WearablesDash {
+    wear_total: i64,
+    wear_online: i64,
+    vitals_active_15m: i64,
+}
+
+async fn dashboard(
+    user: WebUser,
+    State(state): State<AppState>,
+    flash: FlashCookie,
+) -> Result<Response, ApiError> {
     let stats = FleetStatsView {
         devices_total: scalar(
             &state,
@@ -685,10 +731,174 @@ async fn dashboard(user: WebUser, State(state): State<AppState>) -> Result<Respo
         )
         .await?,
     };
-    Ok(render(DashboardTemplate {
+
+    use crate::nav::TenantPurpose;
+    // Право видеть и управлять кодом игры — те же configurations.write, что и
+    // у API /api/v1/join/*. Считается один раз: нужно и game-ветке, и
+    // предупреждению об «осиротевшем» секрете ниже.
+    let can_manage_join = require_permission(&state.db, user.role_id, "configurations.write")
+        .await
+        .is_ok();
+    let mut game = None;
+    let mut antidrone = None;
+    let mut wearables = None;
+    match user.tenant_purpose {
+        TenantPurpose::Game => {
+            let players_total = scalar(
+                &state,
+                user.customer_id,
+                "SELECT COUNT(*) FROM devices WHERE customer_id = ? AND device_class = 'stalker_player'",
+            )
+            .await?;
+            let players_online = scalar(
+                &state,
+                user.customer_id,
+                "SELECT COUNT(*) FROM devices WHERE customer_id = ? AND device_class = 'stalker_player' AND is_online = 1",
+            )
+            .await?;
+            let join_secret: Option<String> = if can_manage_join {
+                sqlx::query_scalar(
+                    "SELECT join_secret FROM customer_profiles WHERE customer_id = ?",
+                )
+                .bind(user.customer_id)
+                .fetch_optional(&state.db)
+                .await?
+                .flatten()
+            } else {
+                None
+            };
+            let (join_uri, join_qr_svg) = match &join_secret {
+                Some(secret) => {
+                    // Тот же фолбек, что у enrollment-страниц: без настройки
+                    // server.enrollment_base_url QR не должен нести пустой URL.
+                    let server_url = super::join::enrollment_server_url(&state.db)
+                        .await?
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "https://mdm.secondf8n.tech".to_string());
+                    let uri = super::join::encode_join_uri(&server_url, secret);
+                    let qr = qrcode_svg(&uri);
+                    (Some(uri), Some(qr))
+                }
+                None => (None, None),
+            };
+            game = Some(GameDash {
+                players_total,
+                players_online,
+                can_manage_join,
+                join_secret,
+                join_uri,
+                join_qr_svg,
+            });
+        }
+        TenantPurpose::Antidrone => {
+            antidrone = Some(AntidroneDash {
+                nodes_total: scalar(
+                    &state,
+                    user.customer_id,
+                    "SELECT COUNT(*) FROM devices WHERE customer_id = ? AND device_class = 'acoustic_node'",
+                )
+                .await?,
+                nodes_online: scalar(
+                    &state,
+                    user.customer_id,
+                    "SELECT COUNT(*) FROM devices WHERE customer_id = ? AND device_class = 'acoustic_node' AND is_online = 1",
+                )
+                .await?,
+                bearing_configured: super::fed_bearing::is_configured(),
+            });
+        }
+        TenantPurpose::Wearables => {
+            wearables = Some(WearablesDash {
+                wear_total: scalar(
+                    &state,
+                    user.customer_id,
+                    "SELECT COUNT(*) FROM devices WHERE customer_id = ? AND device_class = 'wearable'",
+                )
+                .await?,
+                wear_online: scalar(
+                    &state,
+                    user.customer_id,
+                    "SELECT COUNT(*) FROM devices WHERE customer_id = ? AND device_class = 'wearable' AND is_online = 1",
+                )
+                .await?,
+                // Свежесть по received_at (серверные часы, есть индекс), НЕ по
+                // dm.ts: там RFC3339 с 'T', лексикографически несравнимый с
+                // datetime('now'). Тот же выбор у retention-чистки телеметрии.
+                vitals_active_15m: scalar(
+                    &state,
+                    user.customer_id,
+                    "SELECT COUNT(DISTINCT dm.device_id) FROM device_metrics dm \
+                     JOIN devices d ON d.id = dm.device_id \
+                     WHERE dm.customer_id = ? AND d.device_class = 'wearable' \
+                       AND dm.received_at >= datetime('now', '-15 minutes')",
+                )
+                .await?,
+            });
+        }
+        TenantPurpose::Universal | TenantPurpose::Tactical => {}
+    }
+    let heading = match user.tenant_purpose {
+        TenantPurpose::Game => "Сводка по игре",
+        TenantPurpose::Antidrone => "Сводка по антидрону",
+        TenantPurpose::Wearables => "Сводка по носимым",
+        TenantPurpose::Universal | TenantPurpose::Tactical => "Сводка по парку",
+    };
+
+    // «Осиротевший» код игры: назначение тенанта сменили с «игры», а
+    // join-секрет остался активен — игроки продолжают подключаться, хотя
+    // секции «Код игры» на сводке больше нет. Предупреждаем тех, кто вправе
+    // его выключить.
+    let stray_join_secret =
+        if can_manage_join && !matches!(user.tenant_purpose, TenantPurpose::Game) {
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT join_secret FROM customer_profiles WHERE customer_id = ?",
+            )
+            .bind(user.customer_id)
+            .fetch_optional(&state.db)
+            .await?
+            .flatten()
+            .is_some()
+        } else {
+            false
+        };
+
+    let mut resp = render(DashboardTemplate {
         nav: user.nav(),
+        heading,
         stats,
-    }))
+        game,
+        antidrone,
+        wearables,
+        stray_join_secret,
+        flash: flash.0,
+    });
+    clear_flash_cookie(&mut resp);
+    Ok(resp)
+}
+
+/// Включить или перевыпустить код игры из сводки игрового тенанта.
+/// Переиспользует шов API `/api/v1/join/enable`; гейт тот же —
+/// `configurations.write`.
+async fn game_join_enable_form(
+    user: WebUser,
+    State(state): State<AppState>,
+) -> Result<Response, ApiError> {
+    require_permission(&state.db, user.role_id, "configurations.write").await?;
+    super::join::upsert_join_secret(&state.db, user.customer_id).await?;
+    Ok(redirect_with_flash("/dashboard", "Код игры выпущен."))
+}
+
+/// Выключить саморегистрацию игроков (стереть join-секрет).
+async fn game_join_disable_form(
+    user: WebUser,
+    State(state): State<AppState>,
+) -> Result<Response, ApiError> {
+    require_permission(&state.db, user.role_id, "configurations.write").await?;
+    super::join::clear_join_secret(&state.db, user.customer_id).await?;
+    Ok(redirect_with_flash(
+        "/dashboard",
+        "Саморегистрация игроков выключена.",
+    ))
 }
 
 #[derive(Template)]
@@ -755,6 +965,8 @@ struct DeviceRow {
     id: i64,
     serial: String,
     display_name: String,
+    /// Русская подпись device_class (см. `nav::device_class_label_ru`).
+    class_label: &'static str,
     is_enrolled: bool,
     is_online: bool,
     battery: String,
@@ -770,6 +982,7 @@ struct DeviceRowRaw {
     id: i64,
     serial: String,
     display_name: Option<String>,
+    device_class: String,
     is_enrolled: bool,
     is_online: bool,
     battery_pct: Option<i64>,
@@ -798,7 +1011,7 @@ async fn render_devices(
     // GROUP_CONCAT. Сортировка вторичным ключом по g.name даёт стабильный
     // порядок tags для одного и того же device.
     let rows: Vec<DeviceRowRaw> = sqlx::query_as::<_, DeviceRowRaw>(
-        "SELECT d.id, d.serial, d.display_name, d.is_enrolled, d.is_online, \
+        "SELECT d.id, d.serial, d.display_name, d.device_class, d.is_enrolled, d.is_online, \
                 d.battery_pct, d.app_version, d.last_seen_at, \
                 (SELECT GROUP_CONCAT(g.name, '\u{1f}') FROM device_groups dg \
                  JOIN groups g ON g.id = dg.group_id \
@@ -818,6 +1031,7 @@ async fn render_devices(
             id: r.id,
             serial: r.serial,
             display_name: r.display_name.unwrap_or_else(|| "—".into()),
+            class_label: crate::nav::device_class_label_ru(&r.device_class),
             is_enrolled: r.is_enrolled,
             is_online: r.is_online,
             battery: r

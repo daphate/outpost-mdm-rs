@@ -1,4 +1,4 @@
-//! `/api/v1/join` — самрегистрация игроков STALKER по общему коду игры (режим B).
+//! `/api/v1/join` — саморегистрация игроков STALKER по общему коду игры (режим B).
 //!
 //! Для массовых открытых LARP, где заводить каждого игрока вручную дорого.
 //! Админ включает режим по своему заказчику (`/join/enable` → генерируется
@@ -122,12 +122,60 @@ async fn join(
 }
 
 /// `outpost-join://v1/<base64url(json)>` — join-QR (общий на игру), парный к
-/// `encode_enrollment_uri` для режима A.
-fn encode_join_uri(server_url: &str, join_secret: &str) -> String {
+/// `encode_enrollment_uri` для режима A. pub(crate): используется и web-сводкой
+/// игрового тенанта (секция «Код игры» на /dashboard).
+pub(crate) fn encode_join_uri(server_url: &str, join_secret: &str) -> String {
     use base64::Engine;
     let json = json!({"server_url": server_url, "join_secret": join_secret}).to_string();
     let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json.as_bytes());
     format!("outpost-join://v1/{b64}")
+}
+
+/// Сгенерировать и записать join-секрет заказчика (включение или перевыпуск).
+/// Общий шов для API `/api/v1/join/enable` и web-формы на сводке игры.
+pub(crate) async fn upsert_join_secret(
+    db: &sqlx::SqlitePool,
+    customer_id: i64,
+) -> Result<String, sqlx::Error> {
+    let secret = generate_password(32);
+    sqlx::query(
+        "INSERT INTO customer_profiles (customer_id, join_secret) VALUES (?, ?) \
+         ON CONFLICT(customer_id) DO UPDATE SET join_secret = excluded.join_secret, \
+           updated_at = datetime('now')",
+    )
+    .bind(customer_id)
+    .bind(&secret)
+    .execute(db)
+    .await?;
+    Ok(secret)
+}
+
+/// Стереть join-секрет (выключить саморегистрацию). Ранее выданные токены живут.
+pub(crate) async fn clear_join_secret(
+    db: &sqlx::SqlitePool,
+    customer_id: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE customer_profiles SET join_secret = NULL, updated_at = datetime('now') \
+         WHERE customer_id = ?",
+    )
+    .bind(customer_id)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// Базовый URL сервера (`server.enrollment_base_url` из settings) — общий для
+/// enrollment- и join-QR.
+pub(crate) async fn enrollment_server_url(
+    db: &sqlx::SqlitePool,
+) -> Result<Option<String>, sqlx::Error> {
+    let url: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT json_extract(value_json, '$') FROM settings WHERE key = 'server.enrollment_base_url'",
+    )
+    .fetch_optional(db)
+    .await?;
+    Ok(url.flatten())
 }
 
 fn qrcode_svg(payload: &str) -> String {
@@ -146,23 +194,8 @@ fn qrcode_svg(payload: &str) -> String {
 /// join-URI и готовый QR-SVG для показа игрокам.
 async fn enable(user: AuthUser, State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
     require_permission(&state.db, user.role_id, "configurations.write").await?;
-    let secret = generate_password(32);
-    sqlx::query(
-        "INSERT INTO customer_profiles (customer_id, join_secret) VALUES (?, ?) \
-         ON CONFLICT(customer_id) DO UPDATE SET join_secret = excluded.join_secret, \
-           updated_at = datetime('now')",
-    )
-    .bind(user.customer_id)
-    .bind(&secret)
-    .execute(&state.db)
-    .await?;
-
-    let server_url: Option<String> = sqlx::query_scalar(
-        "SELECT json_extract(value_json, '$') FROM settings WHERE key = 'server.enrollment_base_url'",
-    )
-    .fetch_optional(&state.db)
-    .await?
-    .flatten();
+    let secret = upsert_join_secret(&state.db, user.customer_id).await?;
+    let server_url = enrollment_server_url(&state.db).await?;
     let uri = encode_join_uri(server_url.as_deref().unwrap_or(""), &secret);
     let qr = qrcode_svg(&uri);
 
@@ -174,15 +207,9 @@ async fn enable(user: AuthUser, State(state): State<AppState>) -> Result<Json<Va
     })))
 }
 
-/// Выключить самрегистрацию (стереть join-секрет). Ранее выданные токены живут.
+/// Выключить саморегистрацию (стереть join-секрет). Ранее выданные токены живут.
 async fn disable(user: AuthUser, State(state): State<AppState>) -> Result<StatusCode, ApiError> {
     require_permission(&state.db, user.role_id, "configurations.write").await?;
-    sqlx::query(
-        "UPDATE customer_profiles SET join_secret = NULL, updated_at = datetime('now') \
-         WHERE customer_id = ?",
-    )
-    .bind(user.customer_id)
-    .execute(&state.db)
-    .await?;
+    clear_join_secret(&state.db, user.customer_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

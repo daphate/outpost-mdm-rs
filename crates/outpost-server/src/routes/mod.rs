@@ -49,7 +49,7 @@ pub fn api_v1(state: AppState) -> Router {
         .merge(position::router())
         // Ф4: игровой канал класса «игроки STALKER» (вид /map/players).
         .merge(player::router())
-        // Режим B привязки STALKER: самрегистрация по общему коду игры.
+        // Режим B привязки STALKER: саморегистрация по общему коду игры.
         .merge(join::router())
         // Ф3: федерация с ЦУП «Пеленг» (вид /map/antidrone).
         .merge(fed_bearing::router())
