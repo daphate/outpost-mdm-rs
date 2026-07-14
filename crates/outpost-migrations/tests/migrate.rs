@@ -76,6 +76,17 @@ async fn seed_customer_exists() {
     assert_eq!(name, "default");
 }
 
+/// Migration 0037: existing tenants get purpose = 'universal' (menu unchanged).
+#[tokio::test]
+async fn seed_customer_purpose_defaults_to_universal() {
+    let pool = fresh_pool().await;
+    let purpose: String = sqlx::query_scalar("SELECT purpose FROM customers WHERE id = 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(purpose, "universal");
+}
+
 #[tokio::test]
 async fn seed_user_roles_are_complete() {
     let pool = fresh_pool().await;

@@ -14,6 +14,7 @@ pub mod distribution;
 pub mod error;
 pub mod export;
 pub mod i18n;
+pub mod nav;
 pub mod page;
 pub mod permission;
 pub mod rate_limit;

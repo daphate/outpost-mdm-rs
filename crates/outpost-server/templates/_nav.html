@@ -5,7 +5,13 @@
    - Desktop (md+, 768px+): горизонтальный bar с wrap'ом на ширине tablet
      portrait. На большом экране всё в одной строке.
 
-   adminbar (логин + выйти) — всегда compact справа, на mobile тоже видна.
+   Видимость пунктов зависит от назначения тенанта (customers.purpose):
+   флаги приходят полем `nav: NavCtx` каждой страницы (см. src/nav.rs).
+   Скрытие пункта — не контроль доступа: страницы доступны по прямому URL,
+   данные в них изолированы по customer_id. Условия продублированы в
+   desktop- и mobile-списках — меняя одно, менять оба.
+
+   adminbar (тенант + логин + выйти) — всегда compact справа, на mobile тоже видна.
 #}
 <nav class="bg-white border-b border-slate-200">
   <div class="max-w-7xl mx-auto px-3 sm:px-4 py-2 sm:py-3 flex items-center justify-between gap-3">
@@ -15,27 +21,31 @@
        ссылкам уходить в 2 ряда на узких planhsets. #}
     <div class="hidden md:flex flex-wrap items-center gap-x-4 gap-y-1 text-sm flex-1 justify-center">
       <a href="/dashboard" class="text-slate-600 hover:text-slate-900">Сводка</a>
-      <a href="/map/tactical" class="text-slate-600 hover:text-slate-900">Карта</a>
-      <a href="/map/antidrone" class="text-slate-600 hover:text-slate-900">Антидрон</a>
-      <a href="/map/players" class="text-slate-600 hover:text-slate-900">Игроки</a>
-      <a href="/map/wearables" class="text-slate-600 hover:text-slate-900">Носимые</a>
+      {% if nav.show_map_tactical %}<a href="/map/tactical" class="text-slate-600 hover:text-slate-900">Карта</a>{% endif %}
+      {% if nav.show_map_antidrone %}<a href="/map/antidrone" class="text-slate-600 hover:text-slate-900">Антидрон</a>{% endif %}
+      {% if nav.show_map_players %}<a href="/map/players" class="text-slate-600 hover:text-slate-900">Игроки</a>{% endif %}
+      {% if nav.show_map_wearables %}<a href="/map/wearables" class="text-slate-600 hover:text-slate-900">Носимые</a>{% endif %}
       <a href="/devices" class="text-slate-600 hover:text-slate-900">Устройства</a>
       <a href="/groups" class="text-slate-600 hover:text-slate-900">Группы</a>
-      <a href="/applications" class="text-slate-600 hover:text-slate-900">Приложения</a>
-      <a href="/configurations" class="text-slate-600 hover:text-slate-900">Конфигурации</a>
-      <a href="/files" class="text-slate-600 hover:text-slate-900">Файлы</a>
-      <a href="/push" class="text-slate-600 hover:text-slate-900">Push</a>
+      {% if nav.show_apps %}<a href="/applications" class="text-slate-600 hover:text-slate-900">Приложения</a>{% endif %}
+      {% if nav.show_configs %}<a href="/configurations" class="text-slate-600 hover:text-slate-900">Конфигурации</a>{% endif %}
+      {% if nav.show_files %}<a href="/files" class="text-slate-600 hover:text-slate-900">Файлы</a>{% endif %}
+      {% if nav.show_push %}<a href="/push" class="text-slate-600 hover:text-slate-900">Push</a>{% endif %}
       <a href="/telemetry" class="text-slate-600 hover:text-slate-900">Телеметрия</a>
       <a href="/users" class="text-slate-600 hover:text-slate-900">Пользователи</a>
       <a href="/roles" class="text-slate-600 hover:text-slate-900">Роли</a>
-      <a href="/ballistics/templates" class="text-slate-600 hover:text-slate-900">Баллистика</a>
-      <a href="/customers" class="text-slate-600 hover:text-slate-900" title="Только для super-admin">Тенанты</a>
+      {% if nav.show_ballistics %}<a href="/ballistics/templates" class="text-slate-600 hover:text-slate-900">Баллистика</a>{% endif %}
+      {% if nav.is_super_admin %}<a href="/customers" class="text-slate-600 hover:text-slate-900">Тенанты</a>{% endif %}
       <a href="/settings" class="text-slate-600 hover:text-slate-900">Настройки</a>
     </div>
 
-    {# Adminbar — всегда compact справа. #}
+    {# Adminbar — всегда compact справа. Бейдж показывает активный тенант:
+       super-admin после «Switch» видит, в чьём контексте работает. На md+
+       бейдж здесь; ниже md (hamburger) тенант продублирован строкой в
+       мобильном меню. title несёт полное имя на случай обрезки truncate. #}
     <div class="flex items-center gap-2 sm:gap-4 text-sm whitespace-nowrap">
-      <a href="/profile" class="text-slate-500 hover:text-slate-900 max-w-[8rem] truncate inline-block align-middle">{{ user_login }}</a>
+      <span class="hidden md:inline text-xs text-slate-400 max-w-[12rem] truncate align-middle" title="{{ nav.tenant_name }} · {{ nav.tenant_purpose_label }}">{{ nav.tenant_name }} · {{ nav.tenant_purpose_label }}</span>
+      <a href="/profile" class="text-slate-500 hover:text-slate-900 max-w-[8rem] truncate inline-block align-middle">{{ nav.login }}</a>
       <a href="/logout" class="text-red-600 hover:text-red-700">Выйти</a>
     </div>
   </div>
@@ -46,22 +56,24 @@
   <details class="md:hidden border-t border-slate-200">
     <summary class="cursor-pointer px-3 py-2 text-sm text-slate-700 select-none">☰ Меню</summary>
     <div class="px-3 pb-3 flex flex-col gap-1 text-sm">
+      {# Активный тенант — на mobile бейджа в adminbar нет, индикация здесь. #}
+      <div class="py-1.5 text-xs text-slate-400 border-b border-slate-100">{{ nav.tenant_name }} · {{ nav.tenant_purpose_label }}</div>
       <a href="/dashboard" class="py-1.5 text-slate-600 hover:text-slate-900">Сводка</a>
-      <a href="/map/tactical" class="py-1.5 text-slate-600 hover:text-slate-900">Карта</a>
-      <a href="/map/antidrone" class="py-1.5 text-slate-600 hover:text-slate-900">Антидрон</a>
-      <a href="/map/players" class="py-1.5 text-slate-600 hover:text-slate-900">Игроки</a>
-      <a href="/map/wearables" class="py-1.5 text-slate-600 hover:text-slate-900">Носимые</a>
+      {% if nav.show_map_tactical %}<a href="/map/tactical" class="py-1.5 text-slate-600 hover:text-slate-900">Карта</a>{% endif %}
+      {% if nav.show_map_antidrone %}<a href="/map/antidrone" class="py-1.5 text-slate-600 hover:text-slate-900">Антидрон</a>{% endif %}
+      {% if nav.show_map_players %}<a href="/map/players" class="py-1.5 text-slate-600 hover:text-slate-900">Игроки</a>{% endif %}
+      {% if nav.show_map_wearables %}<a href="/map/wearables" class="py-1.5 text-slate-600 hover:text-slate-900">Носимые</a>{% endif %}
       <a href="/devices" class="py-1.5 text-slate-600 hover:text-slate-900">Устройства</a>
       <a href="/groups" class="py-1.5 text-slate-600 hover:text-slate-900">Группы</a>
-      <a href="/applications" class="py-1.5 text-slate-600 hover:text-slate-900">Приложения</a>
-      <a href="/configurations" class="py-1.5 text-slate-600 hover:text-slate-900">Конфигурации</a>
-      <a href="/files" class="py-1.5 text-slate-600 hover:text-slate-900">Файлы</a>
-      <a href="/push" class="py-1.5 text-slate-600 hover:text-slate-900">Push</a>
+      {% if nav.show_apps %}<a href="/applications" class="py-1.5 text-slate-600 hover:text-slate-900">Приложения</a>{% endif %}
+      {% if nav.show_configs %}<a href="/configurations" class="py-1.5 text-slate-600 hover:text-slate-900">Конфигурации</a>{% endif %}
+      {% if nav.show_files %}<a href="/files" class="py-1.5 text-slate-600 hover:text-slate-900">Файлы</a>{% endif %}
+      {% if nav.show_push %}<a href="/push" class="py-1.5 text-slate-600 hover:text-slate-900">Push</a>{% endif %}
       <a href="/telemetry" class="py-1.5 text-slate-600 hover:text-slate-900">Телеметрия</a>
       <a href="/users" class="py-1.5 text-slate-600 hover:text-slate-900">Пользователи</a>
       <a href="/roles" class="py-1.5 text-slate-600 hover:text-slate-900">Роли</a>
-      <a href="/ballistics/templates" class="py-1.5 text-slate-600 hover:text-slate-900">Баллистика</a>
-      <a href="/customers" class="py-1.5 text-slate-600 hover:text-slate-900">Тенанты</a>
+      {% if nav.show_ballistics %}<a href="/ballistics/templates" class="py-1.5 text-slate-600 hover:text-slate-900">Баллистика</a>{% endif %}
+      {% if nav.is_super_admin %}<a href="/customers" class="py-1.5 text-slate-600 hover:text-slate-900">Тенанты</a>{% endif %}
       <a href="/settings" class="py-1.5 text-slate-600 hover:text-slate-900">Настройки</a>
     </div>
   </details>

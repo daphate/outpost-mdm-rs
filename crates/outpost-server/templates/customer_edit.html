@@ -29,6 +29,14 @@
         {% endfor %}
       </select>
     </label>
+    <label class="block">
+      <span class="text-xs uppercase tracking-wide text-slate-500">Назначение</span>
+      <select name="purpose" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">
+        {% for p in purpose_options %}
+          <option value="{{ p.0 }}" {% if p.2 %}selected{% endif %}>{{ p.1 }}</option>
+        {% endfor %}
+      </select>
+    </label>
     <label class="block md:col-span-2">
       <span class="text-xs uppercase tracking-wide text-slate-500">Описание</span>
       <input name="description" value="{{ description }}" class="mt-1 w-full rounded border-slate-300 px-3 py-1.5 text-sm">

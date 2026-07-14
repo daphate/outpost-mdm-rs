@@ -939,6 +939,145 @@ async fn customer_rejects_duplicate_name() {
     assert_eq!(status, 200);
 }
 
+// ----- Назначение тенанта → верхнее меню (customers.purpose, 0037) ----------
+
+/// Вырезает верхнее меню (<nav>…</nav>) из HTML страницы: ссылки-карточки в
+/// теле (например, на «Сводке») не должны влиять на ассерты про меню.
+fn nav_of(html: &str) -> &str {
+    let start = html.find("<nav").expect("page has <nav>");
+    let end = html[start..].find("</nav>").expect("nav is closed") + start;
+    &html[start..end]
+}
+
+#[tokio::test]
+async fn default_universal_tenant_shows_full_menu() {
+    let app = TestApp::start().await;
+    let cookie = web_login_cookie(&app).await;
+    let (status, html) = raw_get(
+        &app.url("/dashboard"),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let nav = nav_of(&html);
+    for link in [
+        "href=\"/map/tactical\"",
+        "href=\"/map/antidrone\"",
+        "href=\"/map/players\"",
+        "href=\"/map/wearables\"",
+        "href=\"/applications\"",
+        "href=\"/configurations\"",
+        "href=\"/files\"",
+        "href=\"/push\"",
+        "href=\"/ballistics/templates\"",
+        "href=\"/customers\"",
+    ] {
+        assert!(nav.contains(link), "universal tenant must show {link}");
+    }
+    // Бейдж активного тенанта в adminbar.
+    assert!(nav.contains("универсальный"));
+}
+
+#[tokio::test]
+async fn antidrone_tenant_menu_hides_apk_pipeline_and_other_maps() {
+    let app = TestApp::start().await;
+    let cookie = web_login_cookie(&app).await;
+    // Создать антидронный тенант.
+    let (status, _raw) = raw_request_with_cookie(
+        "POST",
+        &app.url("/customers/new"),
+        &format!("outpost_session={cookie}"),
+        "application/x-www-form-urlencoded",
+        "name=airdef&description=&kind=production&purpose=antidrone",
+    )
+    .await;
+    assert_eq!(status, 303);
+    let id: i64 = sqlx::query_scalar("SELECT id FROM customers WHERE name = 'airdef'")
+        .fetch_one(&app.pool)
+        .await
+        .expect("new customer id");
+    // Переключиться в него (super-admin overlay, cookie outpost_acting).
+    let (status, raw) = raw_request_with_cookie(
+        "POST",
+        &app.url(&format!("/customers/{id}/switch")),
+        &format!("outpost_session={cookie}"),
+        "application/x-www-form-urlencoded",
+        "",
+    )
+    .await;
+    assert_eq!(status, 303);
+    let acting =
+        extract_set_cookie_value(&raw, "outpost_acting").expect("switch sets outpost_acting");
+
+    let (status, html) = raw_get(
+        &app.url("/dashboard"),
+        Some(&format!(
+            "outpost_session={cookie}; outpost_acting={acting}"
+        )),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let nav = nav_of(&html);
+    // Антидронная карта и бейдж тенанта на месте…
+    assert!(nav.contains("href=\"/map/antidrone\""));
+    assert!(nav.contains("airdef"));
+    assert!(nav.contains("антидрон"));
+    // …а APK-конвейер, баллистика и чужие карты скрыты.
+    for link in [
+        "href=\"/map/tactical\"",
+        "href=\"/map/players\"",
+        "href=\"/map/wearables\"",
+        "href=\"/applications\"",
+        "href=\"/configurations\"",
+        "href=\"/files\"",
+        "href=\"/push\"",
+        "href=\"/ballistics/templates\"",
+    ] {
+        assert!(!nav.contains(link), "antidrone tenant must hide {link}");
+    }
+}
+
+#[tokio::test]
+async fn customer_edit_updates_purpose_and_menu_follows() {
+    let app = TestApp::start().await;
+    let cookie = web_login_cookie(&app).await;
+    // Незнакомое назначение отклоняется (200 = re-render с ошибкой).
+    let (status, _raw) = raw_request_with_cookie(
+        "POST",
+        &app.url("/customers/1/edit"),
+        &format!("outpost_session={cookie}"),
+        "application/x-www-form-urlencoded",
+        "name=default&description=&kind=production&purpose=bogus&metadata_json=",
+    )
+    .await;
+    assert_eq!(status, 200);
+    // Смена назначения home-тенанта на «игра».
+    let (status, _raw) = raw_request_with_cookie(
+        "POST",
+        &app.url("/customers/1/edit"),
+        &format!("outpost_session={cookie}"),
+        "application/x-www-form-urlencoded",
+        "name=default&description=&kind=production&purpose=game&metadata_json=",
+    )
+    .await;
+    assert_eq!(status, 303);
+    let (_, html) = raw_get(
+        &app.url("/customers/1/edit"),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
+    assert!(html.contains("value=\"game\" selected"));
+    // Меню перестроилось: карта игроков есть, баллистики больше нет.
+    let (_, dash) = raw_get(
+        &app.url("/dashboard"),
+        Some(&format!("outpost_session={cookie}")),
+    )
+    .await;
+    let nav = nav_of(&dash);
+    assert!(nav.contains("href=\"/map/players\""));
+    assert!(!nav.contains("href=\"/ballistics/templates\""));
+}
+
 #[tokio::test]
 async fn me_2fa_setup_renders_qr_and_secret() {
     let app = TestApp::start().await;

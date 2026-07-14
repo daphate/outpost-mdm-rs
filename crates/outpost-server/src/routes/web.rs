@@ -5,6 +5,7 @@ use crate::auth_extract::extract_token;
 use crate::client_ip::ClientIp;
 use crate::error::ApiError;
 use crate::i18n;
+use crate::nav::TenantPurpose;
 use crate::permission::require_permission;
 use crate::session::{self, KIND_USER};
 use crate::state::AppState;
@@ -257,6 +258,12 @@ pub struct WebUser {
     /// UI locale resolved from the `outpost_lang` cookie / Accept-Language
     /// header. Russian by default (per the Outpost deployment audience).
     pub locale: crate::i18n::Locale,
+    /// Имя активного тенанта (home или переключённого через `outpost_acting`).
+    /// Вместе с `tenant_purpose` питает [`crate::nav::NavCtx`] — верхнее меню
+    /// и бейдж тенанта в adminbar.
+    pub tenant_name: String,
+    /// Назначение активного тенанта (`customers.purpose`, миграция 0037).
+    pub tenant_purpose: crate::nav::TenantPurpose,
 }
 
 impl WebUser {
@@ -272,6 +279,16 @@ impl WebUser {
         } else {
             Err((StatusCode::FORBIDDEN, "Super-admin required").into_response())
         }
+    }
+
+    /// Данные для верхнего меню (`templates/_nav.html`) активного тенанта.
+    pub fn nav(&self) -> crate::nav::NavCtx {
+        crate::nav::build(
+            self.tenant_purpose,
+            &self.login,
+            &self.tenant_name,
+            self.is_super_admin,
+        )
     }
 }
 
@@ -338,23 +355,41 @@ impl FromRequestParts<AppState> for WebUser {
         // Customer-switch overlay: super-admin only. The cookie value is the
         // numeric customer_id they want to act as. Any other user with the
         // cookie set is ignored (cookie is harmless — they can't escalate).
+        // Тот же lookup достаёт имя + назначение тенанта для NavCtx, так что
+        // switch-путь не добавляет ни одного запроса.
         let mut active_customer_id = s.customer_id;
+        let mut tenant_row: Option<(String, String)> = None;
         if is_super_admin {
             if let Some(acting) =
                 read_cookie(parts, "outpost_acting").and_then(|v| v.parse::<i64>().ok())
             {
-                let exists: Option<i64> =
-                    sqlx::query_scalar("SELECT 1 FROM customers WHERE id = ? AND is_active = 1")
-                        .bind(acting)
-                        .fetch_optional(&state.db)
-                        .await
-                        .ok()
-                        .flatten();
-                if exists.is_some() {
+                let row: Option<(String, String)> = sqlx::query_as(
+                    "SELECT name, purpose FROM customers WHERE id = ? AND is_active = 1",
+                )
+                .bind(acting)
+                .fetch_optional(&state.db)
+                .await
+                .ok()
+                .flatten();
+                if let Some(r) = row {
                     active_customer_id = acting;
+                    tenant_row = Some(r);
                 }
             }
         }
+        if tenant_row.is_none() {
+            tenant_row = sqlx::query_as("SELECT name, purpose FROM customers WHERE id = ?")
+                .bind(active_customer_id)
+                .fetch_optional(&state.db)
+                .await
+                .ok()
+                .flatten();
+        }
+        // Fallback (строки нет / мусор в purpose) = Universal: испорченная
+        // запись тенанта деградирует до «показывать всё», а не прячет меню.
+        let (tenant_name, purpose_raw) = tenant_row.unwrap_or_default();
+        let tenant_purpose = crate::nav::TenantPurpose::parse(&purpose_raw)
+            .unwrap_or(crate::nav::TenantPurpose::Universal);
 
         let locale = crate::i18n::from_request(parts);
         Ok(WebUser {
@@ -365,6 +400,8 @@ impl FromRequestParts<AppState> for WebUser {
             login: s.login,
             is_super_admin,
             locale,
+            tenant_name,
+            tenant_purpose,
         })
     }
 }
@@ -588,7 +625,7 @@ impl<S: Send + Sync> FromRequestParts<S> for LogoutToken {
 #[derive(Template)]
 #[template(path = "dashboard.html")]
 struct DashboardTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     stats: FleetStatsView,
 }
 
@@ -649,7 +686,7 @@ async fn dashboard(user: WebUser, State(state): State<AppState>) -> Result<Respo
         .await?,
     };
     Ok(render(DashboardTemplate {
-        user_login: user.login,
+        nav: user.nav(),
         stats,
     }))
 }
@@ -657,65 +694,57 @@ async fn dashboard(user: WebUser, State(state): State<AppState>) -> Result<Respo
 #[derive(Template)]
 #[template(path = "map_tactical.html")]
 struct MapTacticalTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
 }
 
 /// Ф1: shared situational-map view (tactical). Data is pulled client-side from
 /// the `/api/v1/geo/*` + `/api/v1/live/stream` endpoints, which enforce
 /// `devices.read` and customer scoping; this handler just renders the shell.
 async fn map_tactical(user: WebUser) -> Response {
-    render(MapTacticalTemplate {
-        user_login: user.login,
-    })
+    render(MapTacticalTemplate { nav: user.nav() })
 }
 
 #[derive(Template)]
 #[template(path = "map_antidrone.html")]
 struct MapAntidroneTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
 }
 
 /// Ф3: вид карты антидрона. Данные тянутся клиентом из
 /// `/api/v1/antidrone/scene` (федерация с ЦУП «Пеленг»); обработчик рендерит
 /// только оболочку.
 async fn map_antidrone(user: WebUser) -> Response {
-    render(MapAntidroneTemplate {
-        user_login: user.login,
-    })
+    render(MapAntidroneTemplate { nav: user.nav() })
 }
 
 #[derive(Template)]
 #[template(path = "map_players.html")]
 struct MapPlayersTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
 }
 
 /// Ф4: вид карты игроков STALKER. Данные из `/api/v1/geo/players` + живой
 /// поток; обработчик рендерит только оболочку.
 async fn map_players(user: WebUser) -> Response {
-    render(MapPlayersTemplate {
-        user_login: user.login,
-    })
+    render(MapPlayersTemplate { nav: user.nav() })
 }
 
 #[derive(Template)]
 #[template(path = "map_wearables.html")]
 struct MapWearablesTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
 }
 
 /// Ф5: вид карты носимых устройств. Данные из `/api/v1/geo/wearables`
 /// (позиция + виталы из OTLP); обработчик рендерит только оболочку.
 async fn map_wearables(user: WebUser) -> Response {
-    render(MapWearablesTemplate {
-        user_login: user.login,
-    })
+    render(MapWearablesTemplate { nav: user.nav() })
 }
 
 #[derive(Template)]
 #[template(path = "devices.html")]
 struct DevicesTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     total: i64,
     devices: Vec<DeviceRow>,
     flash: Option<String>,
@@ -810,7 +839,7 @@ async fn render_devices(
         })
         .collect();
     let mut resp = render(DevicesTemplate {
-        user_login: user.login.clone(),
+        nav: user.nav(),
         total,
         devices,
         flash,
@@ -897,7 +926,7 @@ async fn devices_create(
 #[derive(Template)]
 #[template(path = "groups.html")]
 struct GroupsTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     total: i64,
     groups: Vec<GroupRow>,
     flash: Option<String>,
@@ -1025,7 +1054,7 @@ async fn render_groups(
         })
         .collect();
     let mut resp = render(GroupsTemplate {
-        user_login: user.login.clone(),
+        nav: user.nav(),
         total,
         groups,
         flash,
@@ -1089,7 +1118,7 @@ async fn groups_create(
 #[derive(Template)]
 #[template(path = "applications.html")]
 struct AppsTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     total: i64,
     apps: Vec<AppRow>,
     flash: Option<String>,
@@ -1156,7 +1185,7 @@ async fn render_apps(
         })
         .collect();
     let mut resp = render(AppsTemplate {
-        user_login: user.login.clone(),
+        nav: user.nav(),
         total,
         apps,
         flash,
@@ -1367,7 +1396,7 @@ async fn try_applications_upload(
 #[derive(Template)]
 #[template(path = "configurations.html")]
 struct ConfigsTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     total: i64,
     configs: Vec<ConfigRow>,
     flash: Option<String>,
@@ -1446,7 +1475,7 @@ async fn render_configs(
         })
         .collect();
     let mut resp = render(ConfigsTemplate {
-        user_login: user.login.clone(),
+        nav: user.nav(),
         total,
         configs,
         flash,
@@ -1541,7 +1570,7 @@ async fn configurations_create(
 #[derive(Template)]
 #[template(path = "push.html")]
 struct PushTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     pending: i64,
     sent_24h: i64,
     messages: Vec<PushRow>,
@@ -1655,7 +1684,7 @@ async fn render_push(
         })
         .collect();
     let mut resp = render(PushTemplate {
-        user_login: user.login.clone(),
+        nav: user.nav(),
         pending,
         sent_24h,
         messages,
@@ -1782,7 +1811,7 @@ async fn push_create(
 #[derive(Template)]
 #[template(path = "users.html")]
 struct UsersTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     current_user_id: i64,
     total: i64,
     users: Vec<UserRow>,
@@ -1856,7 +1885,7 @@ async fn render_users(
         })
         .collect();
     let mut resp = render(UsersTemplate {
-        user_login: user.login.clone(),
+        nav: user.nav(),
         current_user_id: user.id,
         total,
         users,
@@ -1956,7 +1985,7 @@ async fn users_create(
 #[derive(Template)]
 #[template(path = "user_edit.html")]
 struct UserEditTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     /// id редактируемого user'а (для form action url).
     target_id: i64,
     target_login: String,
@@ -2015,7 +2044,7 @@ async fn render_user_edit(
         return Err(ApiError::NotFound);
     };
     let mut resp = render(UserEditTemplate {
-        user_login: user.login.clone(),
+        nav: user.nav(),
         target_id: id,
         target_login: r.login,
         email: r.email.unwrap_or_default(),
@@ -2257,7 +2286,7 @@ fn redirect_with_flash(target: &str, msg: &str) -> Response {
 #[derive(Template)]
 #[template(path = "device_enroll.html")]
 struct DeviceEnrollTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     device_id: i64,
     serial: String,
     secret: Option<String>,
@@ -2438,7 +2467,7 @@ async fn render_device_enroll(
         };
 
     render(DeviceEnrollTemplate {
-        user_login: user.login.clone(),
+        nav: user.nav(),
         device_id,
         serial: serial.to_string(),
         secret,
@@ -2594,7 +2623,7 @@ async fn device_push_post(
 #[derive(Template)]
 #[template(path = "me_password.html")]
 struct MePasswordTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     must_change: bool,
     flash: Option<String>,
     error: Option<String>,
@@ -2612,7 +2641,7 @@ async fn me_password_view(
             .await
             .unwrap_or(false);
     let mut resp = render(MePasswordTemplate {
-        user_login: user.login,
+        nav: user.nav(),
         must_change,
         flash: flash.0,
         error: None,
@@ -2635,7 +2664,7 @@ async fn me_password_post(
 ) -> Result<Response, ApiError> {
     let render_err = |msg: String| async {
         let mut resp = render(MePasswordTemplate {
-            user_login: user.login.clone(),
+            nav: user.nav(),
             must_change: false,
             flash: None,
             error: Some(msg),
@@ -2985,7 +3014,7 @@ fn cpu_thread_count_options() -> Vec<ConfigOptionLabel> {
 #[derive(Template)]
 #[template(path = "device_edit.html")]
 struct DeviceEditTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     device_id: i64,
     serial: String,
     display_name: String,
@@ -3183,7 +3212,7 @@ async fn render_device_edit(
         }
     }
     let mut resp = render(DeviceEditTemplate {
-        user_login: user.login.clone(),
+        nav: user.nav(),
         device_id: id,
         serial,
         display_name: display_name.unwrap_or_default(),
@@ -3406,7 +3435,7 @@ async fn device_config_form(
 #[derive(Template)]
 #[template(path = "file_distribute.html")]
 struct FileDistributeTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     file_id: i64,
     original_name: String,
     size_human: String,
@@ -3465,7 +3494,7 @@ async fn render_file_distribute(
             .fetch_all(&state.db)
             .await?;
     let mut resp = render(FileDistributeTemplate {
-        user_login: user.login.clone(),
+        nav: user.nav(),
         file_id,
         original_name,
         size_human: format_size(size),
@@ -3967,7 +3996,7 @@ async fn device_delete(
 #[derive(Template)]
 #[template(path = "group_edit.html")]
 struct GroupEditTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     group_id: i64,
     name: String,
     description: String,
@@ -4007,7 +4036,7 @@ async fn render_group_edit(
             .fetch_one(&state.db)
             .await?;
     let mut resp = render(GroupEditTemplate {
-        user_login: user.login.clone(),
+        nav: user.nav(),
         group_id: id,
         name,
         description: description.unwrap_or_default(),
@@ -4248,7 +4277,7 @@ async fn users_admin_reset_password(
 #[derive(Template)]
 #[template(path = "application_edit.html")]
 struct AppEditTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     app_id: i64,
     package_name: String,
     display_name: String,
@@ -4301,7 +4330,7 @@ async fn render_app_edit(
         .map(|k| (*k, *k == kind.as_str()))
         .collect();
     let mut resp = render(AppEditTemplate {
-        user_login: user.login.clone(),
+        nav: user.nav(),
         app_id: id,
         package_name,
         display_name: display_name.unwrap_or_default(),
@@ -4394,7 +4423,7 @@ async fn application_delete(
 #[derive(Template)]
 #[template(path = "application_versions.html")]
 struct AppVersionsTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     app_id: i64,
     package_name: String,
     versions: Vec<AppVersionRow>,
@@ -4479,7 +4508,7 @@ async fn render_app_versions(
         })
         .collect();
     let mut resp = render(AppVersionsTemplate {
-        user_login: user.login.clone(),
+        nav: user.nav(),
         app_id: id,
         package_name,
         versions,
@@ -4633,7 +4662,7 @@ async fn application_version_delete(
 #[derive(Template)]
 #[template(path = "application_rollouts.html")]
 struct AppRolloutsTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     app_id: i64,
     package_name: String,
     rollouts: Vec<RolloutRow>,
@@ -4751,7 +4780,7 @@ async fn render_app_rollouts(
             .fetch_all(&state.db)
             .await?;
     let mut resp = render(AppRolloutsTemplate {
-        user_login: user.login.clone(),
+        nav: user.nav(),
         app_id: id,
         package_name,
         rollouts,
@@ -4927,7 +4956,7 @@ async fn application_rollout_phase(
 #[derive(Template)]
 #[template(path = "configuration_edit.html")]
 struct ConfigEditTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     config_id: i64,
     name: String,
     description: String,
@@ -5033,7 +5062,7 @@ async fn render_config_edit(
     .fetch_all(&state.db)
     .await?;
     let mut resp = render(ConfigEditTemplate {
-        user_login: user.login.clone(),
+        nav: user.nav(),
         config_id: id,
         name,
         description: description.unwrap_or_default(),
@@ -5289,7 +5318,7 @@ async fn configuration_make_default(
 #[derive(Template)]
 #[template(path = "files.html")]
 struct FilesTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     total: i64,
     files: Vec<FileRow>,
     /// v0.18.12: устройства/группы для dropdown'а в bulk-distribute bar.
@@ -5374,7 +5403,7 @@ async fn render_files(
             .await
             .unwrap_or_default();
     let mut resp = render(FilesTemplate {
-        user_login: user.login.clone(),
+        nav: user.nav(),
         total,
         files,
         target_devices,
@@ -5530,7 +5559,7 @@ async fn files_delete(
 #[derive(Template)]
 #[template(path = "roles.html")]
 struct RolesTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     roles: Vec<RoleRow>,
     permissions: Vec<PermissionRow>,
 }
@@ -5589,7 +5618,7 @@ async fn roles_page(user: WebUser, State(state): State<AppState>) -> Result<Resp
         })
         .collect();
     Ok(render(RolesTemplate {
-        user_login: user.login,
+        nav: user.nav(),
         roles,
         permissions,
     }))
@@ -5600,7 +5629,7 @@ async fn roles_page(user: WebUser, State(state): State<AppState>) -> Result<Resp
 #[derive(Template)]
 #[template(path = "settings.html")]
 struct SettingsTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     enrollment_base_url: String,
     default_sync_interval: i64,
     max_upload_mb: i64,
@@ -5713,7 +5742,7 @@ async fn render_settings(
         })
         .collect();
     let mut resp = render(SettingsTemplate {
-        user_login: user.login.clone(),
+        nav: user.nav(),
         enrollment_base_url,
         default_sync_interval,
         max_upload_mb,
@@ -5860,7 +5889,7 @@ fn json_quote(s: &str) -> String {
 #[derive(Template)]
 #[template(path = "profile.html")]
 struct ProfileTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     login: String,
     email: String,
     /// v0.18.16: новые поля профиля.
@@ -5924,7 +5953,7 @@ async fn render_profile(
         return Err(ApiError::NotFound);
     };
     let mut resp = render(ProfileTemplate {
-        user_login: user.login.clone(),
+        nav: user.nav(),
         login,
         email: email.unwrap_or_default(),
         display_name: display_name.unwrap_or_default(),
@@ -6009,7 +6038,7 @@ async fn profile_save(
 #[derive(Template)]
 #[template(path = "ballistics_templates.html")]
 struct BallisticsTemplatesPageTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     enabled: bool,
     templates: Vec<BallisticsTemplateRow>,
     groups: Vec<GroupOption>,
@@ -6093,7 +6122,7 @@ async fn render_ballistics_templates(
     .fetch_all(&state.db)
     .await?;
     let mut resp = render(BallisticsTemplatesPageTemplate {
-        user_login: user.login.clone(),
+        nav: user.nav(),
         enabled: state.ballistics_enabled,
         templates,
         groups,
@@ -6267,7 +6296,7 @@ fn format_size(bytes: i64) -> String {
 #[derive(Template)]
 #[template(path = "telemetry.html")]
 struct TelemetryOverviewTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     active_devices: i64,
     logs_24h: i64,
     errors_24h: i64,
@@ -6474,7 +6503,7 @@ async fn telemetry_overview(
     .unwrap_or_else(|| "/grafana/".to_string());
 
     Ok(render(TelemetryOverviewTemplate {
-        user_login: user.login,
+        nav: user.nav(),
         active_devices,
         logs_24h,
         errors_24h,
@@ -6491,7 +6520,7 @@ async fn telemetry_overview(
 #[derive(Template)]
 #[template(path = "device_telemetry.html")]
 struct DeviceTelemetryTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     device_id: i64,
     serial: String,
     counts: DeviceCounts,
@@ -6688,7 +6717,7 @@ async fn device_telemetry_view(
         .collect();
 
     Ok(render(DeviceTelemetryTemplate {
-        user_login: user.login,
+        nav: user.nav(),
         device_id: id,
         serial,
         counts: DeviceCounts {
@@ -6707,7 +6736,7 @@ async fn device_telemetry_view(
 #[derive(Template)]
 #[template(path = "device_logs.html")]
 struct DeviceLogsTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     device_id: i64,
     serial: String,
     total: i64,
@@ -6827,7 +6856,7 @@ async fn device_logs_view(
         .collect();
 
     Ok(render(DeviceLogsTemplate {
-        user_login: user.login,
+        nav: user.nav(),
         device_id: id,
         serial,
         total,
@@ -6857,9 +6886,12 @@ fn trim_to(s: &str, max: usize) -> String {
 #[derive(Template)]
 #[template(path = "customers.html")]
 struct CustomersTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     total: i64,
     customers: Vec<CustomerListRow>,
+    /// (value, подпись, selected) — дропдаун «Назначение» формы создания.
+    /// Единый источник — TenantPurpose::ALL, как и в customer_edit.
+    purpose_options: Vec<(&'static str, &'static str, bool)>,
     flash: Option<String>,
     create_error: Option<String>,
 }
@@ -6868,6 +6900,7 @@ struct CustomerListRow {
     id: i64,
     name: String,
     kind: String,
+    purpose_label: &'static str,
     is_active: bool,
     device_count: i64,
     user_count: i64,
@@ -6879,6 +6912,7 @@ struct CustomerListRaw {
     id: i64,
     name: String,
     kind: String,
+    purpose: String,
     is_active: bool,
     device_count: i64,
     user_count: i64,
@@ -6903,7 +6937,7 @@ async fn render_customers(
     create_error: Option<String>,
 ) -> Result<Response, ApiError> {
     let rows: Vec<CustomerListRaw> = sqlx::query_as::<_, CustomerListRaw>(
-        "SELECT c.id, c.name, c.kind, c.is_active, \
+        "SELECT c.id, c.name, c.kind, c.purpose, c.is_active, \
                 (SELECT COUNT(*) FROM devices d WHERE d.customer_id = c.id) AS device_count, \
                 (SELECT COUNT(*) FROM users  u WHERE u.customer_id = c.id) AS user_count, \
                 c.created_at \
@@ -6921,16 +6955,24 @@ async fn render_customers(
             id: r.id,
             name: r.name,
             kind: r.kind,
+            purpose_label: TenantPurpose::parse(&r.purpose)
+                .unwrap_or(TenantPurpose::Universal)
+                .label_ru(),
             is_active: r.is_active,
             device_count: r.device_count,
             user_count: r.user_count,
             created_at: state.fmt_ts(&r.created_at),
         })
         .collect();
+    let purpose_options = TenantPurpose::ALL
+        .iter()
+        .map(|p| (p.as_str(), p.label_ru(), *p == TenantPurpose::Universal))
+        .collect();
     let mut resp = render(CustomersTemplate {
-        user_login: user.login.clone(),
+        nav: user.nav(),
         total,
         customers,
+        purpose_options,
         flash,
         create_error,
     });
@@ -6943,6 +6985,7 @@ struct NewCustomerForm {
     name: String,
     description: Option<String>,
     kind: Option<String>,
+    purpose: Option<String>,
 }
 
 async fn customers_create(
@@ -6968,12 +7011,20 @@ async fn customers_create(
         .map(|s| s.trim())
         .filter(|s| matches!(*s, "production" | "demo" | "test"))
         .unwrap_or("production");
-    let res = sqlx::query("INSERT INTO customers (name, description, kind) VALUES (?, ?, ?)")
-        .bind(name)
-        .bind(description)
-        .bind(kind)
-        .execute(&state.db)
-        .await;
+    let purpose = req
+        .purpose
+        .as_deref()
+        .map(str::trim)
+        .and_then(TenantPurpose::parse)
+        .unwrap_or(TenantPurpose::Universal);
+    let res =
+        sqlx::query("INSERT INTO customers (name, description, kind, purpose) VALUES (?, ?, ?, ?)")
+            .bind(name)
+            .bind(description)
+            .bind(kind)
+            .bind(purpose.as_str())
+            .execute(&state.db)
+            .await;
     match res {
         Ok(_) => Ok(redirect_with_flash("/customers", "Customer created.")),
         Err(sqlx::Error::Database(db)) if db.is_unique_violation() => render_customers(
@@ -6996,12 +7047,14 @@ async fn customers_create(
 #[derive(Template)]
 #[template(path = "customer_edit.html")]
 struct CustomerEditTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     customer_id: i64,
     name: String,
     description: String,
     metadata_json: String,
     kind_options: Vec<(&'static str, bool)>,
+    /// (value, подпись, selected) — дропдаун «Назначение».
+    purpose_options: Vec<(&'static str, &'static str, bool)>,
     device_count: i64,
     user_count: i64,
     flash: Option<String>,
@@ -7034,10 +7087,11 @@ async fn render_customer_edit(
         name: String,
         description: Option<String>,
         kind: String,
+        purpose: String,
         metadata_json: String,
     }
     let row: Option<Row> = sqlx::query_as::<_, Row>(
-        "SELECT name, description, kind, metadata_json FROM customers WHERE id = ?",
+        "SELECT name, description, kind, purpose, metadata_json FROM customers WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(&state.db)
@@ -7046,6 +7100,7 @@ async fn render_customer_edit(
         name,
         description,
         kind,
+        purpose,
         metadata_json,
     }) = row
     else {
@@ -7066,13 +7121,19 @@ async fn render_customer_edit(
         .iter()
         .map(|k| (*k, *k == kind.as_str()))
         .collect();
+    let current_purpose = TenantPurpose::parse(&purpose).unwrap_or(TenantPurpose::Universal);
+    let purpose_options = TenantPurpose::ALL
+        .iter()
+        .map(|p| (p.as_str(), p.label_ru(), *p == current_purpose))
+        .collect();
     let mut resp = render(CustomerEditTemplate {
-        user_login: user.login.clone(),
+        nav: user.nav(),
         customer_id: id,
         name,
         description: description.unwrap_or_default(),
         metadata_json,
         kind_options,
+        purpose_options,
         device_count,
         user_count,
         flash,
@@ -7087,6 +7148,7 @@ struct CustomerEditForm {
     name: String,
     description: Option<String>,
     kind: String,
+    purpose: String,
     metadata_json: Option<String>,
 }
 
@@ -7109,6 +7171,11 @@ async fn customer_edit_post(
             .await
             .map_err(|e| e.into_response());
     }
+    let Some(purpose) = TenantPurpose::parse(req.purpose.trim()) else {
+        return render_customer_edit(&user, &state, id, None, Some("Unknown purpose".into()))
+            .await
+            .map_err(|e| e.into_response());
+    };
     let metadata = req
         .metadata_json
         .as_deref()
@@ -7132,12 +7199,13 @@ async fn customer_edit_post(
         .map(|s| s.trim())
         .filter(|s| !s.is_empty());
     let res = sqlx::query(
-        "UPDATE customers SET name = ?, description = ?, kind = ?, metadata_json = ?, \
-                              updated_at = datetime('now') WHERE id = ?",
+        "UPDATE customers SET name = ?, description = ?, kind = ?, purpose = ?, \
+                              metadata_json = ?, updated_at = datetime('now') WHERE id = ?",
     )
     .bind(name)
     .bind(description)
     .bind(kind)
+    .bind(purpose.as_str())
     .bind(metadata)
     .bind(id)
     .execute(&state.db)
@@ -7236,7 +7304,7 @@ async fn customer_switch(
 #[derive(Template)]
 #[template(path = "me_2fa.html")]
 struct Me2faTemplate {
-    user_login: String,
+    nav: crate::nav::NavCtx,
     totp_enabled: bool,
     setup_secret: Option<String>,
     qr_svg: String,
@@ -7270,7 +7338,7 @@ async fn me_2fa_view(
         (None, String::new())
     };
     let mut resp = render(Me2faTemplate {
-        user_login: user.login,
+        nav: user.nav(),
         totp_enabled: totp_enabled != 0,
         setup_secret,
         qr_svg,
@@ -7319,7 +7387,7 @@ async fn me_2fa_verify(
             let uri = crate::totp::otpauth_uri(&secret, "Outpost MDM", &user.login);
             let qr = qrcode_svg(&uri);
             let mut resp = render(Me2faTemplate {
-                user_login: user.login,
+                nav: user.nav(),
                 totp_enabled: false,
                 setup_secret: Some(secret),
                 qr_svg: qr,
@@ -7370,7 +7438,7 @@ async fn me_2fa_verify(
     }
     tx.commit().await?;
     let mut resp = render(Me2faTemplate {
-        user_login: user.login,
+        nav: user.nav(),
         totp_enabled: true,
         setup_secret: None,
         qr_svg: String::new(),
