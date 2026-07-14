@@ -11,6 +11,10 @@ use crate::state::AppState;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 
+/// The super-admin role id (seeded in migration 0002). Users in this role
+/// see across every unit of their tenant (unit scoping is bypassed).
+pub const SUPER_ADMIN_ROLE_ID: i64 = 1;
+
 /// Authenticated user identity, attached to a request by the `AuthUser`
 /// extractor.
 #[derive(Debug, Clone)]
@@ -19,6 +23,18 @@ pub struct AuthUser {
     pub customer_id: i64,
     pub role_id: i64,
     pub login: String,
+    /// Org-unit (подразделение) the user is scoped to, if any. `None` (or a
+    /// super-admin role) means tenant-wide visibility; otherwise queries are
+    /// filtered to this unit and its descendants. See `crate::unit_scope`.
+    pub unit_id: Option<i64>,
+}
+
+impl AuthUser {
+    /// True when the user holds the tenant super-admin role — unit scoping is
+    /// bypassed (sees every unit of the tenant).
+    pub fn is_super_admin(&self) -> bool {
+        self.role_id == SUPER_ADMIN_ROLE_ID
+    }
 }
 
 /// Extract the session token from either `Authorization: Bearer …`
@@ -58,18 +74,22 @@ impl FromRequestParts<AppState> for AuthUser {
         if s.kind != KIND_USER {
             return Err(ApiError::InvalidToken);
         }
-        // Confirm the underlying user is still active.
-        let active: Option<i64> = sqlx::query_scalar("SELECT is_active FROM users WHERE id = ?")
-            .bind(s.subject_id)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(ApiError::from)?;
-        match active {
-            Some(1) => Ok(AuthUser {
+        // Confirm the underlying user is still active, and pull the current
+        // unit assignment (used for подразделение scoping — fetched fresh so a
+        // re-assignment takes effect without re-login).
+        let row: Option<(i64, Option<i64>)> =
+            sqlx::query_as("SELECT is_active, unit_id FROM users WHERE id = ?")
+                .bind(s.subject_id)
+                .fetch_optional(&state.db)
+                .await
+                .map_err(ApiError::from)?;
+        match row {
+            Some((1, unit_id)) => Ok(AuthUser {
                 id: s.subject_id,
                 customer_id: s.customer_id,
                 role_id: s.role_id,
                 login: s.login,
+                unit_id,
             }),
             Some(_) => Err(ApiError::Inactive),
             None => Err(ApiError::InvalidToken),

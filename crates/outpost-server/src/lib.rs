@@ -26,3 +26,4 @@ pub mod signed_url;
 pub mod state;
 pub mod storage;
 pub mod totp;
+pub mod unit_scope;

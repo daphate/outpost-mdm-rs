@@ -95,6 +95,30 @@ pub struct CreateUserRequest {
     pub email: Option<String>,
     pub role_id: i64,
     pub password: String,
+    /// Optional org-unit (подразделение) assignment. Scopes the user's device
+    /// visibility to this unit + its descendants (see `crate::unit_scope`).
+    #[serde(default)]
+    pub unit_id: Option<i64>,
+}
+
+/// Verify a proposed `unit_id` (if any) belongs to the caller's tenant.
+async fn require_unit_in_tenant(
+    state: &AppState,
+    customer_id: i64,
+    unit_id: Option<i64>,
+) -> Result<(), ApiError> {
+    if let Some(uid) = unit_id {
+        let ok: Option<i64> =
+            sqlx::query_scalar("SELECT 1 FROM units WHERE id = ? AND customer_id = ?")
+                .bind(uid)
+                .bind(customer_id)
+                .fetch_optional(&state.db)
+                .await?;
+        if ok.is_none() {
+            return Err(ApiError::BadRequest("unit_id not found in tenant".into()));
+        }
+    }
+    Ok(())
 }
 
 async fn create(
@@ -116,16 +140,18 @@ async fn create(
     if role_ok.is_none() {
         return Err(ApiError::BadRequest("unknown role_id".into()));
     }
+    require_unit_in_tenant(&state, user.customer_id, req.unit_id).await?;
     let phc = crypto::hash_password(&req.password).map_err(|_| ApiError::Internal)?;
     let id: i64 = sqlx::query_scalar(
-        "INSERT INTO users (customer_id, role_id, login, email, password_hash, is_active) \
-         VALUES (?, ?, ?, ?, ?, 1) RETURNING id",
+        "INSERT INTO users (customer_id, role_id, login, email, password_hash, is_active, unit_id) \
+         VALUES (?, ?, ?, ?, ?, 1, ?) RETURNING id",
     )
     .bind(user.customer_id)
     .bind(req.role_id)
     .bind(&req.login)
     .bind(&req.email)
     .bind(&phc)
+    .bind(req.unit_id)
     .fetch_one(&state.db)
     .await
     .map_err(|e| match &e {
@@ -150,6 +176,11 @@ pub struct UpdateUserRequest {
     pub email: Option<String>,
     pub role_id: Option<i64>,
     pub is_active: Option<bool>,
+    /// Reassign the org-unit (подразделение). COALESCE semantics: omit to keep
+    /// the current unit; setting NULL to unassign is not expressible here (like
+    /// units reparenting) — clear it via a dedicated flow if needed.
+    #[serde(default)]
+    pub unit_id: Option<i64>,
 }
 
 async fn update(
@@ -178,17 +209,20 @@ async fn update(
     {
         return Err(ApiError::BadRequest("unknown role_id".into()));
     }
+    require_unit_in_tenant(&state, user.customer_id, req.unit_id).await?;
     sqlx::query(
         "UPDATE users SET \
             email      = COALESCE(?, email), \
             role_id    = COALESCE(?, role_id), \
             is_active  = COALESCE(?, is_active), \
+            unit_id    = COALESCE(?, unit_id), \
             updated_at = datetime('now') \
          WHERE id = ?",
     )
     .bind(&req.email)
     .bind(req.role_id)
     .bind(req.is_active)
+    .bind(req.unit_id)
     .bind(id)
     .execute(&state.db)
     .await?;

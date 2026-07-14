@@ -82,23 +82,32 @@ async fn list(
 ) -> Result<Json<Page<Device>>, ApiError> {
     require_permission(&state.db, user.role_id, "devices.read").await?;
     let (limit, offset) = page.clamp();
+    let scope = crate::unit_scope::resolve(&state, &user).await?;
 
-    let items: Vec<Device> = sqlx::query_as::<_, Device>(
+    let items: Vec<Device> = sqlx::query_as::<_, Device>(&format!(
         "SELECT id, customer_id, serial, display_name, device_class, unit_id, app_version, os_version, \
                 battery_pct, last_lat, last_lon, last_seen_at, is_online, is_enrolled, \
                 is_active, metadata_json, created_at, updated_at \
-         FROM devices WHERE customer_id = ? ORDER BY id DESC LIMIT ? OFFSET ?",
-    )
+         FROM devices WHERE customer_id = ? AND {} ORDER BY id DESC LIMIT ? OFFSET ?",
+        crate::unit_scope::UnitScope::CLAUSE
+    ))
     .bind(user.customer_id)
+    .bind(scope.scoped_flag())
+    .bind(&scope.ids_json)
     .bind(limit)
     .bind(offset)
     .fetch_all(&state.db)
     .await?;
 
-    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE customer_id = ?")
-        .bind(user.customer_id)
-        .fetch_one(&state.db)
-        .await?;
+    let total: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM devices WHERE customer_id = ? AND {}",
+        crate::unit_scope::UnitScope::CLAUSE
+    ))
+    .bind(user.customer_id)
+    .bind(scope.scoped_flag())
+    .bind(&scope.ids_json)
+    .fetch_one(&state.db)
+    .await?;
 
     Ok(Json(Page {
         items,
@@ -114,14 +123,18 @@ async fn get_one(
     Path(id): Path<i64>,
 ) -> Result<Json<Device>, ApiError> {
     require_permission(&state.db, user.role_id, "devices.read").await?;
-    let device: Option<Device> = sqlx::query_as::<_, Device>(
+    let scope = crate::unit_scope::resolve(&state, &user).await?;
+    let device: Option<Device> = sqlx::query_as::<_, Device>(&format!(
         "SELECT id, customer_id, serial, display_name, device_class, unit_id, app_version, os_version, \
                 battery_pct, last_lat, last_lon, last_seen_at, is_online, is_enrolled, \
                 is_active, metadata_json, created_at, updated_at \
-         FROM devices WHERE id = ? AND customer_id = ?",
-    )
+         FROM devices WHERE id = ? AND customer_id = ? AND {}",
+        crate::unit_scope::UnitScope::CLAUSE
+    ))
     .bind(id)
     .bind(user.customer_id)
+    .bind(scope.scoped_flag())
+    .bind(&scope.ids_json)
     .fetch_optional(&state.db)
     .await?;
     device.map(Json).ok_or(ApiError::NotFound)

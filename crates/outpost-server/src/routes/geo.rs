@@ -58,20 +58,25 @@ async fn positions(
     Query(q): Query<PositionsQuery>,
 ) -> Result<Json<Value>, ApiError> {
     require_permission(&state.db, user.role_id, "devices.read").await?;
-    let rows: Vec<PosRow> = sqlx::query_as::<_, PosRow>(
+    let scope = crate::unit_scope::resolve(&state, &user).await?;
+    let rows: Vec<PosRow> = sqlx::query_as::<_, PosRow>(&format!(
         "SELECT id, serial, display_name, device_class, unit_id, last_lat, last_lon, \
                 last_alt, last_bearing, last_speed, battery_pct, is_online, last_seen_at \
          FROM devices \
          WHERE customer_id = ? AND last_lat IS NOT NULL AND last_lon IS NOT NULL \
            AND (? IS NULL OR device_class = ?) \
            AND (? IS NULL OR unit_id = ?) \
+           AND {} \
          ORDER BY id",
-    )
+        crate::unit_scope::UnitScope::CLAUSE
+    ))
     .bind(user.customer_id)
     .bind(&q.class)
     .bind(&q.class)
     .bind(q.unit_id)
     .bind(q.unit_id)
+    .bind(scope.scoped_flag())
+    .bind(&scope.ids_json)
     .fetch_all(&state.db)
     .await?;
     let features: Vec<Value> = rows
@@ -156,12 +161,17 @@ async fn device_metrics(
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, ApiError> {
     require_permission(&state.db, user.role_id, "devices.read").await?;
-    let owned: Option<i64> =
-        sqlx::query_scalar("SELECT 1 FROM devices WHERE id = ? AND customer_id = ?")
-            .bind(id)
-            .bind(user.customer_id)
-            .fetch_optional(&state.db)
-            .await?;
+    let scope = crate::unit_scope::resolve(&state, &user).await?;
+    let owned: Option<i64> = sqlx::query_scalar(&format!(
+        "SELECT 1 FROM devices WHERE id = ? AND customer_id = ? AND {}",
+        crate::unit_scope::UnitScope::CLAUSE
+    ))
+    .bind(id)
+    .bind(user.customer_id)
+    .bind(scope.scoped_flag())
+    .bind(&scope.ids_json)
+    .fetch_optional(&state.db)
+    .await?;
     if owned.is_none() {
         return Err(ApiError::NotFound);
     }
@@ -233,16 +243,21 @@ struct PlayerRow {
 /// как GeoJSON FeatureCollection. Использует вид `/map/players`.
 async fn players(user: AuthUser, State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
     require_permission(&state.db, user.role_id, "devices.read").await?;
-    let rows: Vec<PlayerRow> = sqlx::query_as::<_, PlayerRow>(
+    let scope = crate::unit_scope::resolve(&state, &user).await?;
+    let rows: Vec<PlayerRow> = sqlx::query_as::<_, PlayerRow>(&format!(
         "SELECT d.id, d.serial, d.display_name, d.unit_id, d.last_lat, d.last_lon, \
                 d.battery_pct, d.is_online, d.last_seen_at, \
                 p.radiation, p.health, p.threat_level, p.artifacts \
          FROM devices d LEFT JOIN player_states p ON p.device_id = d.id \
          WHERE d.customer_id = ? AND d.device_class = 'stalker_player' \
            AND d.last_lat IS NOT NULL AND d.last_lon IS NOT NULL \
+           AND {} \
          ORDER BY d.id",
-    )
+        crate::unit_scope::UnitScope::CLAUSE.replace("unit_id", "d.unit_id")
+    ))
     .bind(user.customer_id)
+    .bind(scope.scoped_flag())
+    .bind(&scope.ids_json)
     .fetch_all(&state.db)
     .await?;
     let features: Vec<Value> = rows
@@ -284,15 +299,20 @@ async fn wearables(user: AuthUser, State(state): State<AppState>) -> Result<Json
         is_online: bool,
         last_seen_at: Option<String>,
     }
-    let rows: Vec<WRow> = sqlx::query_as::<_, WRow>(
+    let scope = crate::unit_scope::resolve(&state, &user).await?;
+    let rows: Vec<WRow> = sqlx::query_as::<_, WRow>(&format!(
         "SELECT id, serial, display_name, unit_id, last_lat, last_lon, \
                 battery_pct, is_online, last_seen_at \
          FROM devices \
          WHERE customer_id = ? AND device_class = 'wearable' \
            AND last_lat IS NOT NULL AND last_lon IS NOT NULL \
+           AND {} \
          ORDER BY id",
-    )
+        crate::unit_scope::UnitScope::CLAUSE
+    ))
     .bind(user.customer_id)
+    .bind(scope.scoped_flag())
+    .bind(&scope.ids_json)
     .fetch_all(&state.db)
     .await?;
 
@@ -360,12 +380,17 @@ async fn device_track(
     Query(q): Query<TrackQuery>,
 ) -> Result<Json<Value>, ApiError> {
     require_permission(&state.db, user.role_id, "devices.read").await?;
-    let owned: Option<i64> =
-        sqlx::query_scalar("SELECT 1 FROM devices WHERE id = ? AND customer_id = ?")
-            .bind(id)
-            .bind(user.customer_id)
-            .fetch_optional(&state.db)
-            .await?;
+    let scope = crate::unit_scope::resolve(&state, &user).await?;
+    let owned: Option<i64> = sqlx::query_scalar(&format!(
+        "SELECT 1 FROM devices WHERE id = ? AND customer_id = ? AND {}",
+        crate::unit_scope::UnitScope::CLAUSE
+    ))
+    .bind(id)
+    .bind(user.customer_id)
+    .bind(scope.scoped_flag())
+    .bind(&scope.ids_json)
+    .fetch_optional(&state.db)
+    .await?;
     if owned.is_none() {
         return Err(ApiError::NotFound);
     }
