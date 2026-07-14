@@ -52,6 +52,48 @@
   const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const collection = () => ({ type: 'FeatureCollection', features: [...byId.values()] });
 
+  function timeago(ts) {
+    if (!ts) return '';
+    const t = Date.parse(ts.replace(' ', 'T') + 'Z');
+    if (isNaN(t)) return '';
+    const s = Math.max(0, (Date.now() - t) / 1000);
+    if (s < 60) return Math.floor(s) + ' с назад';
+    if (s < 3600) return Math.floor(s / 60) + ' мин назад';
+    if (s < 86400) return Math.floor(s / 3600) + ' ч назад';
+    return Math.floor(s / 86400) + ' дн назад';
+  }
+  function healthColor(h) { return h == null ? '#94a3b8' : (h >= 66 ? '#10b981' : (h >= 33 ? '#f59e0b' : '#dc2626')); }
+  function threatBadge(t) {
+    const m = { high: ['#fee2e2', '#991b1b', 'высокая'], low: ['#fef3c7', '#92400e', 'низкая'], none: ['#e2e8f0', '#334155', 'нет'] };
+    const v = m[t] || m.none;
+    return '<span style="background:' + v[0] + ';color:' + v[1] + ';padding:1px 7px;border-radius:9999px;font-size:11px;font-weight:500">угроза: ' + v[2] + '</span>';
+  }
+  // Полоса «подпись — значение — прогресс». pct 0..100.
+  function bar(label, valueText, pct, color) {
+    return '<div style="margin:4px 0">'
+      + '<div style="display:flex;justify-content:space-between;color:#475569"><span>' + label + '</span>'
+      + '<span style="font-weight:600;color:#0f172a">' + valueText + '</span></div>'
+      + '<div style="height:5px;background:#e2e8f0;border-radius:9999px;overflow:hidden;margin-top:2px">'
+      + '<div style="height:100%;width:' + Math.max(0, Math.min(100, pct)) + '%;background:' + color + '"></div></div></div>';
+  }
+  // Карточка телеметрии игрока для всплывающего окна. Радиация нормируется на
+  // игровой максимум 16 (MAX_RADIATION в core/player/PlayerProps).
+  function playerCard(p) {
+    const hp = p.health != null ? Math.round(p.health) : null;
+    const rad = p.radiation != null ? Number(p.radiation) : null;
+    const seen = timeago(p.last_seen_at);
+    return '<div style="min-width:190px;font-size:12px;line-height:1.35">'
+      + '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">'
+      + '<span style="width:8px;height:8px;border-radius:9999px;background:' + (p.is_online ? '#10b981' : '#94a3b8') + '"></span>'
+      + '<span style="font-weight:600;font-size:13px">' + esc(p.display_name || p.serial || ('#' + p.device_id)) + '</span></div>'
+      + '<div style="margin-bottom:2px">' + threatBadge(p.threat_level) + '</div>'
+      + bar('Здоровье', hp != null ? hp : '—', hp != null ? hp : 0, healthColor(hp))
+      + bar('Радиация', rad != null ? rad.toFixed(2) : '—', rad != null ? rad / 16 * 100 : 0, rad != null && rad > 1 ? '#f59e0b' : '#38bdf8')
+      + '<div style="display:flex;justify-content:space-between;color:#64748b;margin-top:6px;font-size:11px">'
+      + '<span>' + (p.battery_pct != null ? 'бат. ' + p.battery_pct + '%' : '') + '</span>'
+      + '<span>' + (seen ? 'замечен ' + seen : '') + '</span></div></div>';
+  }
+
   // Цвет игрока: угроза высокая → красный, радиация заметная → янтарный,
   // иначе онлайн → зелёный, оффлайн → серый.
   function refresh() {
@@ -112,12 +154,10 @@
       }
     });
     map.on('click', 'players', (e) => {
-      const p = e.features[0].properties;
-      new maplibregl.Popup().setLngLat(e.features[0].geometry.coordinates)
-        .setHTML('<div style="font-size:12px"><b>' + esc(p.display_name || p.serial) + '</b><br>' +
-          (p.health != null ? 'здоровье ' + Math.round(p.health) + '<br>' : '') +
-          (p.radiation != null ? 'радиация ' + Number(p.radiation).toFixed(2) + '<br>' : '') +
-          (p.threat_level ? 'угроза: ' + esc(p.threat_level) : '') + '</div>').addTo(map);
+      new maplibregl.Popup({ maxWidth: '260px' })
+        .setLngLat(e.features[0].geometry.coordinates)
+        .setHTML(playerCard(e.features[0].properties))
+        .addTo(map);
     });
     map.on('mouseenter', 'players', () => map.getCanvas().style.cursor = 'pointer');
     map.on('mouseleave', 'players', () => map.getCanvas().style.cursor = '');
