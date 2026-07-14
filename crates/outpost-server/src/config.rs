@@ -176,6 +176,12 @@ impl Config {
 mod tests {
     use super::*;
 
+    /// `std::env` — процесс-глобальное состояние. Три from_env-теста мутируют
+    /// APP_SECRET/JWT_SECRET и при параллельном прогоне гоняются друг с другом
+    /// (флейк: исход зависит от порядка). Мьютекс сериализует только их;
+    /// into_inner() снимает poison, если один из тестов упал под замком.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_default_has_long_enough_secret() {
         assert!(Config::test_default().app_secret.len() >= 32);
@@ -183,6 +189,7 @@ mod tests {
 
     #[test]
     fn from_env_requires_app_secret() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             env::remove_var("APP_SECRET");
             env::remove_var("JWT_SECRET");
@@ -192,6 +199,7 @@ mod tests {
 
     #[test]
     fn from_env_rejects_short_secret() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             env::remove_var("JWT_SECRET");
             env::set_var("APP_SECRET", "too-short");
@@ -204,6 +212,7 @@ mod tests {
 
     #[test]
     fn from_env_accepts_legacy_jwt_secret_name() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             env::remove_var("APP_SECRET");
             env::set_var(
