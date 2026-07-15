@@ -194,8 +194,15 @@
       });
       if (r.ok) {
         const j = await r.json().catch(() => ({}));
-        const n = (typeof j.count === 'number') ? (' (' + j.count + ')') : '';
-        setStatus(statusEl, 'команда поставлена в очередь' + n, true);
+        if (typeof j.count === 'number') {
+          setStatus(statusEl, 'отправлено всем: ' + j.count, true);
+        } else if (j.command_id) {
+          // Отслеживаем реальный статус доставки/исполнения на устройстве.
+          setStatus(statusEl, 'в очереди…', null);
+          pollCommandStatus(j.command_id, statusEl);
+        } else {
+          setStatus(statusEl, 'команда принята', true);
+        }
       } else if (r.status === 403) {
         setStatus(statusEl, 'недостаточно прав', false);
       } else {
@@ -203,6 +210,24 @@
         setStatus(statusEl, 'ошибка: ' + t, false);
       }
     } catch (e) { setStatus(statusEl, 'сеть недоступна', false); }
+  }
+  // Опрос статуса поставленной команды до исполнения/ошибки (или таймаута).
+  // Статусы push_messages: pending → sent → delivered | failed | cancelled.
+  async function pollCommandStatus(commandId, statusEl) {
+    for (let i = 0; i < 20; i++) {
+      await new Promise(function (res) { setTimeout(res, 2000); });
+      var m = null;
+      try {
+        var rr = await fetch('/api/v1/push/messages/' + commandId, { credentials: 'same-origin' });
+        if (rr.ok) m = await rr.json();
+      } catch (e) { m = null; }
+      if (!m) continue;
+      if (m.status === 'delivered') { setStatus(statusEl, 'исполнено ✓', true); return; }
+      if (m.status === 'failed') { setStatus(statusEl, 'ошибка: ' + (m.last_error || 'не доставлено'), false); return; }
+      if (m.status === 'cancelled') { setStatus(statusEl, 'отменено', false); return; }
+      if (m.status === 'sent') { setStatus(statusEl, 'доставляется…', null); }
+    }
+    setStatus(statusEl, 'нет подтверждения (устройство офлайн?)', null);
   }
   // Навесить обработчики на панель гейм-мастера конкретного попапа.
   function wireGmPanel(el, deviceId) {
