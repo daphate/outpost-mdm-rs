@@ -8,7 +8,13 @@
 {% raw %}
 <style>
   #map { position: absolute; inset: 0; }
-  .maplibregl-popup-content { padding: 8px 10px; }
+  .maplibregl-popup-content { padding: 10px 12px 12px; padding-right: 34px; border-radius: 8px; }
+  /* Крупная, удобная кнопка закрытия попапа (по умолчанию узкая и мелкая). */
+  .maplibregl-popup-close-button {
+    width: 30px; height: 30px; right: 3px; top: 3px; padding: 0;
+    font-size: 22px; line-height: 30px; color: #475569; border-radius: 8px;
+  }
+  .maplibregl-popup-close-button:hover { background: #e2e8f0; color: #0f172a; }
 </style>
 {% endraw %}
 {% endblock %}
@@ -54,6 +60,24 @@
           <input id="bc-online" type="checkbox" checked> только тем, кто в сети
         </label>
         <div id="bc-status" class="text-xs text-slate-500 mt-1 min-h-[16px]"></div>
+      </div>
+      <div class="p-3 border-b border-purple-200 bg-purple-50/60">
+        <div class="text-xs font-semibold text-purple-900 mb-1">Виртуальные маяки (гео-зоны)</div>
+        <div class="flex items-center gap-1">
+          <select id="vb-type" class="text-xs border border-slate-300 rounded px-1 py-1">
+            <option value="A" selected>Аномалия</option>
+            <option value="R">Радиация</option>
+            <option value="M">Ментал</option>
+            <option value="C">Контролёр</option>
+            <option value="B">Бюрер</option>
+            <option value="Z">Зов Монолита</option>
+            <option value="H">Лечение (Оазис)</option>
+          </select>
+          <input id="vb-coeff" type="number" min="1" max="999" value="100" title="коэффициент 1..999" class="w-14 text-xs border border-slate-300 rounded px-1 py-1">
+          <input id="vb-radius" type="number" min="1" max="2000" value="30" title="радиус, метры" class="w-16 text-xs border border-slate-300 rounded px-1 py-1">
+        </div>
+        <button id="vb-place" class="mt-1 w-full px-2 py-1 rounded bg-purple-700 text-white text-xs hover:bg-purple-800">Поставить маяк на карте</button>
+        <div id="vb-status" class="text-xs text-slate-500 mt-1 min-h-[16px]">радиус в метрах; игроки в онлайне напарываются по GPS</div>
       </div>
       {% endif %}
       <ul id="p-list" class="divide-y divide-slate-100 text-sm"></ul>
@@ -297,7 +321,83 @@
     } catch (e) { /* transient */ }
   }
 
+  // ---- Виртуальные маяки (гео-зоны угроз) ----------------------------------
+  const BEACON_COLORS = { R: '#f59e0b', A: '#7c3aed', M: '#2563eb', C: '#dc2626', B: '#78350f', Z: '#0891b2', H: '#16a34a' };
+  const BEACON_NAMES = { R: 'Радиация', A: 'Аномалия', M: 'Ментал', C: 'Контролёр', B: 'Бюрер', Z: 'Зов Монолита', H: 'Лечение' };
+  let beacons = [];
+  let placeMode = false;
+
+  // GeoJSON-полигон-круг радиусом radiusM метров вокруг [lon,lat].
+  function circlePolygon(lon, lat, radiusM, props) {
+    const pts = [], n = 48;
+    const dLat = radiusM / 111320;
+    const dLon = radiusM / (111320 * Math.cos(lat * Math.PI / 180));
+    for (let i = 0; i <= n; i++) {
+      const a = (i / n) * 2 * Math.PI;
+      pts.push([lon + dLon * Math.cos(a), lat + dLat * Math.sin(a)]);
+    }
+    return { type: 'Feature', properties: props, geometry: { type: 'Polygon', coordinates: [pts] } };
+  }
+  function beaconFeatures() {
+    const zones = [], centers = [];
+    for (const b of beacons) {
+      const props = { id: b.id, beacon_type: b.beacon_type, coeff: b.coeff, radius_m: b.radius_m, label: b.label || '', color: BEACON_COLORS[b.beacon_type] || '#7c3aed' };
+      zones.push(circlePolygon(b.lon, b.lat, b.radius_m, props));
+      centers.push({ type: 'Feature', properties: props, geometry: { type: 'Point', coordinates: [b.lon, b.lat] } });
+    }
+    return { zones: { type: 'FeatureCollection', features: zones }, centers: { type: 'FeatureCollection', features: centers } };
+  }
+  async function loadBeacons() {
+    try { beacons = await fetch('/api/v1/beacons', { credentials: 'same-origin' }).then(r => r.ok ? r.json() : []); }
+    catch (e) { beacons = []; }
+    const fc = beaconFeatures();
+    const zs = map.getSource('beacon-zones'); if (zs) zs.setData(fc.zones);
+    const cs = map.getSource('beacon-centers'); if (cs) cs.setData(fc.centers);
+  }
+  function vbStatus(text, ok) {
+    const el = document.getElementById('vb-status'); if (!el) return;
+    el.textContent = text; el.style.color = ok === false ? '#b91c1c' : (ok === true ? '#6d28d9' : '#64748b');
+  }
+  async function placeBeacon(lngLat) {
+    const type = document.getElementById('vb-type').value;
+    const coeff = Math.max(1, Math.min(999, parseInt(document.getElementById('vb-coeff').value, 10) || 100));
+    const radius = Math.max(1, Math.min(2000, parseInt(document.getElementById('vb-radius').value, 10) || 30));
+    vbStatus('ставлю маяк…', null);
+    try {
+      const r = await fetch('/api/v1/beacons', {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ beacon_type: type, coeff: coeff, radius_m: radius, lat: lngLat.lat, lon: lngLat.lng })
+      });
+      if (r.ok) { vbStatus(BEACON_NAMES[type] + ' ' + coeff + ', r=' + radius + ' м — поставлен', true); loadBeacons(); }
+      else if (r.status === 403) vbStatus('недостаточно прав', false);
+      else vbStatus('ошибка: ' + ((await r.text().catch(() => '')) || r.status), false);
+    } catch (e) { vbStatus('сеть недоступна', false); }
+  }
+  async function deleteBeacon(id) {
+    try {
+      const r = await fetch('/api/v1/beacons/' + id, { method: 'DELETE', credentials: 'same-origin' });
+      if (r.ok || r.status === 404) { loadBeacons(); return true; }
+      vbStatus('ошибка удаления (' + r.status + ')', false);
+    } catch (e) { vbStatus('сеть недоступна', false); }
+    return false;
+  }
+  function beaconPopupHtml(p) {
+    return '<div style="font-size:12px;min-width:170px">'
+      + '<div style="font-weight:600;color:' + p.color + '">Маяк: ' + (BEACON_NAMES[p.beacon_type] || p.beacon_type) + '</div>'
+      + '<div style="color:#475569">коэффициент ' + p.coeff + ', радиус ' + Math.round(p.radius_m) + ' м</div>'
+      + (p.label ? '<div style="color:#64748b">' + esc(p.label) + '</div>' : '')
+      + (CAN ? '<button data-del="' + p.id + '" style="margin-top:6px;border:0;border-radius:5px;padding:3px 8px;font-size:11px;color:#fff;background:#b91c1c;cursor:pointer">Удалить</button>' : '')
+      + '</div>';
+  }
+
   map.on('load', () => {
+    // Маяки рисуем ПОД игроками: зоны (заливка + контур) и центры-точки.
+    map.addSource('beacon-zones', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    map.addLayer({ id: 'beacon-fill', type: 'fill', source: 'beacon-zones', paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.15 } });
+    map.addLayer({ id: 'beacon-outline', type: 'line', source: 'beacon-zones', paint: { 'line-color': ['get', 'color'], 'line-width': 1.5, 'line-opacity': 0.7 } });
+    map.addSource('beacon-centers', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    map.addLayer({ id: 'beacon-dots', type: 'circle', source: 'beacon-centers', paint: { 'circle-radius': 5, 'circle-color': ['get', 'color'], 'circle-stroke-width': 1.5, 'circle-stroke-color': '#fff' } });
+
     map.addSource('players', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
     map.addLayer({
       id: 'players', type: 'circle', source: 'players',
@@ -320,8 +420,34 @@
       wireGmPanel(popup.getElement(), p.device_id);
     });
     map.on('mouseenter', 'players', () => map.getCanvas().style.cursor = 'pointer');
-    map.on('mouseleave', 'players', () => map.getCanvas().style.cursor = '');
+    map.on('mouseleave', 'players', () => { if (!placeMode) map.getCanvas().style.cursor = ''; });
 
+    // Клик по маяку → попап с параметрами и (при праве) кнопкой удаления.
+    map.on('click', 'beacon-dots', (e) => {
+      const p = e.features[0].properties;
+      const popup = new maplibregl.Popup({ maxWidth: '240px' })
+        .setLngLat(e.features[0].geometry.coordinates)
+        .setHTML(beaconPopupHtml(p)).addTo(map);
+      const del = popup.getElement() && popup.getElement().querySelector('button[data-del]');
+      if (del) del.onclick = () => { if (confirm('Удалить маяк?')) { deleteBeacon(p.id); popup.remove(); } };
+    });
+    map.on('mouseenter', 'beacon-dots', () => map.getCanvas().style.cursor = 'pointer');
+    map.on('mouseleave', 'beacon-dots', () => { if (!placeMode) map.getCanvas().style.cursor = ''; });
+
+    // Постановка маяка кликом по карте — только в режиме размещения и не поверх
+    // существующего игрока/маяка.
+    map.on('click', (e) => {
+      if (!placeMode) return;
+      const hit = map.queryRenderedFeatures(e.point, { layers: ['players', 'beacon-dots'] });
+      if (hit && hit.length) return;
+      placeMode = false;
+      const btn = document.getElementById('vb-place');
+      if (btn) { btn.textContent = 'Поставить маяк на карте'; btn.classList.remove('ring-2', 'ring-purple-400'); }
+      map.getCanvas().style.cursor = '';
+      placeBeacon(e.lngLat);
+    });
+
+    loadBeacons();
     loadAll();
     // Живой поток: на события position/player перезагружаем игроков (простая,
     // надёжная стратегия — состояние приходит редко и малым объёмом).
@@ -365,6 +491,16 @@
       const coeff = Math.max(1, Math.min(999, parseInt(bcCoeff.value, 10) || 100));
       if (coeff >= 900 && !confirm('Коэффициент ' + coeff + ' — смертельная зона для всех. Наслать всем?')) return;
       broadcast('game.threat', { type: t, coeff: coeff, duration_sec: 0 });
+    };
+    // Виртуальные маяки: переключатель режима размещения.
+    const vbPlace = document.getElementById('vb-place');
+    if (vbPlace) vbPlace.onclick = () => {
+      placeMode = !placeMode;
+      vbPlace.textContent = placeMode ? 'Кликните по карте…' : 'Поставить маяк на карте';
+      vbPlace.classList.toggle('ring-2', placeMode);
+      vbPlace.classList.toggle('ring-purple-400', placeMode);
+      map.getCanvas().style.cursor = placeMode ? 'crosshair' : '';
+      vbStatus(placeMode ? 'кликните по карте, где поставить маяк' : 'радиус в метрах; игроки в онлайне напарываются по GPS', null);
     };
   }
 })();

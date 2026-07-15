@@ -7,6 +7,7 @@
 pub mod applications;
 pub mod auth;
 pub mod ballistics;
+pub mod beacons;
 pub mod bundles;
 pub mod configurations;
 pub mod devices;
@@ -49,6 +50,8 @@ pub fn api_v1(state: AppState) -> Router {
         .merge(position::router())
         // Ф4: игровой канал класса «игроки STALKER» (вид /map/players).
         .merge(player::router())
+        // Виртуальные маяки (гео-зоны угроз) для класса «игроки».
+        .merge(beacons::router())
         // Режим B привязки STALKER: саморегистрация по общему коду игры.
         .merge(join::router())
         // Ф3: федерация с ЦУП «Пеленг» (вид /map/antidrone).
