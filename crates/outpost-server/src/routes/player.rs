@@ -299,7 +299,9 @@ async fn command_one(
     let payload = validate_game_command(&req.command, &req.payload)?;
     ensure_player_in_scope(&state, &user, id).await?;
     let cmd_id = enqueue_game(&state, user.customer_id, id, &req.command, &payload).await?;
-    Ok(Json(serde_json::json!({ "command_id": cmd_id, "device_id": id })))
+    Ok(Json(
+        serde_json::json!({ "command_id": cmd_id, "device_id": id }),
+    ))
 }
 
 #[derive(Debug, Deserialize)]

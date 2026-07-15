@@ -42,7 +42,10 @@ pub struct Beacon {
 }
 
 /// Операторский список маяков арендатора (для карты).
-async fn list(user: AuthUser, State(state): State<AppState>) -> Result<Json<Vec<Beacon>>, ApiError> {
+async fn list(
+    user: AuthUser,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<Beacon>>, ApiError> {
     require_permission(&state.db, user.role_id, "devices.read").await?;
     let rows: Vec<Beacon> = sqlx::query_as::<_, Beacon>(
         "SELECT id, beacon_type, coeff, radius_m, lat, lon, label, is_active \
